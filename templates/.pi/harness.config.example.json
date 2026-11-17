@@ -1,0 +1,93 @@
+{
+  "provider": "acme-ai/",
+  "gates": [
+    {
+      "id": "build",
+      "executable": "pnpm",
+      "args": ["--filter", "@acme/core", "build"],
+      "required": true,
+      "dependsOn": [],
+      "pathPrefixes": []
+    },
+    {
+      "id": "typecheck",
+      "executable": "pnpm",
+      "args": ["typecheck"],
+      "required": true,
+      "dependsOn": ["build"],
+      "pathPrefixes": []
+    },
+    {
+      "id": "lint",
+      "executable": "pnpm",
+      "args": ["lint"],
+      "required": true,
+      "dependsOn": [],
+      "pathPrefixes": []
+    },
+    {
+      "id": "test",
+      "executable": "pnpm",
+      "args": ["test"],
+      "required": true,
+      "dependsOn": ["build"],
+      "pathPrefixes": []
+    },
+    {
+      "id": "test_int",
+      "executable": "pnpm",
+      "args": ["test:int"],
+      "required": true,
+      "dependsOn": ["build"],
+      "pathPrefixes": ["apps/service/", "packages/contracts/"]
+    },
+    {
+      "id": "format_check",
+      "executable": "pnpm",
+      "args": ["format:check"],
+      "required": true,
+      "dependsOn": [],
+      "pathPrefixes": []
+    },
+    {
+      "id": "secrets_scan",
+      "builtin": "secrets_scan",
+      "required": true,
+      "dependsOn": [],
+      "pathPrefixes": []
+    }
+  ],
+  "limits": {
+    "maxDiffLines": 2000,
+    "maxDiffBytes": 409600,
+    "logMaxBytes": 5242880,
+    "evidenceTailLines": 200,
+    "defaultMaxIterations": 2,
+    "maxCycleCostRub": 30
+  },
+  "paths": {
+    "artifactsDir": ".pi/artifacts",
+    "evidenceDir": "evidence",
+    "gatesDir": "gates",
+    "agentsDir": ".pi/agents",
+    "agentsMd": "AGENTS.md",
+    "settings": ".pi/settings.json",
+    "cyclePrompt": ".pi/prompts/cycle.md",
+    "prTemplate": ".github/PULL_REQUEST_TEMPLATE.md"
+  },
+  "evals": {
+    "prices": "evals/prices.json",
+    "profiles": "evals/profiles.json",
+    "candidates": "evals/candidates.json",
+    "seedsDir": "evals/orchestrator/seeds"
+  },
+  "gateTimeouts": {
+    "build": 120000,
+    "typecheck": 300000,
+    "lint": 300000,
+    "test": 300000,
+    "test_int": 900000,
+    "format_check": 120000,
+    "secrets_scan": 60000
+  }
+}

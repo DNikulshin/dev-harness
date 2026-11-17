@@ -1,0 +1,12 @@
+[
+  "@acme/api:test:int: PrismaClientInitializationError: ",
+  "@acme/api:test:int: Invalid `prisma.booking.create()` invocation in",
+  "@acme/api:test:int: /repo/apps/service/src/bookings/bookings.test.ts:42:24",
+  "@acme/api:test:int: ",
+  "@acme/api:test:int: Can't reach database server at `127.0.0.1:55432`",
+  "@acme/api:test:int: ",
+  "@acme/api:test:int: Please make sure your database server is running at `127.0.0.1:55432`.",
+  "@acme/api:test:int: error code: P1001",
+  "Tasks:    0 successful, 1 total",
+  "Failed:    @acme/api#test:int"
+]

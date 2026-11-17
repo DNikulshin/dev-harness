@@ -1,0 +1,105 @@
+{
+  "provider": "acme-ai/",
+  "gates": [
+    {
+      "id": "contracts_build",
+      "executable": "pnpm",
+      "args": ["--filter", "@acme/contracts", "build"],
+      "required": true,
+      "dependsOn": [],
+      "pathPrefixes": []
+    },
+    {
+      "id": "typecheck",
+      "executable": "pnpm",
+      "args": ["typecheck"],
+      "required": true,
+      "dependsOn": ["contracts_build"],
+      "pathPrefixes": []
+    },
+    {
+      "id": "lint",
+      "executable": "pnpm",
+      "args": ["lint"],
+      "required": true,
+      "dependsOn": [],
+      "pathPrefixes": []
+    },
+    {
+      "id": "check_arch",
+      "executable": "pnpm",
+      "args": ["check:arch"],
+      "required": true,
+      "dependsOn": [],
+      "pathPrefixes": []
+    },
+    {
+      "id": "lint_workflows",
+      "executable": "pnpm",
+      "args": ["lint:workflows"],
+      "required": true,
+      "dependsOn": [],
+      "pathPrefixes": [".github/workflows/"]
+    },
+    {
+      "id": "test",
+      "executable": "pnpm",
+      "args": ["test"],
+      "required": true,
+      "dependsOn": ["contracts_build"],
+      "pathPrefixes": []
+    },
+    {
+      "id": "test_int",
+      "executable": "pnpm",
+      "args": ["test:int"],
+      "required": true,
+      "dependsOn": ["contracts_build"],
+      "pathPrefixes": ["apps/service/", "packages/contracts/"]
+    },
+    {
+      "id": "test_scripts",
+      "executable": "pnpm",
+      "args": ["test:scripts"],
+      "required": true,
+      "dependsOn": [],
+      "pathPrefixes": ["scripts/"]
+    },
+    {
+      "id": "check_harness",
+      "executable": "pnpm",
+      "args": ["check:harness"],
+      "required": true,
+      "dependsOn": [],
+      "pathPrefixes": [".pi/", "scripts/cycle-", "AGENTS.md"]
+    },
+    {
+      "id": "format_check",
+      "executable": "pnpm",
+      "args": ["format:check"],
+      "required": true,
+      "dependsOn": [],
+      "pathPrefixes": []
+    },
+    {
+      "id": "secrets_scan",
+      "builtin": "secrets_scan",
+      "required": true,
+      "dependsOn": [],
+      "pathPrefixes": []
+    }
+  ],
+  "gateTimeouts": {
+    "contracts_build": 120000,
+    "typecheck": 300000,
+    "lint": 300000,
+    "check_arch": 60000,
+    "lint_workflows": 60000,
+    "test": 300000,
+    "test_int": 900000,
+    "test_scripts": 120000,
+    "check_harness": 60000,
+    "format_check": 120000,
+    "secrets_scan": 60000
+  }
+}

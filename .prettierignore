@@ -1,0 +1,13 @@
+node_modules/
+coverage/
+.pnpm-store/
+.prettiercache
+.pi/artifacts/
+scripts/fixtures/
+evals/orchestrator/seeds/
+*.log
+pnpm-lock.yaml
+docs/orchestrator-core.md
+docs/orchestrator.md
+.pi/agents/
+templates/.pi/agents/
