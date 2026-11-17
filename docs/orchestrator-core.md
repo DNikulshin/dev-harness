@@ -101,7 +101,8 @@ scripts/
 ```
 
 `scripts/` не влияет на образы (`changed-components.mjs` игнорирует `^scripts/` и `^\.pi/`)
-и не сканируется `check:arch` (проверка идёт по `apps/api`, `apps/web`, `packages/contracts`).
+и не сканируется `check:arch` (в hair-lab проверка идёт по `apps/api`, `apps/web`,
+`packages/contracts`; в другом проекте — по своим каталогам).
 
 ### 5.2 Общие модули
 
@@ -257,7 +258,13 @@ node scripts/cycle-gates.mjs --dir D [--only id,id] [--base SHA]
 `gates/<id>.<n>.log` (при превышении 5 МБ сохраняется хвост). Тайм-аут завершает процесс и
 его потомков: `fail`, причина `timeout`.
 
-| id                | Команда                                   | required | Зависит           | Условие запуска                                                                            |
+Состав, команды и условия запуска гейтов — **свойство проекта**: ядро берёт их из
+`.pi/harness.config.json` (`gates[]`: `id`, `executable` + `args`, `required`, `dependsOn`,
+`pathPrefixes`, `dbGate`). Таблица ниже — пример заполнения из проекта hair-lab; в другом
+проекте `id`, команды, префиксы путей и зависимости задаются в его конфиге, а `no_database`
+включается флагом `dbGate: true` у соответствующего гейта, а не по имени `test_int`.
+
+| id                | Команда (пример: hair-lab)                | required | Зависит           | Условие запуска                                                                            |
 | ----------------- | ----------------------------------------- | -------- | ----------------- | ------------------------------------------------------------------------------------------ |
 | `contracts_build` | `pnpm --filter @hair-lab/contracts build` | да       | —                 | всегда                                                                                     |
 | `typecheck`       | `pnpm typecheck`                          | да       | `contracts_build` | всегда                                                                                     |
@@ -758,7 +765,7 @@ PLAN       advance --to PLAN → субагент plan → plan.<n>.md → finis
              (план просит выбрать вариант → escalate --reason plan_ambiguous)
 CODE       advance --to CODE → субагент code → code-report.<n>.md → finish
 GATES      advance --to GATES → node scripts/cycle-gates.mjs --dir <dir>
-QA_WEB     только если дифф затрагивает apps/web: advance --to QA_WEB → сценарий docs/qa-web.md
+QA_WEB     только если дифф затрагивает qaWeb.pathPrefixes: advance --to QA_WEB → сценарий docs/qa-web.md
              → сырые данные в qa-web.json (с id шагов) → finish
 ANALYSIS   node scripts/cycle-evidence.mjs packet --dir <dir>   (код 4 → escalate --reason diff_too_large)
            advance --to REVIEW   → субагент review   (ему plan и дифф) → review.<n>.md

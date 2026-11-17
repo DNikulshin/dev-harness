@@ -215,15 +215,27 @@ function retries(overrides = {}) {
 }
 
 describe('diffTouchesWeb', () => {
+  const prefixes = ['apps/frontend/'];
+
   test('видит файлы приложения и сам каталог', () => {
-    assert.equal(diffTouchesWeb(['apps/frontend']), true);
-    assert.equal(diffTouchesWeb(['apps/frontend/app/page.tsx']), true);
+    assert.equal(diffTouchesWeb(['apps/frontend'], prefixes), true);
+    assert.equal(diffTouchesWeb(['apps/frontend/app/page.tsx'], prefixes), true);
   });
 
   test('не путает соседние каталоги с похожим префиксом', () => {
-    assert.equal(diffTouchesWeb(['apps/frontend-admin/page.tsx']), false);
-    assert.equal(diffTouchesWeb(['apps/service/src/main.ts']), false);
-    assert.equal(diffTouchesWeb([]), false);
+    assert.equal(diffTouchesWeb(['apps/frontend-admin/page.tsx'], prefixes), false);
+    assert.equal(diffTouchesWeb(['apps/service/src/main.ts'], prefixes), false);
+    assert.equal(diffTouchesWeb([], prefixes), false);
+  });
+
+  test('без префиксов в конфиге web-дифф не определяется', () => {
+    assert.equal(diffTouchesWeb(['apps/frontend/app/page.tsx'], []), false);
+    assert.equal(diffTouchesWeb(['apps/frontend/app/page.tsx']), false);
+  });
+
+  test('префикс без слэша на конце тоже работает', () => {
+    assert.equal(diffTouchesWeb(['apps/client/page.tsx'], ['apps/client']), true);
+    assert.equal(diffTouchesWeb(['apps/client-admin/page.tsx'], ['apps/client']), false);
   });
 });
 
@@ -1001,6 +1013,11 @@ function makeRepo(t) {
   gitRun(root, ['config', 'user.name', 'Тестовый агент']);
   gitRun(root, ['config', 'commit.gpgsign', 'false']);
   mkdirSync(join(root, 'src'), { recursive: true });
+  mkdirSync(join(root, '.pi'), { recursive: true });
+  writeFileSync(
+    join(root, '.pi', 'harness.config.json'),
+    `${JSON.stringify({ qaWeb: { pathPrefixes: ['apps/frontend/'] } }, null, 2)}\n`,
+  );
   writeFileSync(join(root, 'src', 'app.mjs'), writeLines(5));
   gitRun(root, ['add', '-A']);
   gitRun(root, ['commit', '--quiet', '-m', 'база']);

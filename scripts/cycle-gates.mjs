@@ -71,9 +71,6 @@ import { FIXED_NAMES, findActiveCycle, iterNames, repoRoot } from './lib/cycle/p
 import { scanSecrets } from './lib/cycle/redact.mjs';
 import { validateGates, validateState } from './lib/cycle/validate.mjs';
 
-/** Гейт с классификацией отказа по логу (§5.5): без БД — `not_run`, иначе `fail`. */
-const TEST_INT = 'test_int';
-
 /** Причины гейтов §5.5/Приложение A. */
 const NOT_APPLICABLE = 'not_applicable';
 const NO_DATABASE = 'no_database';
@@ -493,8 +490,8 @@ async function executeGate(definition, context) {
     maxLogBytes,
   });
 
-  if (definition.id === TEST_INT && outcome.status === 'fail') {
-    // §5.5: класс отказа `test_int` определяется по логу, а не по коду возврата.
+  if (definition.dbGate === true && outcome.status === 'fail') {
+    // §5.5: у гейта с `dbGate` класс отказа определяется по логу, а не по коду возврата.
     const kind = classifyTestIntLog(readGateLog(dir, log));
     if (kind === NO_DATABASE) {
       return makeEntry(definition, { ...outcome, status: 'not_run', log, reason: NO_DATABASE });

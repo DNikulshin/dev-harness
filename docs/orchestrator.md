@@ -174,10 +174,13 @@ evidence/                  пакет для оценщика (§7)
 
 Идентификаторы гейтов: `contracts_build`, `typecheck`, `lint`, `check_arch`,
 `lint_workflows`, `test`, `test_int`, `test_scripts`, `check_harness`, `format_check`, `secrets_scan`.
+Это набор из примера hair-lab: `id` гейтов задаются в `.pi/harness.config.json` проекта, список
+не закрыт — проект может объявить свои проверки.
 Статус `skipped` — условие запуска не выполнено (не считается непроверенным); файлы по
 итерациям: `gates.<n>.json`.
-`test_int` обязателен, если дифф затрагивает `apps/api/` или `packages/contracts/`; без базы
-статус `not_run`, причина `no_database`.
+`test_int` обязателен, если дифф затрагивает `apps/api/` или `packages/contracts/` (в примере
+hair-lab; префиксы путей задаются в `gates[].pathPrefixes`). Если у гейта `dbGate: true` и база
+недоступна, статус `not_run`, причина `no_database` — классификация привязана к флагу, а не к id.
 
 ### `review.json`
 
@@ -266,7 +269,7 @@ DECIDE → REWORK → CODE (iteration+1)  |  ACQUIRE_EVIDENCE → GATES/QA_WEB
 | PLAN     | `plan`                        | `plan.1.md`                               | пять разделов формата, включая «НЕ входит»; при неоднозначности (2–3 варианта) — ESCALATE |
 | CODE     | `code` + супервизор           | правки; `code-report.<n>.md`              | `code` ничего не коммитит; отчёт — справочный                                             |
 | GATES    | `cycle-gates.mjs`             | `gates.json`                              | скрипт завершился (статусы в файле)                                                       |
-| QA_WEB   | супервизор                    | `qa-web.json`                             | только если дифф затрагивает `apps/web`                                                   |
+| QA_WEB   | супервизор                    | `qa-web.json`                             | только если дифф затрагивает пути из `qaWeb.pathPrefixes` конфига                         |
 | REVIEW   | `review`                      | `review.<n>.md/.json`                     | JSON проходит схему                                                                       |
 | EVALUATE | `evaluate`                    | `evaluation.<n>.md/.json`                 | JSON проходит схему                                                                       |
 | DECIDE   | `cycle-decide.mjs`            | `decision.<n>.json`                       | всегда                                                                                    |

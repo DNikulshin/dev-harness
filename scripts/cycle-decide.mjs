@@ -99,9 +99,6 @@ const EVALUATE_STAGE = 'EVALUATE';
 /** Причина `not_run` гейта, при которой добор невозможен (нет БД). */
 const NO_DATABASE = 'no_database';
 
-/** Префикс путей web-приложения: по нему решается, нужна ли браузерная проверка. */
-const WEB_PREFIX = 'apps/frontend';
-
 /** Единственный разрешённый к чтению файл окружения (AGENTS.md, «Персональные данные»). */
 const ENV_EXAMPLE = '.env.example';
 
@@ -179,13 +176,21 @@ export function normalizeDoc(value) {
 
 /**
  * Затрагивает ли дифф web-приложение: от этого зависит необходимость QA_WEB (§5.6, п. 4).
- * Список берётся из `git.changedFiles`, поэтому untracked видны только после
- * `git add --intent-to-add` (протокол Приложения B).
+ * Префиксы путей — свойство проекта (`qaWeb.pathPrefixes` в `.pi/harness.config.json`);
+ * пустой список означает «проект не просит браузерную проверку». Список файлов берётся из
+ * `git.changedFiles`, поэтому untracked видны только после `git add --intent-to-add`
+ * (протокол Приложения B).
  * @param {string[]} files пути относительно корня репозитория
+ * @param {readonly string[]} [prefixes] префиксы путей web-приложения
  * @returns {boolean}
  */
-export function diffTouchesWeb(files) {
-  return files.some((file) => file === WEB_PREFIX || file.startsWith(`${WEB_PREFIX}/`));
+export function diffTouchesWeb(files, prefixes = DEFAULTS.qaWeb.pathPrefixes) {
+  return files.some((file) =>
+    prefixes.some((prefix) => {
+      const base = prefix.endsWith('/') ? prefix.slice(0, -1) : prefix;
+      return file === base || file.startsWith(`${base}/`);
+    }),
+  );
 }
 
 /**
@@ -685,7 +690,10 @@ function main() {
     const qaWeb = readOptionalJson(join(dir, FIXED_NAMES.qaWeb), validateQaWeb, FIXED_NAMES.qaWeb);
 
     // Web-дифф читается от базы цикла; индекс не меняется (его готовит супервизор).
-    const webDiff = diffTouchesWeb(changedFiles(state.base_sha, { cwd: root }));
+    const webDiff = diffTouchesWeb(
+      changedFiles(state.base_sha, { cwd: root }),
+      config.qaWeb.pathPrefixes,
+    );
 
     // Бюджет (правило 7 §5.6): на момент DECIDE `metrics.json` ещё не написан, поэтому
     // стоимость считается по накопленному `usage.json`. Нет замера — `null`, не ноль.

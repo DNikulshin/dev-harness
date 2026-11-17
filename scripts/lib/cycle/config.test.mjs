@@ -259,3 +259,66 @@ describe('loadConfig: приоритет явного значения', () => {
     );
   });
 });
+
+describe('config: qaWeb и dbGate', () => {
+  /**
+   * Конфиг проекта с переданным JSON.
+   * @param {import('node:test').TestContext} t
+   * @param {unknown} doc
+   * @returns {string}
+   */
+  function project(t, doc) {
+    const root = mkdtempSync(join(tmpdir(), 'harness-config-qaweb-'));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    mkdirSync(join(root, '.pi'), { recursive: true });
+    writeFileSync(join(root, '.pi', 'harness.config.json'), JSON.stringify(doc));
+    return root;
+  }
+
+  test('без секций qaWeb и dbGate — пустые префиксы и гейт не БД', (t) => {
+    const root = project(t, { gates: [{ id: 'test', executable: 'node', args: ['--test'] }] });
+    const config = loadConfig(root);
+
+    assert.deepEqual(config.qaWeb.pathPrefixes, []);
+    assert.equal(config.gates[0].dbGate, false);
+  });
+
+  test('конфиг задаёт префиксы web и помечает БД-гейт', (t) => {
+    const root = project(t, {
+      qaWeb: { pathPrefixes: ['apps/client/', 'apps/admin'] },
+      gates: [
+        { id: 'test', executable: 'node', args: ['--test'] },
+        { id: 'test_int', executable: 'pnpm', args: ['test:int'], dbGate: true },
+      ],
+    });
+    const config = loadConfig(root);
+
+    assert.deepEqual(config.qaWeb.pathPrefixes, ['apps/client/', 'apps/admin']);
+    assert.equal(config.gates.find((gate) => gate.id === 'test_int').dbGate, true);
+    assert.equal(config.gates.find((gate) => gate.id === 'test').dbGate, false);
+  });
+
+  for (const [name, doc] of [
+    ['qaWeb не объект', { qaWeb: [] }],
+    ['qaWeb.pathPrefixes не массив', { qaWeb: { pathPrefixes: 'apps/client' } }],
+    ['qaWeb.pathPrefixes содержит пустую строку', { qaWeb: { pathPrefixes: [''] } }],
+    ['qaWeb с неизвестным полем', { qaWeb: { pathPrefixes: [], extra: 1 } }],
+    ['dbGate не boolean', { gates: [{ id: 'test', executable: 'node', dbGate: 'yes' }] }],
+    [
+      'dbGate: null не проваливается в дефолт',
+      { gates: [{ id: 'test', executable: 'node', dbGate: null }] },
+    ],
+    [
+      'required: null не проваливается в дефолт',
+      { gates: [{ id: 'test', executable: 'node', required: null }] },
+    ],
+  ]) {
+    test(`${name} — ошибка конфига с кодом 2`, (t) => {
+      const root = project(t, doc);
+      assert.throws(
+        () => loadConfig(root),
+        (error) => error instanceof ConfigError && error.code === 2,
+      );
+    });
+  }
+});

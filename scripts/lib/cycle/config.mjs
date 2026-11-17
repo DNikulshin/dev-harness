@@ -53,6 +53,9 @@ export const DEFAULTS = deepFreeze({
     cyclePrompt: '.pi/prompts/cycle.md',
     prTemplate: '',
   },
+  qaWeb: {
+    pathPrefixes: [],
+  },
   evals: {
     prices: 'evals/prices.json',
     profiles: 'evals/profiles.json',
@@ -76,7 +79,15 @@ export const DEFAULTS = deepFreeze({
  */
 
 /** Допустимые секции конфига: всё остальное — ошибка, а не игнор. */
-const SECTIONS = Object.freeze(['gates', 'limits', 'paths', 'evals', 'provider', 'gateTimeouts']);
+const SECTIONS = Object.freeze([
+  'gates',
+  'limits',
+  'paths',
+  'evals',
+  'qaWeb',
+  'provider',
+  'gateTimeouts',
+]);
 
 /** Поля секций: неизвестное поле ловится до слияния с дефолтами. */
 const SECTION_FIELDS = Object.freeze({
@@ -99,6 +110,7 @@ const SECTION_FIELDS = Object.freeze({
     'prTemplate',
   ]),
   evals: Object.freeze(['prices', 'profiles', 'candidates', 'seedsDir']),
+  qaWeb: Object.freeze(['pathPrefixes']),
 });
 
 /** Поля гейта; `cmd` допускается только для старого формата. */
@@ -111,6 +123,7 @@ const GATE_FIELDS = Object.freeze([
   'required',
   'dependsOn',
   'pathPrefixes',
+  'dbGate',
 ]);
 
 /** Уже напечатанные предупреждения: один и тот же конфиг не спамит при каждом вызове. */
@@ -271,6 +284,26 @@ function parsePaths(value) {
 }
 
 /**
+ * Секция `qaWeb`: префиксы путей, по которым дифф считается затрагивающим web (§5.6, п. 4).
+ * Пустой список — проект не просит браузерную проверку.
+ * @param {unknown} value
+ * @returns {{pathPrefixes: string[]}}
+ */
+function parseQaWeb(value) {
+  if (!isRecord(value)) {
+    throw new ConfigError('.pi/harness.config.json: qaWeb — ожидается объект');
+  }
+  assertKnownFields(value, 'qaWeb', SECTION_FIELDS.qaWeb);
+
+  const pathPrefixes =
+    value.pathPrefixes === undefined
+      ? [...DEFAULTS.qaWeb.pathPrefixes]
+      : stringList(value.pathPrefixes, 'qaWeb.pathPrefixes');
+
+  return { pathPrefixes };
+}
+
+/**
  * Секция `evals`: пути к снапшотам и сидам.
  * @param {unknown} value
  * @returns {Record<string, string>}
@@ -368,7 +401,8 @@ function parseGate(value, index, ids) {
     cmd = [executable, ...args].join(' ');
   }
 
-  const required = value.required ?? true;
+  // Явный `null` — ошибка типа, а не повод подставить дефолт: `??` пропустил бы его молча.
+  const required = value.required === undefined ? true : value.required;
   if (typeof required !== 'boolean') {
     throw new ConfigError(`.pi/harness.config.json: ${path}.required — ожидается boolean`);
   }
@@ -376,7 +410,12 @@ function parseGate(value, index, ids) {
   const dependsOn = stringList(value.dependsOn, `${path}.dependsOn`);
   const pathPrefixes = stringList(value.pathPrefixes, `${path}.pathPrefixes`);
 
-  return { id, executable, args, cmd, builtin, required, dependsOn, pathPrefixes };
+  const dbGate = value.dbGate === undefined ? false : value.dbGate;
+  if (typeof dbGate !== 'boolean') {
+    throw new ConfigError(`.pi/harness.config.json: ${path}.dbGate — ожидается boolean`);
+  }
+
+  return { id, executable, args, cmd, builtin, required, dependsOn, pathPrefixes, dbGate };
 }
 
 /**
@@ -510,6 +549,7 @@ export function loadConfig(root) {
     limits: doc.limits === undefined ? DEFAULTS.limits : parseLimits(doc.limits),
     paths: doc.paths === undefined ? DEFAULTS.paths : parsePaths(doc.paths),
     evals: doc.evals === undefined ? DEFAULTS.evals : parseEvals(doc.evals),
+    qaWeb: doc.qaWeb === undefined ? DEFAULTS.qaWeb : parseQaWeb(doc.qaWeb),
     provider,
     gateTimeouts:
       doc.gateTimeouts === undefined
