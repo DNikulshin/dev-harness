@@ -1,0 +1,11 @@
+{
+  "$schema": "https://pi.dev/schemas/settings.schema.json",
+  "defaultProvider": "acme-ai",
+  "defaultModel": "acme-ai/alpha/a-1",
+  "defaultThinkingLevel": "low",
+  "subagents": {
+    "defaultModel": "acme-ai/alpha/a-1",
+    "defaultThinking": "low",
+    "maxSubagentSpawnsPerRun": 5
+  }
+}

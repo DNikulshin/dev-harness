@@ -1,0 +1,28 @@
+{
+  "provider": "acme-ai/",
+  "gates": [
+    {
+      "id": "test",
+      "executable": "node",
+      "args": ["--test"],
+      "required": true,
+      "dependsOn": [],
+      "pathPrefixes": []
+    },
+    {
+      "id": "format_check",
+      "executable": "pnpm",
+      "args": ["exec", "prettier", "--check", "."],
+      "required": true,
+      "dependsOn": [],
+      "pathPrefixes": []
+    }
+  ],
+  "paths": {
+    "prTemplate": ""
+  },
+  "gateTimeouts": {
+    "test": 600000,
+    "format_check": 120000
+  }
+}

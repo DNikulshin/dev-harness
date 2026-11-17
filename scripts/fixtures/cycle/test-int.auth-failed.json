@@ -1,0 +1,11 @@
+[
+  "@acme/api:test:int: PrismaClientInitializationError: ",
+  "@acme/api:test:int: Invalid `prisma.user.findMany()` invocation in",
+  "@acme/api:test:int: /repo/apps/service/src/auth/auth.test.ts:18:20",
+  "@acme/api:test:int: ",
+  "@acme/api:test:int: error: password authentication failed for user \"app\"",
+  "@acme/api:test:int: error code: P1000",
+  "@acme/api:test:int:  Tests: 1 failed, 0 passed",
+  "Tasks:    0 successful, 1 total",
+  "Failed:    @acme/api#test:int"
+]
