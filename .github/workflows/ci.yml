@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Версия pnpm берётся из packageManager в package.json.
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Установка зависимостей
+        run: pnpm install --frozen-lockfile
+
+      - name: Тесты ядра
+        run: pnpm test
+
+      - name: Форматирование
+        run: pnpm format:check
+
+      # Проверка раскладки harness на самом репозитории: .pi/agents, .pi/settings.json, cycle.md.
+      - name: Проверка harness (H1–H6)
+        run: node scripts/check-harness.mjs
