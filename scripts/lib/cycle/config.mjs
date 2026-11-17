@@ -401,7 +401,8 @@ function parseGate(value, index, ids) {
     cmd = [executable, ...args].join(' ');
   }
 
-  const required = value.required ?? true;
+  // Явный `null` — ошибка типа, а не повод подставить дефолт: `??` пропустил бы его молча.
+  const required = value.required === undefined ? true : value.required;
   if (typeof required !== 'boolean') {
     throw new ConfigError(`.pi/harness.config.json: ${path}.required — ожидается boolean`);
   }
@@ -409,7 +410,7 @@ function parseGate(value, index, ids) {
   const dependsOn = stringList(value.dependsOn, `${path}.dependsOn`);
   const pathPrefixes = stringList(value.pathPrefixes, `${path}.pathPrefixes`);
 
-  const dbGate = value.dbGate ?? false;
+  const dbGate = value.dbGate === undefined ? false : value.dbGate;
   if (typeof dbGate !== 'boolean') {
     throw new ConfigError(`.pi/harness.config.json: ${path}.dbGate — ожидается boolean`);
   }

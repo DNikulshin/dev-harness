@@ -304,6 +304,14 @@ describe('config: qaWeb и dbGate', () => {
     ['qaWeb.pathPrefixes содержит пустую строку', { qaWeb: { pathPrefixes: [''] } }],
     ['qaWeb с неизвестным полем', { qaWeb: { pathPrefixes: [], extra: 1 } }],
     ['dbGate не boolean', { gates: [{ id: 'test', executable: 'node', dbGate: 'yes' }] }],
+    [
+      'dbGate: null не проваливается в дефолт',
+      { gates: [{ id: 'test', executable: 'node', dbGate: null }] },
+    ],
+    [
+      'required: null не проваливается в дефолт',
+      { gates: [{ id: 'test', executable: 'node', required: null }] },
+    ],
   ]) {
     test(`${name} — ошибка конфига с кодом 2`, (t) => {
       const root = project(t, doc);

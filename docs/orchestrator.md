@@ -174,6 +174,8 @@ evidence/                  пакет для оценщика (§7)
 
 Идентификаторы гейтов: `contracts_build`, `typecheck`, `lint`, `check_arch`,
 `lint_workflows`, `test`, `test_int`, `test_scripts`, `check_harness`, `format_check`, `secrets_scan`.
+Это набор из примера hair-lab: `id` гейтов задаются в `.pi/harness.config.json` проекта, список
+не закрыт — проект может объявить свои проверки.
 Статус `skipped` — условие запуска не выполнено (не считается непроверенным); файлы по
 итерациям: `gates.<n>.json`.
 `test_int` обязателен, если дифф затрагивает `apps/api/` или `packages/contracts/` (в примере
