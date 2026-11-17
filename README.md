@@ -54,6 +54,15 @@ pnpm add -D github:DNikulshin/dev-harness#feat/1-core-from-hair-lab
 Файл необязателен: без него работают нейтральные дефолты, а список гейтов пуст. Пустой список гейтов
 — валидное состояние: `cycle-gates` сообщает «гейты не заданы» и выходит с кодом 2.
 
+Секции: `gates` (массив проверок: `id`, `executable` + `args`, `required`, `dependsOn`,
+`pathPrefixes`, `dbGate`), `limits`, `paths`, `evals`, `qaWeb`, `provider`, `gateTimeouts`. Две
+настройки важны для поведения цикла:
+
+- `qaWeb.pathPrefixes` — по каким путям дифф считается затрагивающим web (нужна браузерная
+  проверка); пустой список — проект не просит QA_WEB;
+- `gates[].dbGate: true` — у гейта класс отказа определяется по логу: нет базы → `not_run` с
+  причиной `no_database` вместо `fail`. Привязано к флагу, а не к имени `test_int`.
+
 ```json
 {
   "provider": "acme-ai/",
@@ -98,6 +107,9 @@ pnpm add -D github:DNikulshin/dev-harness#feat/1-core-from-hair-lab
     "profiles": "evals/profiles.json",
     "candidates": "evals/candidates.json",
     "seedsDir": "evals/orchestrator/seeds"
+  },
+  "qaWeb": {
+    "pathPrefixes": ["apps/web/"]
   },
   "gateTimeouts": {
     "test": 600000,

@@ -39,7 +39,8 @@
       "args": ["test:int"],
       "required": true,
       "dependsOn": ["build"],
-      "pathPrefixes": ["apps/service/", "packages/contracts/"]
+      "pathPrefixes": ["apps/service/", "packages/contracts/"],
+      "dbGate": true
     },
     {
       "id": "format_check",
@@ -89,5 +90,8 @@
     "test_int": 900000,
     "format_check": 120000,
     "secrets_scan": 60000
+  },
+  "qaWeb": {
+    "pathPrefixes": ["apps/web/"]
   }
 }
