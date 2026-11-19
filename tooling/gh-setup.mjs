@@ -61,8 +61,11 @@ export const MERGE_SETTINGS = Object.freeze({
   delete_branch_on_merge: true,
 });
 
-/** Обязательные проверки ветки `main`: имя job из `.github/workflows/ci.yml`. */
-export const REQUIRED_CHECKS = Object.freeze(['checks']);
+/**
+ * Обязательные проверки ветки `main`: имена job из workflows.
+ * `checks` — `.github/workflows/ci.yml`, `pr-references` — `pr-checks.yml` (ссылка `Closes #N` в теле PR).
+ */
+export const REQUIRED_CHECKS = Object.freeze(['checks', 'pr-references']);
 
 /** Имя ruleset защиты релизных тегов. */
 export const TAG_RULESET = 'release-tags';
