@@ -1,0 +1,35 @@
+name: PR checks
+
+# Проверка связи PR с issue: в теле должна быть строка `Closes #<номер>`.
+#
+# Зачем: GitHub связывает issue в момент мержа по ключевому слову в теле PR. Если тело собрано
+# из шаблона (`Closes #` без номера) или из сообщения коммита, issue остаётся открытым, а доска
+# показывает прежнюю колонку — так и вышло с #5 и #15. Проверка делает это состояние
+# невозможным: без ссылки обязательный чек не пройдёт (см. docs/workflow.md).
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  pr-references:
+    # PR от Dependabot не ссылаются на issue: задачи в трекере у бота нет, тело он не правит.
+    if: github.actor != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+
+      # Логика — tooling/pr-reference.mjs (чистые функции, покрыты node --test):
+      # HTML-комментарии и блоки кода не считаются ссылками, иначе подсказка шаблона
+      # «Closes #<номер>» проходила бы проверку, ничего не закрывая.
+      - name: Ссылка на issue в теле PR
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: node tooling/pr-reference.mjs
