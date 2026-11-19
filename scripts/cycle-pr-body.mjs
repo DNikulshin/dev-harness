@@ -23,8 +23,9 @@
  * `gates.<n>.json`: `- [x]` только у `pass`/`skipped`), «Независимая оценка» (§5.7:
  * вердикты ревью и оценки рядом, таблица критериев `C1…Cn` в порядке `criteria.md`,
  * `partial`/`unverified`, замечания ревью, при `PROCEED_WITH_UNVERIFIED` — блок
- * «не проверено» с чекбоксами для владельца), «Риски» (пункты шаблона: их отмечает
- * человек, скрипт их не угадывает), «Вне скоупа» (пункты `followups.md`).
+ * «не проверено» с чекбоксами для владельца), «Риски» (пункты шаблона PR проекта из
+ * `paths.prTemplate`: чекбоксы переносятся как есть, их отмечает человек; своего списка
+ * рисков ядро не держит), «Вне скоупа» (пункты `followups.md`).
  * С `--draft-escalation` в начало добавляется баннер: причина, пояснение,
  * `draft_pr_allowed` и открытые замечания из `escalation.json`.
  *
@@ -98,14 +99,17 @@ const EVALUATION_POSITIVE = Object.freeze(['ACCEPT', 'ACCEPT_WITH_FOLLOWUPS']);
 /** Действие решения, добавляющее блок «не проверено» (§5.7). */
 const PROCEED_WITH_UNVERIFIED = 'PROCEED_WITH_UNVERIFIED';
 
-/** Пункты раздела «Риски» шаблона PR: их отмечает человек, скрипт их не выводит. */
-const RISK_ITEMS = Object.freeze([
-  'Есть миграция БД (expand/contract, откат описан)',
-  'Меняются контракты (только обратно совместимо)',
-  'Затрагиваются персональные данные или авторизация',
-  'Нужны новые переменные окружения / секреты',
-  'Ничего из перечисленного',
-]);
+/**
+ * Заголовок раздела «Риски» в шаблоне PR. Список рисков — свойство проекта: ядро берёт
+ * пункты из шаблона (`paths.prTemplate`) и не подставляет свой.
+ */
+const RISKS_HEADING = /^(#{1,6})[ \t]+Риски[ \t]*$/u;
+
+/**
+ * HTML-комментарий шаблона: подсказки для человека в пункты не попадают.
+ * Комментарии не вкладываются, поэтому ленивое совпадение до первого `-->` корректно.
+ */
+const HTML_COMMENT = /<!--[\s\S]*?-->/gu;
 
 /** Элемент списка markdown: `- `, `* `, `1.`; содержимое — остаток строки. */
 const LIST_ITEM = /^[ \t]*(?:[-*]|\d+\.)[ \t]+(.*)$/;
@@ -115,6 +119,9 @@ const CHECKBOX = /^\[[ xX]\][ \t]*(.*)$/;
 
 /** Заголовок markdown: закрывает предыдущий пункт списка. */
 const HEADING = /^#{1,6}[ \t]/;
+
+/** Заголовок markdown с уровнем: `## Риски` закрывает раздел того же или более высокого уровня. */
+const HEADING_LEVEL = /^(#{1,6})[ \t]+/;
 
 /**
  * Префикс источника в `decision.unverified[]`: `cycle-decide` пишет `evaluation unverified: <what>`
@@ -254,6 +261,60 @@ export function listItems(markdown) {
     // Проза до первого пункта критерием не становится, после пункта — его продолжение.
     if (open === null) continue;
     items[open] = `${items[open]} ${continuation}`;
+  }
+
+  return items;
+}
+
+/**
+ * Пункты раздела «Риски» шаблона PR: чекбоксы переносятся как есть (их отмечает человек),
+ * других разделов и HTML-комментариев шаблона в результате нет. Раздела нет или он пуст —
+ * пустой массив: чужой список рисков ядро не выдумывает (правило 1 `AGENTS.md`).
+ * @param {string} markdown содержимое шаблона PR
+ * @returns {string[]} строки пунктов с маркером списка и чекбоксом
+ */
+export function riskItems(markdown) {
+  if (typeof markdown !== 'string') throw new TypeError('riskItems: ожидается строка');
+
+  const lines = markdown.replace(HTML_COMMENT, '').split(/\r?\n/);
+  let level = 0;
+  /** @type {string[]} */
+  const items = [];
+  /** @type {number|null} индекс пункта, к которому относится продолжение */
+  let open = null;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (level === 0) {
+      const heading = RISKS_HEADING.exec(trimmed);
+      if (heading !== null) level = (heading[1] ?? '').length;
+      continue;
+    }
+
+    // Раздел закончился: следующий заголовок того же или более высокого уровня.
+    const heading = HEADING_LEVEL.exec(trimmed);
+    if (heading !== null && (heading[1] ?? '').length <= level) break;
+    if (heading !== null) {
+      open = null;
+      continue;
+    }
+
+    const match = LIST_ITEM.exec(line);
+    if (match !== null) {
+      const text = (match[1] ?? '').trim();
+      open = null;
+      if (text === '') continue;
+      items.push(trimmed);
+      open = items.length - 1;
+      continue;
+    }
+
+    // Перенос строки внутри пункта — тот же пункт; проза до первого пункта не пункт.
+    if (trimmed === '' || open === null) {
+      open = null;
+      continue;
+    }
+    items[open] = `${items[open]} ${trimmed}`;
   }
 
   return items;
@@ -405,6 +466,7 @@ export function summaryItems(dir, names) {
  *   summary: string[],
  *   followups: string[],
  *   escalation: Record<string, any>|null,
+ *   risks: string[]|null,
  *   root: string,
  *   gateIds?: readonly string[],
  * }} inputs
@@ -421,6 +483,7 @@ export function renderPrBody(inputs) {
     summary,
     followups,
     escalation,
+    risks,
     root,
     gateIds = [],
   } = inputs;
@@ -561,8 +624,16 @@ export function renderPrBody(inputs) {
   }
   sections.push(evaluationLines.join('\n'));
 
-  // Риски: пункты шаблона, их отмечает человек.
-  sections.push(['## Риски', '', ...RISK_ITEMS.map((item) => `- [ ] ${item}`)].join('\n'));
+  // Риски: пункты шаблона PR (§5.7), их отмечает человек.
+  const riskLines = ['## Риски', ''];
+  if (risks === null || risks.length === 0) {
+    riskLines.push(
+      'Пунктов нет: раздел заполняет человек по шаблону PR (`paths.prTemplate`), в шаблоне их нет.',
+    );
+  } else {
+    riskLines.push(...risks);
+  }
+  sections.push(riskLines.join('\n'));
 
   // Вне скоупа: пункты followups.md; файла нет — заглушка, а не ошибка.
   const followupLines = ['## Вне скоупа', ''];
@@ -659,6 +730,23 @@ function readRequiredText(file, label) {
 }
 
 /**
+ * Пункты «Риски» из шаблона PR проекта (`paths.prTemplate`). Пустой путь, отсутствующий файл
+ * или шаблон без раздела — `null`: раздел PR печатается с пометкой, чужой список не подставляется.
+ * @param {string} root корень репозитория
+ * @param {string} prTemplate путь шаблона из конфига (относительный или абсолютный)
+ * @returns {string[]|null}
+ */
+function templateRisks(root, prTemplate) {
+  if (!isText(prTemplate)) return null;
+
+  const path = resolve(root, prTemplate);
+  if (!existsSync(path)) return null;
+
+  const items = riskItems(readFileSync(path, 'utf8'));
+  return items.length > 0 ? items : null;
+}
+
+/**
  * Точка входа CLI. На диск ничего не пишет: единственный вывод — тело PR в stdout,
  * диагностика — в stderr.
  * @returns {void}
@@ -700,6 +788,7 @@ function main() {
     const followups = existsSync(followupsPath)
       ? listItems(readFileSync(followupsPath, 'utf8'))
       : [];
+    const risks = templateRisks(root, config.paths.prTemplate);
 
     const body = renderPrBody({
       state,
@@ -711,6 +800,7 @@ function main() {
       summary: summaryItems(dir, names),
       followups,
       escalation,
+      risks,
       root,
       gateIds: config.gates.map((gate) => gate.id),
     });

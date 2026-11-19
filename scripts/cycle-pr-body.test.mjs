@@ -14,6 +14,7 @@ import {
   parseCriteria,
   renderEscalationBanner,
   renderPrBody,
+  riskItems,
 } from './cycle-pr-body.mjs';
 
 /** Путь к CLI: тесты секций запускают его отдельным процессом, как супервизор. */
@@ -99,6 +100,7 @@ function inputs(overrides = {}) {
     summary: [],
     followups: [],
     escalation: null,
+    risks: null,
     root: REPO_ROOT,
     ...overrides,
   };
@@ -140,6 +142,42 @@ describe('секции шаблона', () => {
     assert.ok(text.includes('- [x] `contracts_build` — pass'));
     assert.ok(text.includes('- [x] `lint_workflows` — skipped (not_applicable)'));
     assert.ok(!text.includes('pnpm typecheck'), 'команды гейтов в PR не переписываются руками');
+  });
+
+  test('«Риски» — пункты шаблона PR проекта, а не список ядра', () => {
+    const text = body('proceed');
+    const risks = section(text, 'Риски')
+      .split('\n')
+      .filter((line) => line.startsWith('- '));
+
+    // Ожидание читается из шаблона репозитория, а не из константы теста.
+    const template = readFileSync(join(REPO_ROOT, '.github', 'PULL_REQUEST_TEMPLATE.md'), 'utf8');
+    assert.deepEqual(risks, riskItems(template));
+    assert.ok(!text.includes('Есть миграция БД'), 'список ядра из сборки убран');
+  });
+
+  test('шаблон с нестандартными пунктами — в PR ровно они', () => {
+    const text = renderPrBody(
+      inputs({ risks: ['- [ ] Меняются публичные точки входа пакета', '- [ ] Секреты'] }),
+    );
+
+    assert.deepEqual(
+      section(text, 'Риски')
+        .split('\n')
+        .filter((line) => line.startsWith('- ')),
+      ['- [ ] Меняются публичные точки входа пакета', '- [ ] Секреты'],
+    );
+    assert.ok(!section(text, 'Риски').includes('Пунктов нет'));
+  });
+
+  test('шаблона нет — раздел «Риски» печатается с пометкой, а не с чужим списком', () => {
+    const text = renderPrBody(inputs({ risks: null }));
+    const risks = section(text, 'Риски');
+
+    assert.ok(risks.includes('Пунктов нет'));
+    assert.ok(!risks.includes('- [ ]'), 'пунктов быть не должно');
+    assert.ok(!text.includes('Есть миграция БД'), 'список ядра из сборки убран');
+    assert.ok(!text.includes('prod-подобная БД'), 'чужой список рисков не подставляется');
   });
 
   test('чекбокс `[x]` только у pass/skipped, у not_run — пустой с причиной', () => {
@@ -565,5 +603,75 @@ describe('парсеры', () => {
 
     assert.ok(text.includes('Гейты не запускались.'));
     assert.ok(!text.includes('- [x]'));
+  });
+});
+
+describe('riskItems', () => {
+  test('берёт пункты раздела «Риски» вместе с чекбоксами и отметками', () => {
+    const template = [
+      '## Что сделано',
+      '',
+      '- [ ] пункт не из того раздела',
+      '',
+      '## Риски',
+      '',
+      '- [ ] Меняются контракты пакета',
+      '- [x] Затрагиваются миграции данных',
+      '- Ничего из перечисленного',
+      '',
+      '## Вне скоупа',
+      '',
+      '- [ ] не должно попасть',
+    ].join('\n');
+
+    assert.deepEqual(riskItems(template), [
+      '- [ ] Меняются контракты пакета',
+      '- [x] Затрагиваются миграции данных',
+      '- Ничего из перечисленного',
+    ]);
+  });
+
+  test('HTML-комментарии и проза шаблона в пункты не попадают', () => {
+    const template = [
+      '## Риски',
+      '',
+      '<!-- отметить, что затронуто -->',
+      '',
+      '- [ ] Секреты',
+      '  Продолжение пункта',
+      '',
+      '<!-- ещё подсказка -->',
+      '- [ ] Ничего из перечисленного',
+    ].join('\n');
+
+    assert.deepEqual(riskItems(template), [
+      '- [ ] Секреты Продолжение пункта',
+      '- [ ] Ничего из перечисленного',
+    ]);
+  });
+
+  test('подраздел внутри «Рисков» не обрывает раздел, а следующий ## закрывает', () => {
+    const template = [
+      '## Риски',
+      '',
+      '### Данные',
+      '',
+      '- [ ] Миграция',
+      '',
+      '## Вне скоупа',
+      '',
+      '- [ ] чужой пункт',
+    ].join('\n');
+
+    assert.deepEqual(riskItems(template), ['- [ ] Миграция']);
+  });
+
+  test('раздела нет — пустой массив, чужой список не выдумывается', () => {
+    assert.deepEqual(riskItems('## Что сделано\n\n- [ ] `pnpm check`\n'), []);
+    assert.deepEqual(riskItems(''), []);
+  });
+
+  test('не строка — TypeError', () => {
+    assert.throws(() => riskItems(/** @type {any} */ (null)), /riskItems: ожидается строка/u);
   });
 });
