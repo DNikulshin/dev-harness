@@ -1,0 +1,39 @@
+# Обновления зависимостей: Dependabot.
+#
+# Зачем: ядро ставится потребителями как git-зависимость, поэтому устаревшая или уязвимая
+# зависимость расходится по всем проектам сразу. Dependabot alerts и security updates
+# включены в настройках репозитория (`tooling/gh-setup.mjs`), этот файл добавляет
+# плановые обновления версий — отдельными PR, которые проходят тот же `checks`.
+version: 2
+updates:
+  # Зависимости самого репозитория (prettier, typescript, @types/node).
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: '06:00'
+      timezone: Europe/Moscow
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      # Типы и компилятор обновляются вместе: рассинхрон даёт ложные ошибки `tsc`.
+      typescript:
+        patterns:
+          - typescript
+          - '@types/*'
+
+  # Actions в workflows: обновление тега меняет код, который выполняется с доступом к секретам.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: '06:00'
+      timezone: Europe/Moscow
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: chore
+      include: scope
