@@ -31,12 +31,16 @@ jobs:
     # на колонку не влияют, а событий от них много. Колонку двигают только `status:*`
     # (их же ставит `board-labels.yml`), поэтому остальные метки прогон не запускают.
     # PR из форка не получает секретов — синк там всё равно не выполнить.
+    # Прогоны PR от Dependabot не получают секретов репозитория (у бота свой набор), а карточки
+    # на доске у такого PR нет: синк для них пропускаем, доска пересчитается при мерже — тогда
+    # workflow запускается уже от владельца.
     if: |
       (github.event_name != 'issues'
         || (github.event.action != 'labeled' && github.event.action != 'unlabeled')
         || startsWith(github.event.label.name, 'status:'))
       && (github.event_name != 'pull_request'
         || github.event.pull_request.head.repo.full_name == github.repository)
+      && github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ secrets.PROJECT_TOKEN }}
