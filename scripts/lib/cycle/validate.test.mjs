@@ -91,6 +91,7 @@ const STATE_INVALID = {
   'state.invalid.escalation-draft-pr.json':
     /state\.escalation\.draft_pr_allowed: ожидается boolean/,
   'state.invalid.updated-at.json': /state\.updated_at: обязательное поле отсутствует/,
+  'state.invalid.criteria-sha256.json': /state\.criteria_sha256: ожидается sha256 в hex или null/,
 };
 
 /** Нарушения `gates.<n>.json`: по одному на файл. */

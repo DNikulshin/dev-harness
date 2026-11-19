@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { parseCriteria } from './lib/cycle/criteria.mjs';
 import { iterNames } from './lib/cycle/paths.mjs';
 /**
  * Дедупликация пунктов «не проверено» из `decision.unverified[]` и
@@ -25,29 +26,11 @@ export declare function listItems(markdown: string): string[];
  * @returns {string[]} строки пунктов с маркером списка и чекбоксом
  */
 export declare function riskItems(markdown: string): string[];
-export type Criterion = {
-    /**
-     * `C1`, `C2`, …
-     */
-    id: string;
-    /**
-     * формулировка критерия
-     */
-    text: string;
-};
+export type Criterion = import('./lib/cycle/criteria.mjs').Criterion;
 /**
- * @typedef {object} Criterion
- * @property {string} id `C1`, `C2`, …
- * @property {string} text формулировка критерия
+ * @typedef {import('./lib/cycle/criteria.mjs').Criterion} Criterion
  */
-/**
- * Критерии из `evidence/criteria.md` в её порядке: по строке `- C1: формулировка` на
- * критерий (формат `renderCriteria` в `cycle-evidence.mjs`). Пустой результат — ошибка:
- * без критериев таблица PR была бы пустой подменой.
- * @param {string} markdown
- * @returns {Criterion[]}
- */
-export declare function parseCriteria(markdown: string): Criterion[];
+export { parseCriteria };
 /**
  * Гейты в порядке таблицы §5.5; неизвестные id (расширение таблицы) — после известных,
  * по алфавиту: порядок строк не должен зависеть от порядка файла.
