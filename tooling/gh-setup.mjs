@@ -64,6 +64,12 @@ export const MERGE_SETTINGS = Object.freeze({
 /** Обязательные проверки ветки `main`: имя job из `.github/workflows/ci.yml`. */
 export const REQUIRED_CHECKS = Object.freeze(['checks']);
 
+/** Имя ruleset защиты релизных тегов. */
+export const TAG_RULESET = 'release-tags';
+
+/** Шаблон тегов релиза: по нему потребитель ставит пакет (`#vX.Y.Z`). */
+export const TAG_PATTERN = 'refs/tags/v*';
+
 /** Ошибка настройки: в CLI превращается в код 2 (параметры, права, план). */
 export class SetupError extends Error {}
 
@@ -81,6 +87,8 @@ export class SetupError extends Error {}
  * @property {null} restrictions
  * @property {boolean} allow_force_pushes
  * @property {boolean} allow_deletions
+ * @property {boolean} required_linear_history
+ * @property {boolean} required_conversation_resolution
  */
 
 /**
@@ -100,6 +108,51 @@ export function protectionPayload(checks = REQUIRED_CHECKS) {
     restrictions: null,
     allow_force_pushes: false,
     allow_deletions: false,
+    // Squash-only — настройка репозитория, а линейная история — гейт: merge-коммит,
+    // появившийся в обход настроек (UI, API, второй репозиторий), не пройдёт.
+    required_linear_history: true,
+    // Незакрытый комментарий в PR — незавершённое ревью: мерж ждёт «Resolve conversation».
+    required_conversation_resolution: true,
+  };
+}
+
+/**
+ * Ruleset защиты тегов релиза: тег нельзя удалить или перезаписать.
+ *
+ * Тег — контракт для потребителя: он попадает в `devDependencies` как `#vX.Y.Z`. Перезапись
+ * тега задним числом делает установку невоспроизводимой (у двух машин разный код под одним
+ * тегом), а удаление оставляет потребителя с битой ссылкой. Это не защита `main`, поэтому
+ * classic branch protection тут не помогает — нужен ruleset на `refs/tags/v*`.
+ * @returns {object}
+ */
+export function tagRulesetPayload() {
+  return {
+    name: TAG_RULESET,
+    target: 'tag',
+    enforcement: 'active',
+    conditions: { ref_name: { include: [TAG_PATTERN], exclude: [] } },
+    rules: [{ type: 'deletion' }, { type: 'non_fast_forward' }],
+  };
+}
+
+/**
+ * Что включить в настройках безопасности репозитория: сканирование секретов и блокировку
+ * push с секретом внутри. В репозитории ядра это не абстракция: в документации и workflow
+ * фигурируют PAT и секреты доски, а случайная копия токена в коммит — утечка.
+ *
+ * Уже включённое не дублируется: на публичных репозиториях эти настройки включены по
+ * умолчанию, и повторный PATCH отвечает 422.
+ * @param {unknown} current значение `security_and_analysis` из `GET /repos/{repo}`
+ * @returns {Record<string, unknown>} часть тела PATCH (пусто, если включать нечего)
+ */
+export function securityPatch(current) {
+  const status = /** @type {any} */ (current)?.secret_scanning_push_protection?.status;
+  if (status === 'enabled') return {};
+  return {
+    security_and_analysis: {
+      secret_scanning: { status: 'enabled' },
+      secret_scanning_push_protection: { status: 'enabled' },
+    },
   };
 }
 
@@ -133,7 +186,13 @@ export function labelArgs(label, repo) {
  *   dryRun?: boolean,
  *   log?: (line: string) => void,
  * }} params
- * @returns {{ labels: number, merge: boolean, protected: boolean }}
+ * @returns {{
+ *   labels: number,
+ *   merge: boolean,
+ *   security: boolean,
+ *   protected: boolean,
+ *   tagRuleset: string,
+ * }}
  */
 export function setup({ run, repo, protect = false, dryRun = false, log = () => {} }) {
   /** @type {RunGh} */
@@ -148,21 +207,66 @@ export function setup({ run, repo, protect = false, dryRun = false, log = () => 
   for (const label of LABELS) exec(labelArgs(label, repo));
   log(`метки: ${LABELS.length} (созданы или обновлены)`);
 
+  // Настройки репозитория: режим merge + сканирование секретов, если ещё не включено.
+  /** @type {Record<string, unknown>} */
+  const repoPatch = { ...MERGE_SETTINGS };
+  if (dryRun) {
+    Object.assign(repoPatch, securityPatch(null));
+  } else {
+    /** @type {unknown} */
+    let current = null;
+    try {
+      current = JSON.parse(run(['api', `repos/${repo}`]));
+    } catch {
+      // Не читается — включаем явно: лишний PATCH безопаснее выключенной проверки.
+      current = null;
+    }
+    Object.assign(repoPatch, securityPatch(current));
+  }
   exec(['api', '-X', 'PATCH', `repos/${repo}`, '--input', '-'], {
-    input: JSON.stringify(MERGE_SETTINGS),
+    input: JSON.stringify(repoPatch),
   });
-  log('merge: только squash, ветка удаляется после мержа');
+  const security = repoPatch.security_and_analysis !== undefined;
+  log(
+    `merge: только squash, ветка удаляется после мержа; ` +
+      `секреты: ${security ? 'сканирование и блокировка push включены' : 'уже включены'}`,
+  );
 
   let protectedBranch = false;
+  let tagRuleset = '';
   if (protect) {
     exec(['api', '-X', 'PUT', `repos/${repo}/branches/main/protection`, '--input', '-'], {
       input: JSON.stringify(protectionPayload()),
     });
     protectedBranch = true;
-    log(`main: PR обязателен всем, обязательны проверки ${REQUIRED_CHECKS.join(', ')}`);
+    log(
+      `main: PR обязателен всем, обязательны проверки ${REQUIRED_CHECKS.join(', ')}, ` +
+        'линейная история, комментарии должны быть закрыты',
+    );
+
+    // Ruleset тегов: ищем по имени — есть, обновляем (PUT), нет, создаём (POST).
+    /** @type {any[]} */
+    let rulesets = [];
+    if (!dryRun) {
+      try {
+        const listed = JSON.parse(run(['api', `repos/${repo}/rulesets`]));
+        rulesets = Array.isArray(listed) ? listed : [];
+      } catch {
+        rulesets = [];
+      }
+    }
+    const existing = rulesets.find((item) => item?.name === TAG_RULESET);
+    const rulesetPath = existing
+      ? `repos/${repo}/rulesets/${existing.id}`
+      : `repos/${repo}/rulesets`;
+    exec(['api', '-X', existing === undefined ? 'POST' : 'PUT', rulesetPath, '--input', '-'], {
+      input: JSON.stringify(tagRulesetPayload()),
+    });
+    tagRuleset = TAG_RULESET;
+    log(`теги: ${TAG_PATTERN} нельзя удалить или перезаписать (ruleset ${TAG_RULESET})`);
   }
 
-  return { labels: LABELS.length, merge: true, protected: protectedBranch };
+  return { labels: LABELS.length, merge: true, security, protected: protectedBranch, tagRuleset };
 }
 
 /**
@@ -227,7 +331,9 @@ export function main({
 
     log(
       `gh-setup: ${repo} — меток ${result.labels}, режим merge ${result.merge ? 'ok' : '—'}, ` +
-        `защита main ${result.protected ? 'ok' : 'не запрашивалась'}`,
+        `секреты ${result.security ? 'включены' : 'уже включены'}, ` +
+        `защита main ${result.protected ? 'ok' : 'не запрашивалась'}` +
+        `${result.tagRuleset === '' ? '' : `, правила тегов ${result.tagRuleset}`}`,
     );
     return 0;
   } catch (error) {

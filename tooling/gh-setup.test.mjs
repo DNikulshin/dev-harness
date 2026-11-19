@@ -15,11 +15,15 @@ import {
   MERGE_SETTINGS,
   REQUIRED_CHECKS,
   SetupError,
+  TAG_PATTERN,
+  TAG_RULESET,
   labelArgs,
   main,
   protectionPayload,
   resolveRepo,
+  securityPatch,
   setup,
+  tagRulesetPayload,
 } from './gh-setup.mjs';
 
 /**
@@ -81,11 +85,57 @@ describe('protectionPayload: правила ветки main', () => {
     assert.equal(payload.restrictions, null);
   });
 
+  test('линейная история и закрытые обсуждения обязательны', () => {
+    const payload = protectionPayload();
+    assert.equal(payload.required_linear_history, true);
+    assert.equal(payload.required_conversation_resolution, true);
+  });
+
   test('обязательные проверки переопределяемы', () => {
     assert.deepEqual(protectionPayload(['checks', 'lint']).required_status_checks.contexts, [
       'checks',
       'lint',
     ]);
+  });
+});
+
+describe('tagRulesetPayload: контракт тега релиза', () => {
+  test('теги v* нельзя удалить и перезаписать', () => {
+    const ruleset = /** @type {any} */ (tagRulesetPayload());
+
+    assert.equal(ruleset.name, TAG_RULESET);
+    assert.equal(ruleset.target, 'tag');
+    assert.equal(ruleset.enforcement, 'active');
+    assert.deepEqual(ruleset.conditions.ref_name.include, [TAG_PATTERN]);
+    assert.deepEqual(
+      ruleset.rules.map((/** @type {any} */ rule) => rule.type),
+      ['deletion', 'non_fast_forward'],
+    );
+  });
+});
+
+describe('securityPatch: сканирование секретов', () => {
+  test('выключено — включаем; уже включено — пустой патч', () => {
+    assert.deepEqual(
+      securityPatch({
+        secret_scanning: { status: 'disabled' },
+        secret_scanning_push_protection: { status: 'disabled' },
+      }),
+      {
+        security_and_analysis: {
+          secret_scanning: { status: 'enabled' },
+          secret_scanning_push_protection: { status: 'enabled' },
+        },
+      },
+    );
+    assert.deepEqual(
+      securityPatch({
+        secret_scanning: { status: 'enabled' },
+        secret_scanning_push_protection: { status: 'enabled' },
+      }),
+      {},
+    );
+    assert.deepEqual(Object.keys(securityPatch(null)), ['security_and_analysis']);
   });
 });
 
@@ -115,13 +165,26 @@ describe('setup: последовательность вызовов', () => {
     const { run, calls } = fakeGh();
     const result = setup({ run, repo: 'acme/repo' });
 
-    assert.deepEqual(result, { labels: LABELS.length, merge: true, protected: false });
+    assert.deepEqual(result, {
+      labels: LABELS.length,
+      merge: true,
+      security: true,
+      protected: false,
+      tagRuleset: '',
+    });
     const creates = calls.filter((call) => call.args[1] === 'create');
     assert.equal(creates.length, LABELS.length);
 
     const patch = calls.find((call) => call.args.includes('PATCH'));
     assert.ok(patch, 'настройки репозитория отправлены');
-    assert.deepEqual(JSON.parse(String(patch.input)), MERGE_SETTINGS);
+    const body = JSON.parse(String(patch.input));
+    for (const [key, value] of Object.entries(MERGE_SETTINGS)) {
+      assert.equal(body[key], value, `настройка ${key}`);
+    }
+    assert.deepEqual(body.security_and_analysis, {
+      secret_scanning: { status: 'enabled' },
+      secret_scanning_push_protection: { status: 'enabled' },
+    });
     assert.equal(
       calls.some((call) => call.args.includes('PUT')),
       false,
@@ -138,6 +201,34 @@ describe('setup: последовательность вызовов', () => {
     assert.ok(put, 'правила ветки отправлены');
     assert.ok(put.args.includes('repos/acme/repo/branches/main/protection'));
     assert.deepEqual(JSON.parse(String(put.input)), protectionPayload());
+
+    const ruleset = calls.find(
+      (call) =>
+        (call.args.includes('POST') || call.args.includes('PUT')) &&
+        call.args.some((/** @type {string} */ arg) => arg.endsWith('/rulesets')),
+    );
+    assert.ok(ruleset, 'ruleset тегов отправлен');
+    assert.equal(ruleset.args.includes('POST'), true, 'создаётся, если его ещё нет');
+    assert.deepEqual(JSON.parse(String(ruleset.input)), tagRulesetPayload());
+  });
+
+  test('существующий ruleset тегов обновляется, а не дублируется', () => {
+    /** @type {any[]} */
+    const calls = [];
+    const run = (/** @type {string[]} */ args, /** @type {{input?: string}} */ options = {}) => {
+      calls.push(options.input === undefined ? { args } : { args, input: options.input });
+      const listCall = args.includes('repos/acme/repo/rulesets') && !args.includes('-X');
+      if (listCall) return JSON.stringify([{ id: 42, name: TAG_RULESET }]);
+      return '{}';
+    };
+
+    setup({ run, repo: 'acme/repo', protect: true });
+
+    const ruleset = calls.find((call) =>
+      call.args.some((/** @type {string} */ arg) => arg.endsWith('/rulesets/42')),
+    );
+    assert.ok(ruleset, 'ruleset обновлён по id');
+    assert.ok(ruleset.args.includes('PUT'));
   });
 
   test('--dry-run: ни одного вызова gh, только план', () => {
@@ -156,6 +247,7 @@ describe('setup: последовательность вызовов', () => {
     assert.equal(result.labels, LABELS.length);
     assert.ok(lines.some((line) => line.startsWith('(dry-run) gh label create')));
     assert.ok(lines.some((line) => line.includes('branches/main/protection')));
+    assert.ok(lines.some((line) => line.includes('rulesets')));
   });
 });
 

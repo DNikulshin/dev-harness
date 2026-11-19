@@ -114,17 +114,31 @@ gh workflow run board-sync.yml                    # сверка доски вр
 что CI прогнался на теге. Версия в `package.json` и в теге совпадают; пакет подключается по
 git-ссылке с тегом (`#vX.Y.Z`), поэтому тег — это контракт для потребителя.
 
+Ruleset `release-tags` запрещает удалять и перезаписывать теги `refs/tags/v*`: перезапись сделала бы
+установку невоспроизводимой (под одним тегом разный код), удаление оставило бы потребителя с битой
+ссылкой. Ошибочный тег лечится новым тегом, а не `push --force`.
+
 ## Настройка (один раз)
 
 ```bash
-node tooling/gh-setup.mjs             # метки + режим merge (squash-only, удаление ветки)
-node tooling/gh-setup.mjs --protect   # дополнительно правила ветки main
+node tooling/gh-setup.mjs             # метки, режим merge, сканирование секретов
+node tooling/gh-setup.mjs --protect   # дополнительно правила main и тегов
 node tooling/gh-setup.mjs --dry-run   # показать вызовы, ничего не менять
 ```
 
-`--protect` ставит PR единственным путём в `main` для всех, включая владельца
-(`enforce_admins: true`), требует зелёный `checks` в актуальном состоянии с `main` (`strict: true`),
-запрещает force-push и удаление ветки. Проверка:
+Что выставляется (всё идемпотентно):
+
+- **метки** — `type:*`, `area:*`, `status:*`, `prio:*`, `size:*`, `needs-owner`;
+- **merge** — только squash, ветка после мержа удаляется;
+- **секреты** — secret scanning и push protection, если ещё не включены: в репозитории фигурируют
+  PAT доски, случайная копия токена в коммит — утечка;
+- **`main`** — PR обязателен всем, включая владельца (`enforce_admins: true`), обязательный `checks`
+  в актуальном состоянии с `main` (`strict: true`), линейная история, комментарии должны быть
+  закрыты, force-push и удаление запрещены;
+- **теги** — ruleset `release-tags`: `refs/tags/v*` нельзя удалить или перезаписать (см. «Метки и
+  релизы»).
+
+Проверка:
 
 ```bash
 gh api repos/DNikulshin/dev-harness/branches/main/protection --jq '.enforce_admins.enabled'  # true
