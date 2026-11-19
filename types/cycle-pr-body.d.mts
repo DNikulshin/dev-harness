@@ -17,6 +17,14 @@ export declare function dedupeUnverified(items: string[]): string[];
  * @returns {string[]}
  */
 export declare function listItems(markdown: string): string[];
+/**
+ * Пункты раздела «Риски» шаблона PR: чекбоксы переносятся как есть (их отмечает человек),
+ * других разделов и HTML-комментариев шаблона в результате нет. Раздела нет или он пуст —
+ * пустой массив: чужой список рисков ядро не выдумывает (правило 1 `AGENTS.md`).
+ * @param {string} markdown содержимое шаблона PR
+ * @returns {string[]} строки пунктов с маркером списка и чекбоксом
+ */
+export declare function riskItems(markdown: string): string[];
 export type Criterion = {
     /**
      * `C1`, `C2`, …
@@ -75,6 +83,7 @@ export declare function summaryItems(dir: string, names: ReturnType<typeof iterN
  *   summary: string[],
  *   followups: string[],
  *   escalation: Record<string, any>|null,
+ *   risks: string[]|null,
  *   root: string,
  *   gateIds?: readonly string[],
  * }} inputs
@@ -90,6 +99,7 @@ export declare function renderPrBody(inputs: {
     summary: string[];
     followups: string[];
     escalation: Record<string, any> | null;
+    risks: string[] | null;
     root: string;
     gateIds?: readonly string[];
 }): string;
