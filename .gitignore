@@ -2,3 +2,4 @@ node_modules/
 coverage/
 .pi/artifacts/
 *.log
+docs/local/
