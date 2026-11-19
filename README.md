@@ -205,8 +205,6 @@ pnpm board:sync:dry     # то же, но только план: в проект
 
 - [docs/protocol.md](./docs/protocol.md) — точка входа в норматив протокола.
 - [docs/vision.md](./docs/vision.md) — зачем репозиторий и границы v0.1.
-- [docs/extraction-from-harness.md](./docs/extraction-from-harness.md) — что и откуда перенесено
-  (инвентаризация hair-lab, issue DNikulshin/hair-lab#233).
 - [docs/adr/](./docs/adr/README.md) — принятые архитектурные решения: профили и классы артефактов,
   строгая типизация, граница «инфраструктура среды не в ядре».
 - [docs/rag.md](./docs/rag.md) — правило работы с индексом `local-rag`: что синхронизировать, как
