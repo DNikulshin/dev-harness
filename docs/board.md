@@ -59,7 +59,13 @@ pnpm board:sync:dry    # DRY_RUN=1: план в stdout, ни одной запи
 | [`.github/workflows/board-labels.yml`](../.github/workflows/board-labels.yml) | переключает метки `status:*` по событиям PR (draft → in-progress, ready → review, closed → снять) | `GITHUB_TOKEN`      |
 
 Разделение прав: метки доступны `GITHUB_TOKEN`, а карточки и поле `Status` в Projects v2 — нет,
-поэтому сверка вынесена в отдельный workflow с PAT. Пока секрета нет, `board-sync.yml` падает с
+поэтому сверка вынесена в отдельный workflow с PAT.
+
+PR от Dependabot — исключение: их прогоны не получают секретов репозитория (у бота отдельный набор
+секретов), а карточки на доске у такого PR нет. Поэтому сверка для них пропускается условием
+`github.actor != 'dependabot[bot]'`: доска пересчитается при мерже, когда workflow запустится уже от
+владельца. Альтернатива — положить токен в Dependabot-секреты (`gh secret set --app dependabot`), но
+это даёт PAT прогонам обновлений зависимостей; не нужно. Пока секрета нет, `board-sync.yml` падает с
 инструкцией: молчаливый пропуск расходится с репозиторием, а прогон остаётся зелёным.
 
 ## Секрет `PROJECT_TOKEN`
