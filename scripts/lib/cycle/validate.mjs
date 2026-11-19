@@ -104,6 +104,7 @@ const ESCALATION_REASONS = Object.freeze([
   'budget',
   'scope_expansion_required',
   'diff_too_large',
+  'criteria_drift',
   'internal_error',
 ]);
 
@@ -122,6 +123,9 @@ const DURATION_TOLERANCE = 1e-6;
 
 const SLUG_PATTERN = /^[a-z0-9-]{1,60}$/;
 const SHA40_PATTERN = /^[0-9a-f]{40}$/;
+
+/** `sha256` в hex (`state.criteria_sha256`, дайджест решения). */
+const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 /**
  * ISO-8601 со временем и зоной: `2026-11-16T09:00:00Z` или `+03:00`. Группы нужны для
  * календарной проверки (`isCalendarValid`): шаблон сам по себе пропускал бы `2026-02-30`.
@@ -637,6 +641,17 @@ export function validateState(doc) {
   reqOneOf(doc, 'stage', 'state', errors, STAGES);
   reqOneOf(doc, 'stage_status', 'state', errors, STAGE_STATUSES);
   reqOneOf(doc, 'criteria_source', 'state', errors, CRITERIA_SOURCES);
+
+  // Заморозка критериев (#22): поле необязательное — старые циклы его не имеют
+  // (`null` и отсутствие равнозначны «не заморожено»), но мусор в нём — ошибка схемы.
+  if (Object.hasOwn(doc, 'criteria_sha256')) {
+    const value = /** @type {unknown} */ (doc.criteria_sha256);
+    if (value !== null && !(typeof value === 'string' && SHA256_PATTERN.test(value))) {
+      errors.push(
+        `state.criteria_sha256: ожидается sha256 в hex или null, получено ${describe(value)}`,
+      );
+    }
+  }
 
   reqRecord(doc, 'retries', 'state', errors, (retries, path, errs) => {
     for (const key of ['REVIEW', 'EVALUATE', 'evidence'])

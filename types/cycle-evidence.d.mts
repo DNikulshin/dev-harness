@@ -149,6 +149,17 @@ export declare function diffLimits(diff: string, limits?: {
  * @returns {void}
  */
 export declare function assertWritableDir(dir: string, root: string): void;
+/**
+ * Читает `issue.json`, подготовленный супервизором: `gh issue view N --json
+ * title,body,labels`. Валидация защитная — файл пишет не этот скрипт.
+ * @param {string} file
+ * @returns {{ title: string, body: string, labels: unknown }}
+ */
+export declare function readIssue(file: string): {
+    title: string;
+    body: string;
+    labels: unknown;
+};
 export type EvidenceFile = {
     /**
      * путь относительно каталога цикла (`evidence/…`)

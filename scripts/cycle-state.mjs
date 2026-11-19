@@ -10,6 +10,7 @@
  * get      [--dir D] [--field F]
  * advance  --to STAGE [--dir D] [--owner-approved]
  * finish   --stage STAGE --status done|error [--detail T] [--dir D]
+ * freeze-criteria [--dir D] [--owner-approved]
  * apply-decision [--dir D]
  * escalate --reason R [--detail T] [--dir D]
  * resume   [--dir D]
@@ -52,6 +53,13 @@
  *   терминальное состояние) — завершается кодом 3, а не молчаливым успехом. Поле вне
  *   Приложения A: валидатор лишние поля игнорирует. `digest` детерминирован, поэтому
  *   артефакты остаются побайтно воспроизводимыми.
+ * - **Заморозка критериев (#22).** `freeze-criteria` пишет в `state.json` дайджест критериев,
+ *   извлечённых из `issue.json` (`criteria_sha256`, формат — `lib/cycle/criteria.mjs`).
+ *   Источник — issue, а не `evidence/criteria.md`: файл производный, иначе цель можно было бы
+ *   подменить до первой заморозки. Повторный запуск с теми же критериями — no-op с кодом 0
+ *   (файл не перезаписывается); изменённые критерии — код 3 (`criteria_drift`), новую цель
+ *   подтверждает владелец флагом `--owner-approved` (подтверждение фиксируется в
+ *   `state.owner_approved`). Нет `issue.json` или критериев в нём — код 2.
  * - **`history[]`.** `advance`/`startStage` дописывают открытую запись
  *   `{ stage, iteration, started_at: now, finished_at: null, status: 'running' }` и ставят
  *   `stage_status = 'running'`; `finish` закрывает последнюю открытую запись
@@ -136,9 +144,15 @@ import {
 import { dirname, join, resolve } from 'node:path';
 
 import { normalizeDoc } from './cycle-decide.mjs';
-import { assertWritableDir } from './cycle-evidence.mjs';
+import { assertWritableDir, extractCriteria, readIssue } from './cycle-evidence.mjs';
 import { isDirectRun } from './lib/cycle/cli.mjs';
 import { DEFAULTS, loadConfig } from './lib/cycle/config.mjs';
+import {
+  CRITERIA_FILE,
+  CRITERIA_OWNER_APPROVED,
+  criteriaDigest,
+  parseCriteria,
+} from './lib/cycle/criteria.mjs';
 import { resolveLimits } from './lib/cycle/limits.mjs';
 import { baseSha as gitBaseSha, branchExists, currentBranch } from './lib/cycle/git.mjs';
 import { readJson, writeJsonAtomic } from './lib/cycle/io.mjs';
@@ -225,6 +239,7 @@ const COMMANDS = Object.freeze([
   'get',
   'advance',
   'finish',
+  'freeze-criteria',
   'apply-decision',
   'escalate',
   'resume',
@@ -246,6 +261,7 @@ const COMMAND_OPTIONS = Object.freeze({
   get: Object.freeze(['--dir', '--field']),
   advance: Object.freeze(['--to', '--dir', '--owner-approved', '--now']),
   finish: Object.freeze(['--stage', '--status', '--detail', '--dir', '--now']),
+  'freeze-criteria': Object.freeze(['--dir', '--owner-approved', '--now']),
   'apply-decision': Object.freeze(['--dir', '--now']),
   escalate: Object.freeze(['--reason', '--detail', '--dir', '--now']),
   resume: Object.freeze(['--dir']),
@@ -512,6 +528,7 @@ export function buildInitState({
     stage: 'INIT',
     stage_status: 'done',
     criteria_source: 'issue',
+    criteria_sha256: null,
     retries: { REVIEW: 0, EVALUATE: 0, evidence: 0 },
     owner_approved: false,
     models,
@@ -1483,6 +1500,76 @@ function runApplyDecision(args, root) {
 }
 
 /**
+ * `freeze-criteria`: закрепляет в `state.json` дайджест критериев приёмки — цель, по которой
+ * оценивают итерацию, не должна меняться под сделанное (#22).
+ *
+ * Источник истины — `issue.json` (его пишет INIT по `gh issue view`), а не `evidence/criteria.md`:
+ * файл производный, и закреплять его содержимое значило бы разрешить подменить цель до первой
+ * заморозки. Дайджест считается по критериям, извлечённым из issue тем же разбором, что в
+ * `cycle-evidence`.
+ *
+ * Идемпотентность — как у `apply-decision`: тот же дайджест не перезаписывает файл. Дрейф —
+ * конфликт состояния (код 3), а не тихая замена цели; снять его может только владелец флагом
+ * `--owner-approved`, и подтверждение фиксируется в `state.owner_approved`.
+ * @param {ReturnType<typeof parseArgs>} args
+ * @param {string} root
+ * @returns {number} код выхода
+ */
+function runFreezeCriteria(args, root) {
+  const dir = cycleDir(args);
+  assertWritableDir(dir, root);
+
+  const file = join(dir, FIXED_NAMES.state);
+  const state = readState(file);
+  assertNotTerminal(state);
+
+  const issuePath = join(dir, 'issue.json');
+  if (!existsSync(issuePath)) {
+    throw new UsageError('issue.json: файл не найден, сначала `cycle-evidence criteria`');
+  }
+
+  const extraction = extractCriteria(readIssue(issuePath));
+  if (!extraction.ok) {
+    throw new UsageError(`${extraction.reason}: ${extraction.detail} (issue.json)`);
+  }
+
+  const criteria = extraction.criteria;
+  const digest = criteriaDigest(criteria);
+  const frozen = typeof state.criteria_sha256 === 'string' ? state.criteria_sha256 : null;
+  const summary = {
+    command: 'freeze-criteria',
+    criteria: criteria.map((criterion) => criterion.id),
+    digest,
+    newly_frozen: frozen === null,
+  };
+
+  if (frozen === digest) {
+    printJson(summary);
+    return 0;
+  }
+
+  if (frozen !== null && !args.ownerApproved) {
+    throw new ConflictError(
+      'criteria_drift: критерии приёмки изменились после заморозки ' +
+        `(${frozen.slice(0, 12)}… → ${digest.slice(0, 12)}…); новую цель подтверждает владелец: ` +
+        '`freeze-criteria --owner-approved`',
+    );
+  }
+
+  const next = {
+    ...state,
+    criteria_sha256: digest,
+    // Подтверждение владельца остаётся в состоянии: по нему видно, что цель менялась решением,
+    // а не исполнением (§5.3).
+    owner_approved: frozen === null ? state.owner_approved : true,
+    updated_at: resolveNow(args),
+  };
+  writeState(file, next);
+  printJson(summary);
+  return 0;
+}
+
+/**
  * `escalate --reason R [--detail T]`: `escalation.json`, закрытие открытого этапа и
  * переход в ESCALATED.
  * @param {ReturnType<typeof parseArgs>} args
@@ -1954,6 +2041,8 @@ function run(args, root, config) {
       return runAdvance(args, root);
     case 'finish':
       return runFinish(args, root);
+    case 'freeze-criteria':
+      return runFreezeCriteria(args, root);
     case 'apply-decision':
       return runApplyDecision(args, root);
     case 'escalate':

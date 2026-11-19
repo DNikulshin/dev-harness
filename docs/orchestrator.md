@@ -126,6 +126,7 @@ evidence/                  пакет для оценщика (§7)
   "stage": "REVIEW",
   "stage_status": "running",
   "criteria_source": "issue",
+  "criteria_sha256": "<sha256 пар id/формулировка критериев из issue.json>",
   "models": { "plan": "…", "code": "…", "review": "…", "evaluate": "…" },
   "retries": { "REVIEW": 0, "EVALUATE": 0, "evidence": 0 },
   "owner_approved": false,
@@ -147,7 +148,11 @@ evidence/                  пакет для оценщика (§7)
 
 `escalation` заполняется только на `ESCALATED` (`{ reason, detail, draft_pr_allowed }`),
 `applied_decision` — маркер применённого `decision.<n>.json` (защита от повторного
-применения), `owner_approved` — разрешение владельца идти сверх `max_iterations`.
+применения), `owner_approved` — разрешение владельца идти сверх `max_iterations`,
+`criteria_sha256` — дайджест замороженных критериев приёмки (`null` — не заморожены, старые
+циклы валидны): расхождение с `evidence/criteria.md` останавливает решение. Критерии берутся из
+issue, поэтому заморозка и снятие заморозки — решения владельца: первая — шаг протокола
+(`freeze-criteria`), второе — тот же шаг с флагом `--owner-approved` после правки issue.
 
 ### `gates.json`
 
@@ -381,7 +386,8 @@ EVALUATE. Повторные проверки ограничены: ревью �
 `docs/orchestrator-core.md`): неоднозначный план (`plan_ambiguous`), нет критериев
 (`criteria_missing`), невалидный вывод агента (`agent_output_invalid`), лимит итераций
 (`iteration_limit`), бюджет (`budget`), слишком большой дифф (`diff_too_large`),
-необходимость расширить скоуп (`scope_expansion_required`), внутренняя ошибка
+критерии изменились после заморозки (`criteria_drift`), необходимость расширить скоуп
+(`scope_expansion_required`), внутренняя ошибка
 (`internal_error` — в том числе неизвестная причина из решения).
 
 **Draft PR** открывается, только если одновременно: проход `code` завершён, обязательные
