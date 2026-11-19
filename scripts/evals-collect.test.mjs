@@ -9,7 +9,12 @@ import { lastAssistantText, sumUsage } from './lib/evals/usage.mjs';
 
 const SCRIPT = resolve(import.meta.dirname, 'evals-collect.mjs');
 
-/** Запись транскрипта: ответ ассистента с текстом и usage. */
+/**
+ * Запись транскрипта: ответ ассистента с текстом и usage.
+ * @param {string} text
+ * @param {Record<string, unknown>} [usage]
+ * @returns {Record<string, unknown>}
+ */
 function assistant(text, usage) {
   return {
     recordType: 'message',

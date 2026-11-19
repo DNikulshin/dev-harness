@@ -17,6 +17,7 @@ import {
   priceUsage,
   resolveCycleDir,
 } from './cycle-metrics.mjs';
+import { LIMIT_KEYS } from './lib/cycle/limits.mjs';
 import { validateMetrics } from './lib/cycle/validate.mjs';
 
 /** Путь к CLI: сквозные тесты запускают его отдельным процессом, как супервизор. */
@@ -29,12 +30,37 @@ const FIXTURES = fileURLToPath(new URL('./fixtures/cycle/metrics/', import.meta.
 const REPO_ROOT = fileURLToPath(new URL('../', import.meta.url));
 
 /**
- * Запуск CLI в корне репозитория.
+ * Запуск CLI: по умолчанию в корне репозитория, `cwd` — для временных проектов.
  * @param {string[]} args
+ * @param {Record<string, string>} [env] дополнительные переменные окружения
+ * @param {string} [cwd] рабочий каталог (корень проекта)
  * @returns {{ status: number|null, stdout: string, stderr: string }}
  */
-function runCli(args) {
-  return spawnSync(process.execPath, [SCRIPT, ...args], { cwd: REPO_ROOT, encoding: 'utf8' });
+function runCli(args, env = {}, cwd = REPO_ROOT) {
+  return spawnSync(process.execPath, [SCRIPT, ...args], {
+    cwd,
+    encoding: 'utf8',
+    env: { ...process.env, ...env },
+  });
+}
+
+/**
+ * Временный проект-потребитель: git-корень и `.pi/harness.config.json` с заданными лимитами.
+ *
+ * CLI определяет корень через `git rev-parse --show-toplevel`, поэтому без git каталог корнем
+ * не станет, а без конфига все лимиты окажутся `default`. Так проверка источника `config`
+ * не зависит от конфига самого репозитория ядра: в установленном пакете его рядом нет
+ * (`scripts/fixtures/` и `.pi/` потребителя — разные вещи).
+ * @param {Record<string, number>} limits явно заданные лимиты проекта
+ * @returns {string} путь к корню временного проекта
+ */
+function projectWithLimits(limits) {
+  const root = mkdtempSync(join(tmpdir(), 'harness-metrics-project-'));
+  const init = spawnSync('git', ['init', '-q'], { cwd: root, encoding: 'utf8' });
+  assert.equal(init.status, 0, `git init: ${init.stderr}`);
+  mkdirSync(join(root, '.pi'), { recursive: true });
+  writeFileSync(join(root, '.pi', 'harness.config.json'), `${JSON.stringify({ limits })}\n`);
+  return root;
 }
 
 /**
@@ -336,6 +362,12 @@ describe('matchFindings: правило §5.6', () => {
    * @param {{ file?: string, preexisting?: boolean }} [options]
    * @returns {any}
    */
+  /**
+   * Находка ревью с произвольным `line`: пустые и нецелые значения проверяются тоже.
+   * @param {unknown} line
+   * @param {{ file?: string, preexisting?: boolean }} [options]
+   * @returns {Record<string, unknown>}
+   */
   function finding(line, { file = 'scripts/a.mjs', preexisting = false } = {}) {
     return { id: 'R1', severity: 'MINOR', file, line, preexisting };
   }
@@ -490,9 +522,14 @@ function metricsMissing(dir) {
 describe('CLI: cycle-metrics', () => {
   test('полный цикл: metrics.json совпадает с metrics.valid.json байт-в-байт', () => {
     const { text, stdout, doc } = metricsOf('full-cycle');
-    const expected = readFileSync(join(FIXTURES, 'metrics.valid.json'), 'utf8');
+    const expected = JSON.parse(readFileSync(join(FIXTURES, 'metrics.valid.json'), 'utf8'));
 
-    assert.equal(text, expected);
+    // `applied_limits` зависит от конфига проекта, в котором запущен CLI, поэтому фикстура
+    // его не содержит: сравниваем всё остальное и отдельно проверяем сам блок.
+    const { applied_limits: appliedLimits, ...rest } = doc;
+    assert.deepEqual(rest, expected);
+    assert.deepEqual(Object.keys(appliedLimits ?? {}).sort(), [...LIMIT_KEYS].sort());
+    assert.equal(text, `${JSON.stringify(doc, null, 2)}\n`, 'формат артефакта: два пробела');
     assert.equal(
       stdout,
       `${JSON.stringify(doc)}\n`,
@@ -501,6 +538,29 @@ describe('CLI: cycle-metrics', () => {
     assert.deepEqual(validateMetrics(doc), { ok: true, errors: [] });
     assert.equal(doc.tokens, null);
     assert.equal(doc.cost_rub, null);
+  });
+
+  test('applied_limits показывает источник лимита: окружение важнее конфига (#235)', () => {
+    const root = projectWithLimits({ maxCycleCostRub: 75 });
+    try {
+      const run = runCli(
+        ['--dir', tempCopy('full-cycle')],
+        { HARNESS_LIMIT_MAX_DIFF_LINES: '5000' },
+        root,
+      );
+      assert.equal(run.status, 0, run.stderr);
+
+      const doc = JSON.parse(run.stdout);
+      assert.deepEqual(doc.applied_limits.maxDiffLines, { value: 5000, source: 'env' });
+      assert.deepEqual(doc.applied_limits.maxCycleCostRub, { value: 75, source: 'config' });
+      assert.equal(
+        doc.applied_limits.logMaxBytes.source,
+        'default',
+        'ключ без переопределения остаётся дефолтом ядра',
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   test('агрегаты полного цикла: длительности, гейты, счётчики', () => {
@@ -722,6 +782,7 @@ describe('buildMetrics: расход и стоимость', () => {
 
   test('с usage заполняются токены, стоимость считается по моделям этапов', () => {
     const metrics = buildMetrics({ state, iterations: [], usage, prices });
+    assert.ok(metrics.tokens, 'токены посчитаны');
     assert.deepEqual(metrics.tokens.plan, {
       runs: 1,
       input: 1_000_000,

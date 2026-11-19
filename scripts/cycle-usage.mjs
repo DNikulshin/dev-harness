@@ -22,8 +22,8 @@
  */
 import { existsSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
+import { isDirectRun } from './lib/cycle/cli.mjs';
 import { loadConfig } from './lib/cycle/config.mjs';
 import { addUsage, emptyUsage, readTranscript, sumUsage } from './lib/evals/usage.mjs';
 import { readJson, writeJsonAtomic } from './lib/cycle/io.mjs';
@@ -43,6 +43,7 @@ export function parseArgs(argv) {
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
+    if (arg === undefined) break;
     const key = arg.startsWith('--') ? arg.slice(2) : null;
     if (key === 'dir' || key === 'stage' || key === 'transcript' || key === 'root') {
       const value = argv[index + 1];
@@ -129,7 +130,4 @@ function main() {
 }
 
 // Модуль импортируется тестами ради чистых функций; CLI запускается только напрямую.
-const invokedPath = process.argv[1] === undefined ? null : resolve(process.argv[1]);
-if (invokedPath !== null && invokedPath === fileURLToPath(import.meta.url)) {
-  main();
-}
+if (isDirectRun(import.meta.url)) main();

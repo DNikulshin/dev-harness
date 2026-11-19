@@ -11,13 +11,26 @@ import {
 } from './score.mjs';
 
 /** Сид-дефект: ожидается BLOCKER в указанном файле и строке. */
-const defectSeed = {
-  id: 'E5',
-  expect: { kind: 'defect', severity: 'BLOCKER', file: 'apps/service/src/x.ts', line: 11 },
-};
+/**
+ * Сид в объёме, который читает `scoreRun`: только ожидание. Полный `Seed` собирает
+ * `loadSeeds`, а скорингу поля `issue`/`base`/`after` не нужны.
+ * @param {import('./seeds.mjs').SeedExpectation} expect
+ * @returns {{ expect: import('./seeds.mjs').SeedExpectation }}
+ */
+function seed(expect) {
+  return { expect };
+}
+
+/** Сид-дефект: ожидается находка BLOCKER в конкретном месте. */
+const defectSeed = seed({
+  kind: 'defect',
+  severity: 'BLOCKER',
+  file: 'apps/service/src/x.ts',
+  line: 11,
+});
 
 /** Чистый сид: блокеров быть не должно. */
-const cleanSeed = { id: 'E10', expect: { kind: 'clean' } };
+const cleanSeed = seed({ kind: 'clean' });
 
 /**
  * Ответ ревьюера с одним замечанием.
@@ -157,15 +170,12 @@ describe('scoreRun', () => {
   });
 
   test('severities: попадание по любому значению из набора', () => {
-    const scopeSeed = {
-      id: 'E1',
-      expect: {
-        kind: 'defect',
-        severities: ['MAJOR', 'FOLLOW-UP'],
-        file: 'apps/service/src/x.ts',
-        line: 11,
-      },
-    };
+    const scopeSeed = seed({
+      kind: 'defect',
+      severities: ['MAJOR', 'FOLLOW-UP'],
+      file: 'apps/service/src/x.ts',
+      line: 11,
+    });
     assert.equal(scoreRun(scopeSeed, 'review', reviewAnswer({ severity: 'MAJOR' })).status, 'hit');
     assert.equal(
       scoreRun(scopeSeed, 'review', reviewAnswer({ severity: 'FOLLOW-UP' })).status,
@@ -211,6 +221,7 @@ describe('scoreRun', () => {
 });
 
 describe('buildReport', () => {
+  /** @type {Record<string, 'clean'|'defect'>} */
   const seeds = { E5: 'defect', E6: 'defect', E10: 'clean' };
   const thresholds = { completeness: 0.8, false_positive_max: 0.2 };
 
@@ -299,7 +310,7 @@ describe('buildReport', () => {
     assert.equal(report.configs.a.summary.completeness, 1);
     assert.equal(report.configs.b.summary.completeness, 0);
     assert.deepEqual(
-      report.failures.map((item) => item.split(':')[0]),
+      report.failures.map((/** @type {string} */ item) => item.split(':')[0]),
       ['b'],
     );
   });

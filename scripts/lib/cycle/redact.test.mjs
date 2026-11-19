@@ -142,9 +142,11 @@ describe('redactQa', () => {
 
     const redacted = redactQa(qa);
 
-    assert.equal(redacted.steps[0].console_errors.length, 3);
-    assert.equal(redacted.steps[0].console_errors[0], 'ошибка [email]');
-    assert.equal(redacted.steps[0].console_errors[2], 'третья');
+    const steps = redacted.steps[0];
+    assert.ok(steps, 'шаг есть');
+    assert.equal(steps.console_errors.length, 3);
+    assert.equal(steps.console_errors[0], 'ошибка [email]');
+    assert.equal(steps.console_errors[2], 'третья');
   });
 
   test('не мутирует входной объект', () => {
@@ -152,7 +154,7 @@ describe('redactQa', () => {
 
     redactQa(qa);
 
-    assert.equal(qa.steps[0].observed, 'user@example.com');
+    assert.equal(qa.steps[0]?.observed, 'user@example.com');
   });
 
   test('не строковые значения не меняются', () => {

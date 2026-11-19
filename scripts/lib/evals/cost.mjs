@@ -52,7 +52,11 @@ export const CURRENCY = 'RUB';
  * @property {number} reasoning_share доля вывода, приходящаяся на рассуждения (0…1)
  */
 
-/** Плоский объект: массивы и `null` объектами не считаются. */
+/**
+ * Плоский объект: массивы и `null` объектами не считаются.
+ * @param {unknown} value
+ * @returns {value is Record<string, unknown>} сужает тип вызывающего кода
+ */
 function isRecord(value) {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -224,10 +228,14 @@ export function priceCycle({ prices, profiles }, models) {
     if (typeof model !== 'string' || model === '') {
       throw new Error(`конфигурация: не задана модель стадии ${stage}`);
     }
-    stages[stage] = priceStage({ prices }, model, profiles[stage]);
+    const profile = profiles[stage];
+    if (profile === undefined) {
+      throw new Error(`конфигурация: нет профиля нагрузки стадии ${stage}`);
+    }
+    stages[stage] = priceStage({ prices }, model, profile);
   }
 
-  const total = STAGES.reduce((sum, stage) => sum + stages[stage].total, 0);
+  const total = STAGES.reduce((sum, stage) => sum + (stages[stage]?.total ?? 0), 0);
   return { stages, total };
 }
 

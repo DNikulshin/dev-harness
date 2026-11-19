@@ -63,7 +63,6 @@
  */
 import { existsSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import { normalizeDoc } from './cycle-decide.mjs';
 import {
@@ -75,8 +74,10 @@ import {
   readPriceSnapshot,
   readUsage,
 } from './lib/cycle/cost.mjs';
-import { loadConfig } from './lib/cycle/config.mjs';
+import { isDirectRun } from './lib/cycle/cli.mjs';
+import { DEFAULTS, loadConfig } from './lib/cycle/config.mjs';
 import { readJson, writeJsonAtomic } from './lib/cycle/io.mjs';
+import { describedLimits, resolveLimits } from './lib/cycle/limits.mjs';
 import {
   FIXED_NAMES,
   artifactsDir,
@@ -186,7 +187,7 @@ function parseTime(value, label) {
  * @returns {number}
  */
 function countOf(value, label) {
-  if (!Number.isInteger(value) || value < 0) {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
     throw new Error(`${label}: ожидается целое ≥ 0`);
   }
   return value;
@@ -212,7 +213,7 @@ function findingPosition(finding) {
   if (!isRecord(finding)) return null;
   const file = typeof finding.file === 'string' ? finding.file.trim() : '';
   const line = finding.line;
-  if (file === '' || !Number.isInteger(line) || line < 1) return null;
+  if (file === '' || typeof line !== 'number' || !Number.isInteger(line) || line < 1) return null;
   return { file, line };
 }
 
@@ -233,9 +234,10 @@ function defectPositions(defect) {
     if (typeof ref !== 'string') continue;
     const match = REF_PATTERN.exec(ref.trim());
     if (match === null) continue;
-    const file = match[1].trim();
-    if (file === '') continue;
-    positions.push({ file, line: Number(match[2]) });
+    const file = (match[1] ?? '').trim();
+    const line = match[2];
+    if (file === '' || line === undefined) continue;
+    positions.push({ file, line: Number(line) });
   }
   return positions;
 }
@@ -259,13 +261,15 @@ function positionMatches(finding, positions) {
  * порядок обхода фиксирован — находки в порядке следования, к каждой берётся первый
  * ещё не занятый дефект. Каждый элемент участвует не больше одного раза, поэтому
  * `both + only_review` равно числу находок, а `both + only_evaluator` — числу дефектов.
- * @param {Record<string, any>|null} review проверенный `review.<n>.json` или `null`
- * @param {Record<string, any>|null} evaluation проверенный `evaluation.<n>.json` или `null`
+ * @param {unknown} [review] проверенный `review.<n>.json`, `null` или отсутствующий
+ * @param {unknown} [evaluation] проверенный `evaluation.<n>.json`, `null` или отсутствующий
  * @returns {{ only_review: number, only_evaluator: number, both: number }}
  */
 export function matchFindings(review, evaluation) {
-  const findings = Array.isArray(review?.findings) ? review.findings : [];
-  const defects = Array.isArray(evaluation?.defects) ? evaluation.defects : [];
+  const reviewDoc = isRecord(review) ? review : {};
+  const evaluationDoc = isRecord(evaluation) ? evaluation : {};
+  const findings = Array.isArray(reviewDoc.findings) ? reviewDoc.findings : [];
+  const defects = Array.isArray(evaluationDoc.defects) ? evaluationDoc.defects : [];
   const positions = defects.map(defectPositions);
   const used = new Array(defects.length).fill(false);
 
@@ -304,7 +308,7 @@ function modelFamily(model) {
   if (typeof model !== 'string') return null;
   const segments = model.split('/');
   if (segments.length < 3) return null;
-  const family = segments[1].trim();
+  const family = (segments[1] ?? '').trim();
   return family === '' ? null : family;
 }
 
@@ -344,10 +348,19 @@ export function evaluatorSharesFamilyWithPlan(models) {
  *   iterations: IterationInputs[],
  *   usage?: Record<string, any>|null,
  *   prices?: Record<string, import('./lib/evals/cost.mjs').ModelPrice>|null,
+ *   appliedLimits?: Record<string, { value: number, source: string }>|null,
  * }} inputs
+ *   `appliedLimits` — лимиты с источниками (#235): попав в `metrics.json`, они объясняют,
+ *   по какому порогу считались бюджет и размер диффа. Считает CLI, а не эта функция.
  * @returns {Metrics}
  */
-export function buildMetrics({ state, iterations, usage = null, prices = null }) {
+export function buildMetrics({
+  state,
+  iterations,
+  usage = null,
+  prices = null,
+  appliedLimits = null,
+}) {
   /** @type {Record<string, number>} */
   const stageTotals = {};
   const history = Array.isArray(state.history) ? state.history : [];
@@ -379,7 +392,9 @@ export function buildMetrics({ state, iterations, usage = null, prices = null })
   /** @type {Record<string, Record<string, number>>} */
   const gateOutcomes = {};
   /** @type {Record<string, number>} */
+  /** @type {Record<string, number>} */
   const reviewFindings = Object.fromEntries(REVIEW_SEVERITIES.map((severity) => [severity, 0]));
+  /** @type {Record<string, number>} */
   /** @type {Record<string, number>} */
   const evaluatorDefects = Object.fromEntries(DEFECT_SEVERITIES.map((severity) => [severity, 0]));
   let onlyReview = 0;
@@ -401,25 +416,32 @@ export function buildMetrics({ state, iterations, usage = null, prices = null })
       if (typeof duration !== 'number' || !Number.isFinite(duration) || duration < 0) {
         throw new Error(`${gateLabel}.duration_s: ожидается число ≥ 0`);
       }
-      if (!GATE_STATUSES.includes(gate.status)) {
+      const status = gate.status;
+      if (typeof status !== 'string' || !GATE_STATUSES.includes(status)) {
         throw new Error(`${gateLabel}.status: ожидается одно из ${GATE_STATUSES.join('|')}`);
       }
 
       gateTotals[gate.id] = (gateTotals[gate.id] ?? 0) + duration;
-      gateOutcomes[gate.id] ??= Object.fromEntries(GATE_STATUSES.map((status) => [status, 0]));
-      gateOutcomes[gate.id][gate.status] += 1;
+      const outcomes = (gateOutcomes[gate.id] ??= Object.fromEntries(
+        GATE_STATUSES.map((name) => [name, 0]),
+      ));
+      outcomes[status] = (outcomes[status] ?? 0) + 1;
     });
 
     const review = item.review ?? null;
     const evaluation = item.evaluation ?? null;
 
     for (const finding of Array.isArray(review?.findings) ? review.findings : []) {
-      const severity = finding?.severity;
-      if (Object.hasOwn(reviewFindings, severity)) reviewFindings[severity] += 1;
+      const severity = /** @type {{ severity?: unknown } | null} */ (finding)?.severity;
+      if (typeof severity === 'string' && Object.hasOwn(reviewFindings, severity)) {
+        reviewFindings[severity] = (reviewFindings[severity] ?? 0) + 1;
+      }
     }
     for (const defect of Array.isArray(evaluation?.defects) ? evaluation.defects : []) {
-      const severity = defect?.severity;
-      if (Object.hasOwn(evaluatorDefects, severity)) evaluatorDefects[severity] += 1;
+      const severity = /** @type {{ severity?: unknown } | null} */ (defect)?.severity;
+      if (typeof severity === 'string' && Object.hasOwn(evaluatorDefects, severity)) {
+        evaluatorDefects[severity] = (evaluatorDefects[severity] ?? 0) + 1;
+      }
     }
 
     const match = matchFindings(review, evaluation);
@@ -465,7 +487,9 @@ export function buildMetrics({ state, iterations, usage = null, prices = null })
     unclosed_stages: unclosed,
     evaluator_shares_family_with_plan: evaluatorSharesFamilyWithPlan(state.models),
     tokens,
-    cost_rub: priceUsage(tokens, state.models, prices),
+    cost_rub: tokens === null || prices === null ? null : priceUsage(tokens, state.models, prices),
+    // Применённые лимиты цикла (#235): видно, с каким порогом считали бюджет и дифф.
+    ...(appliedLimits === null ? {} : { applied_limits: appliedLimits }),
   };
 }
 
@@ -604,11 +628,20 @@ function main() {
     const dir = args.dir === null ? resolveCycleDir(root, config) : resolve(args.dir);
 
     const state = readRequiredJson(join(dir, FIXED_NAMES.state), validateState, FIXED_NAMES.state);
+    // Лимиты (#235): env → конфиг → дефолт. Флагов у этого скрипта нет.
+    const resolvedLimits = resolveLimits({
+      config: config.limits,
+      configured: config.limitsExplicit,
+      env: process.env,
+      defaults: DEFAULTS.limits,
+    });
+
     const metrics = buildMetrics({
       state,
       iterations: readIterations(dir, state),
       usage: readUsage(dir),
       prices: readPriceSnapshot(root, config.evals.prices),
+      appliedLimits: describedLimits(resolvedLimits),
     });
 
     // Самопроверка: метрики обязаны проходить собственный валидатор (Приложение A).
@@ -630,7 +663,4 @@ function main() {
 }
 
 // Модуль импортируется тестами ради чистых функций; CLI запускается только напрямую.
-const invokedPath = process.argv[1] === undefined ? null : resolve(process.argv[1]);
-if (invokedPath !== null && invokedPath === fileURLToPath(import.meta.url)) {
-  main();
-}
+if (isDirectRun(import.meta.url)) main();

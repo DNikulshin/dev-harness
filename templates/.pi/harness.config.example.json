@@ -1,5 +1,5 @@
 {
-  "provider": "acme-ai/",
+  "provider": "polza-ai/",
   "gates": [
     {
       "id": "build",

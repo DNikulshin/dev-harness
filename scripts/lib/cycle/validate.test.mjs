@@ -54,7 +54,7 @@ function assertInvalidWith(result, pattern) {
 function assertSingleError(result, pattern) {
   assert.equal(result.ok, false, 'ожидались ошибки, документ прошёл валидацию');
   assert.equal(result.errors.length, 1, `ожидалась одна ошибка: ${messages(result)}`);
-  assert.match(result.errors[0], pattern);
+  assert.match(result.errors[0] ?? '', pattern);
 }
 
 /**
@@ -469,11 +469,11 @@ describe('validateMetrics', () => {
   });
 
   test('битая карта длительностей: одна внятная ошибка без расхождения с итогом', () => {
-    for (const [value, pattern] of [
+    for (const [value, pattern] of /** @type {[unknown, RegExp][]} */ ([
       [[], /metrics\.stage_durations_s: ожидается объект, получено массив/],
       [null, /metrics\.stage_durations_s: ожидается объект, получено null/],
       [42, /metrics\.stage_durations_s: ожидается объект, получено 42/],
-    ]) {
+    ])) {
       const doc = { ...fixture('metrics/metrics.valid.json'), stage_durations_s: value };
       assertSingleError(validateMetrics(doc), pattern);
     }

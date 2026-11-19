@@ -59,6 +59,9 @@
  *   `init` сразу закрывает INIT как `done`: в протоколе Приложения B у INIT нет `finish`.
  * - **Повторный вход в этап** (после сбоя, §13) — `advance --to <текущий этап>` при
  *   `stage_status = 'error'`; при `running` сначала нужен `finish`.
+ * - **Выход из `ESCALATED` (#235).** Владелец может вернуть цикл в `DECIDE`
+ *   (`advance --to DECIDE --owner-approved`): эскалация снимается, решение пересчитывается
+ *   с поднятым лимитом. Любая другая цель и любой другой флаг — код 3; `DONE` терминален.
  * - **Защиты §5.3.** `→ DECIDE` требует `review.<n>.md` и `evaluation.<n>.md` текущей
  *   итерации; `→ PR` — `decision.<n>.json` с `action` `PROCEED` или
  *   `PROCEED_WITH_UNVERIFIED`; `advance --to ESCALATED` запрещён — только `escalate`
@@ -131,12 +134,13 @@ import {
   writeSync,
 } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import { normalizeDoc } from './cycle-decide.mjs';
 import { assertWritableDir } from './cycle-evidence.mjs';
+import { isDirectRun } from './lib/cycle/cli.mjs';
 import { DEFAULTS, loadConfig } from './lib/cycle/config.mjs';
-import { baseSha as gitBaseSha } from './lib/cycle/git.mjs';
+import { resolveLimits } from './lib/cycle/limits.mjs';
+import { baseSha as gitBaseSha, branchExists, currentBranch } from './lib/cycle/git.mjs';
 import { readJson, writeJsonAtomic } from './lib/cycle/io.mjs';
 import {
   FIXED_NAMES,
@@ -176,6 +180,13 @@ const STAGES = Object.freeze([
 
 /** Терминальные этапы: мутации запрещены, `get` и `unlock` работают. */
 const TERMINAL_STAGES = Object.freeze(['DONE', 'ESCALATED']);
+
+/**
+ * Выход из терминального `ESCALATED` (#235): единственное обратное ребро — в `DECIDE`,
+ * чтобы владелец мог поднять бюджет и досчитать решение в том же цикле. Разрешено только
+ * с `--owner-approved`; `DONE` остаётся терминальным без исключений.
+ */
+const ESCALATED_RECOURSE = Object.freeze(['DECIDE']);
 
 /** Действия решения, разрешающие переход в PR (§5.3). */
 const PROCEED_ACTIONS = Object.freeze(['PROCEED', 'PROCEED_WITH_UNVERIFIED']);
@@ -301,7 +312,7 @@ export function advanceTargets(from) {
 
 /**
  * Терминальный этап: мутации запрещены (код 3).
- * @param {{ stage: string }} state
+ * @param {Record<string, any>} state документ `state.json` (форма проверена валидатором)
  * @returns {void}
  */
 function assertNotTerminal(state) {
@@ -347,6 +358,36 @@ export function startStage(state, { stage, iteration = state.iteration, now }) {
  * @returns {Record<string, any>} новое состояние
  */
 export function advanceTo(state, { to, now, ownerApproved = false, artifacts = {} }) {
+  // Возврат из `ESCALATED` в `DECIDE` (#235): только осознанно, флагом владельца.
+  if (state.stage === 'ESCALATED') {
+    if (!ESCALATED_RECOURSE.includes(to)) {
+      throw new ConflictError(
+        `из ESCALATED допустим только переход в DECIDE (с --owner-approved), запрошено ${to}`,
+      );
+    }
+    if (!ownerApproved) {
+      throw new ConflictError('переход ESCALATED → DECIDE требует --owner-approved');
+    }
+    // Эскалация снята: решение пересчитывается с новым лимитом, история остаётся в `history`.
+    return {
+      ...state,
+      stage: 'DECIDE',
+      stage_status: 'running',
+      escalation: null,
+      updated_at: now,
+      history: [
+        ...state.history,
+        {
+          stage: to,
+          iteration: state.iteration,
+          started_at: now,
+          finished_at: null,
+          status: 'running',
+        },
+      ],
+    };
+  }
+
   assertNotTerminal(state);
 
   if (to === 'ESCALATED') {
@@ -603,7 +644,7 @@ export function applyDecisionToState(state, { decision, now, escalation = null }
 function closeOpenRecord(history, { status, detail = null, now }) {
   let index = -1;
   for (let position = history.length - 1; position >= 0; position -= 1) {
-    if (history[position].finished_at === null) {
+    if (history[position]?.finished_at === null) {
       index = position;
       break;
     }
@@ -611,7 +652,7 @@ function closeOpenRecord(history, { status, detail = null, now }) {
   if (index === -1) return [...history];
 
   /** @type {Record<string, any>} */
-  const entry = { ...history[index], finished_at: now, status };
+  const entry = { ...(history[index] ?? {}), finished_at: now, status };
   if (detail !== null) entry.detail = detail;
 
   const closed = [...history];
@@ -626,7 +667,8 @@ function closeOpenRecord(history, { status, detail = null, now }) {
  */
 export function codePassDone(history) {
   for (let position = history.length - 1; position >= 0; position -= 1) {
-    if (history[position].stage === 'CODE') return history[position].status === 'done';
+    const record = history[position];
+    if (record?.stage === 'CODE') return record.status === 'done';
   }
   return false;
 }
@@ -835,12 +877,13 @@ export function parseArgs(argv) {
     throw new UsageError(`неизвестная подкоманда: ${command} (ожидается ${COMMANDS.join(' | ')})`);
   }
 
-  const allowed = COMMAND_OPTIONS[command];
+  const allowed = COMMAND_OPTIONS[/** @type {keyof typeof COMMAND_OPTIONS} */ (command)];
   /** @type {Record<string, string>} */
   const raw = {};
 
   for (let index = 0; index < rest.length; index += 1) {
     const arg = rest[index];
+    if (arg === undefined) break;
     if (!arg.startsWith('--')) {
       throw new UsageError(`${command}: лишний аргумент ${JSON.stringify(arg)}`);
     }
@@ -1174,10 +1217,10 @@ function frontmatterValue(text, key) {
   const match = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text);
   if (match === null) return null;
 
-  for (const line of match[1].split(/\r?\n/)) {
+  for (const line of (match[1] ?? '').split(/\r?\n/)) {
     const parsed = /^([A-Za-z0-9_-]+)\s*:\s*(.*)$/.exec(line.trim());
     if (parsed === null || parsed[1] !== key) continue;
-    const value = parsed[2].trim().replace(/^(['"])(.*)\1$/, '$2');
+    const value = (parsed[2] ?? '').trim().replace(/^(['"])(.*)\1$/, '$2');
     if (value !== '') return value;
   }
   return null;
@@ -1215,9 +1258,35 @@ function assertValidEscalation(escalation) {
 }
 
 /**
+ * Ветка цикла существует и является текущей (issue #274). `init` фиксирует имя ветки
+ * только в `state.json` и git не трогает, поэтому рассинхрон («цикл думает, что он в
+ * ветке, а HEAD на `main`») всплывал поздно — на коммите в PR-стадии. Проверка ничего
+ * не мутирует: ветку создаёт человек или агент, `init` только отказывается работать в
+ * чужой ветке с готовой командой.
+ * @param {string} branch имя ветки из `state.json`/`--branch`
+ * @param {string} root корень репозитория (там же живёт git)
+ * @param {string} where подкоманда для сообщения
+ * @returns {void}
+ */
+function assertOnCycleBranch(branch, root, where) {
+  if (!branchExists(branch, { cwd: root })) {
+    throw new ConflictError(
+      `${where}: ветки «${branch}» нет. Создайте её и переключитесь: git switch -c ${branch}`,
+    );
+  }
+  const head = currentBranch({ cwd: root });
+  if (head !== branch) {
+    throw new ConflictError(
+      `${where}: HEAD на «${head}», а ветка цикла — «${branch}». Переключитесь: git switch ${branch}`,
+    );
+  }
+}
+
+/**
  * `init`: каталог цикла и `state.json`. Повторный `init` в тот же каталог — код 3.
  * @param {ReturnType<typeof parseArgs>} args
  * @param {string} root
+ * @param {ReturnType<typeof loadConfig>} config
  * @returns {number} код выхода
  */
 function runInit(args, root, config) {
@@ -1238,6 +1307,20 @@ function runInit(args, root, config) {
     throw new ConflictError(`цикл уже инициализирован: ${file} (повторный init запрещён)`);
   }
 
+  // Лимит итераций (#235): `--max-iterations` → env → конфиг → дефолт.
+  // Значение проверяется по диапазону из `limits.mjs`, а не принимается на веру.
+  // Ветка цикла должна существовать и быть текущей (#274): иначе коммиты и `gh pr create`
+  // уйдут не туда, а рассинхрон всплывёт только на PR-стадии.
+  assertOnCycleBranch(args.branch, root, 'init');
+
+  const limits = resolveLimits({
+    config: config.limits,
+    configured: config.limitsExplicit,
+    cli: { defaultMaxIterations: args.maxIterations },
+    env: process.env,
+    defaults: DEFAULTS.limits,
+  });
+
   const state = buildInitState({
     issue: args.issue,
     slug: args.slug,
@@ -1245,7 +1328,7 @@ function runInit(args, root, config) {
     baseSha: gitBaseSha({ branch: 'main', cwd: root }),
     models: readModels(root, config.paths.agentsDir),
     now,
-    maxIterations: args.maxIterations ?? config.limits.defaultMaxIterations,
+    maxIterations: limits.values.defaultMaxIterations,
   });
 
   mkdirSync(dir, { recursive: true });
@@ -1288,6 +1371,9 @@ function runAdvance(args, root) {
   const state = readState(file);
   const now = resolveNow(args);
   const names = iterNames(state.iteration);
+
+  // `PR` открывается коммитами текущего `HEAD`, поэтому перед ним сверяется ветка (#274).
+  if (args.to === 'PR') assertOnCycleBranch(state.branch, root, 'advance --to PR');
 
   const next = advanceTo(state, {
     to: args.to,
@@ -1372,10 +1458,17 @@ function runApplyDecision(args, root) {
     assertValidEscalation(escalation);
   }
 
+  /** @type {Record<string, any>} */
   const next = {
     ...applyDecisionToState(state, { decision, now, escalation }),
     applied_decision: marker,
   };
+
+  // `PROCEED*` открывает PR мимо `advance`, поэтому та же сверка ветки, что и там (#274):
+  // тело PR, коммиты и `gh pr create` должны относиться к ветке цикла, а не к `main`.
+  if (next.stage === 'PR' && state.stage !== 'PR') {
+    assertOnCycleBranch(state.branch, root, 'apply-decision');
+  }
 
   // escalation.json пишется до состояния: state остаётся источником истины, а лишний
   // документ будет перезаписан следующим запуском.
@@ -1848,6 +1941,7 @@ function runUnlock(args, root) {
  * Диспетчер подкоманд.
  * @param {ReturnType<typeof parseArgs>} args
  * @param {string} root
+ * @param {ReturnType<typeof loadConfig>} config
  * @returns {number} код выхода
  */
 function run(args, root, config) {
@@ -1891,7 +1985,4 @@ function main() {
 }
 
 // Модуль импортируется тестами ради чистого ядра; CLI запускается только напрямую.
-const invokedPath = process.argv[1] === undefined ? null : resolve(process.argv[1]);
-if (invokedPath !== null && invokedPath === fileURLToPath(import.meta.url)) {
-  main();
-}
+if (isDirectRun(import.meta.url)) main();

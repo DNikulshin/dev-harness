@@ -1,0 +1,5 @@
+#!/bin/sh
+# После `git pull`/merge: инкрементально обновить индекс local-rag по docs/.
+# Скрипт не блокирует pull: любые проблемы — предупреждение и код 0. Ручной запуск: `pnpm rag:sync`.
+# Логика и версия MCP-сервера — в `tooling/rag-sync.mjs` репозитория, не в пакете (ADR 0003).
+node "$(git rev-parse --show-toplevel)/tooling/rag-sync.mjs" || true

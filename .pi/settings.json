@@ -1,10 +1,10 @@
 {
   "$schema": "https://pi.dev/schemas/settings.schema.json",
-  "defaultProvider": "acme-ai",
-  "defaultModel": "acme-ai/z-ai/glm-5.3",
+  "defaultProvider": "polza-ai",
+  "defaultModel": "deepseek/deepseek-v4.1-flash",
   "defaultThinkingLevel": "low",
   "subagents": {
-    "defaultModel": "acme-ai/z-ai/glm-5.3",
+    "defaultModel": "polza-ai/deepseek/deepseek-v4.1-flash",
     "defaultThinking": "low",
     "maxSubagentSpawnsPerRun": 12
   }

@@ -150,7 +150,7 @@ function isPlaceholder(value) {
  */
 function hasPostgresPassword(text) {
   for (const match of text.matchAll(PG_URL)) {
-    if (!isPlaceholder(match[1])) return true;
+    if (!isPlaceholder(match[1] ?? '')) return true;
   }
   return false;
 }
@@ -181,7 +181,7 @@ function hasAssignedSecret(text) {
  * Значение секрета в результат не попадает — только номер строки и вид находки.
  * Отсечение файла `.env.example` — забота вызывающего: у строк диффа здесь нет имени
  * файла (`git.addedLines` возвращает только текст).
- * @param {string[]} addedLines добавленные строки диффа без префикса `+`
+ * @param {unknown} addedLines добавленные строки диффа без префикса `+` (не массив — `TypeError`)
  * @returns {SecretFinding[]}
  */
 export function scanSecrets(addedLines) {

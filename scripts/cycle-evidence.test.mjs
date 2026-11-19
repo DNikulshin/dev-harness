@@ -242,8 +242,12 @@ function makeCycleDir(root, options) {
  * @param {string[]} args
  * @returns {{ status: number|null, stdout: string, stderr: string }}
  */
-function runCli(cwd, args) {
-  return spawnSync(process.execPath, [SCRIPT, ...args], { cwd, encoding: 'utf8' });
+function runCli(cwd, args, env = {}) {
+  return spawnSync(process.execPath, [SCRIPT, ...args], {
+    cwd,
+    encoding: 'utf8',
+    env: { ...process.env, ...env },
+  });
 }
 
 /**
@@ -254,7 +258,7 @@ function runCli(cwd, args) {
 function stdoutJson(result) {
   const lines = result.stdout.trim().split('\n');
   assert.equal(lines.length, 1, `ожидалась одна строка JSON, получено: ${result.stdout}`);
-  return JSON.parse(lines[0]);
+  return JSON.parse(lines[0] ?? '');
 }
 
 /**
@@ -883,6 +887,21 @@ describe('packet: лимиты диффа', () => {
     assert.match(evidence(dir, 'diff.patch'), /\+строка/);
   });
 
+  test('лимит строк диффа берётся из окружения (#235)', (t) => {
+    const { root, baseSha } = makeRepo(t);
+    // 200 строк проходят дефолт (2000), но не поднятый из окружения лимит.
+    writeFileSync(join(root, 'middle.txt'), `${'строка\n'.repeat(200)}`);
+    const dir = makeCycleDir(root, { baseSha });
+
+    const result = runCli(root, ['packet', '--dir', dir], {
+      HARNESS_LIMIT_MAX_DIFF_LINES: '100',
+    });
+
+    assert.equal(result.status, 4, result.stderr);
+    assert.equal(stdoutJson(result).reason, 'diff_too_large');
+    assert.ok(stdoutJson(result).lines >= 200);
+  });
+
   test('одна строка больше лимита байт — код 4', (t) => {
     const { root, baseSha } = makeRepo(t);
     writeFileSync(join(root, 'huge.txt'), `${'x'.repeat(DEFAULTS.limits.maxDiffBytes + 1024)}\n`);
@@ -1036,11 +1055,15 @@ describe('packet: пакет evidence/', () => {
     const copied = JSON.parse(evidence(dir, 'qa-web.json'));
     assert.equal(copied.status, 'done');
     assert.equal(copied.steps.length, 1);
-    assert.equal(copied.steps[0].id, 's1');
-    assert.equal(copied.steps[0].url, qaWeb.steps[0].url);
-    assert.equal(copied.steps[0].action, qaWeb.steps[0].action);
-    assert.match(copied.steps[0].observed, /\[email\]/);
-    assert.equal(copied.steps[0].console_errors[0], 'телефон [phone]');
+    const copiedStep = copied.steps[0];
+    const sourceStep = qaWeb.steps[0];
+    assert.ok(copiedStep, 'шаг скопирован');
+    assert.ok(sourceStep, 'шаг-источник есть');
+    assert.equal(copiedStep.id, 's1');
+    assert.equal(copiedStep.url, sourceStep.url);
+    assert.equal(copiedStep.action, sourceStep.action);
+    assert.match(copiedStep.observed, /\[email\]/);
+    assert.equal(copiedStep.console_errors[0], 'телефон [phone]');
   });
 
   test('в diff.patch маскируются контакты, а sha, UUID и номера строк не меняются', (t) => {
@@ -1064,6 +1087,7 @@ describe('packet: пакет evidence/', () => {
     }
     // Структура диффа и нумерация строк не изменились.
     assert.equal(patch.split('\n').length, raw.split('\n').length);
+    /** @param {string} text @returns {string[]} */
     const hunks = (text) => text.split('\n').filter((line) => line.startsWith('@@'));
     assert.deepEqual(hunks(patch), hunks(raw));
     const indexLine = raw.split('\n').find((line) => line.startsWith('index '));

@@ -116,8 +116,15 @@ function gitRun(cwd, args) {
 }
 
 /**
- * Временный git-репозиторий с одним коммитом в `main`. `.pi/artifacts/` в `.gitignore` —
- * как в рабочем репозитории. Идентичность фиктивная: настоящие имя и адрес не нужны (§4, ПДн).
+ * Ветка цикла в тестах: `init` требует, чтобы она существовала и была текущей (#274),
+ * поэтому репозиторий создаётся сразу на ней — как это делает человек перед `init`.
+ */
+const CYCLE_BRANCH = 'chore/157-cycle-state';
+
+/**
+ * Временный git-репозиторий с одним коммитом в `main` и текущей веткой цикла.
+ * `.pi/artifacts/` в `.gitignore` — как в рабочем репозитории. Идентичность фиктивная:
+ * настоящие имя и адрес не нужны (§4, ПДн).
  * @param {import('node:test').TestContext} t
  * @returns {{ root: string, baseSha: string }}
  */
@@ -139,8 +146,10 @@ function makeRepo(t) {
   writeFileSync(join(root, 'tracked.txt'), 'base\n');
   gitRun(root, ['add', '.gitignore', 'tracked.txt']);
   gitRun(root, ['commit', '--quiet', '-m', 'база']);
+  const baseSha = gitRun(root, ['rev-parse', 'HEAD']);
+  gitRun(root, ['switch', '--quiet', '-c', CYCLE_BRANCH]);
 
-  return { root, baseSha: gitRun(root, ['rev-parse', 'HEAD']) };
+  return { root, baseSha };
 }
 
 /**
@@ -154,7 +163,7 @@ function stateDoc(baseSha, overrides = {}) {
   return {
     issue: 157,
     slug: 'cycle-state',
-    branch: 'chore/157-cycle-state',
+    branch: CYCLE_BRANCH,
     base_sha: baseSha,
     iteration: 1,
     max_iterations: 2,
@@ -317,19 +326,24 @@ function stateJson(dir) {
  * @param {string[]} args
  * @returns {{ status: number|null, stdout: string, stderr: string }}
  */
-function runCli(cwd, args) {
-  return spawnSync(process.execPath, [SCRIPT, ...args], { cwd, encoding: 'utf8' });
+function runCli(cwd, args, env = {}) {
+  return spawnSync(process.execPath, [SCRIPT, ...args], {
+    cwd,
+    encoding: 'utf8',
+    env: { ...process.env, ...env },
+  });
 }
 
 /**
  * Единственная строка JSON из stdout CLI.
- * @param {{ stdout: string }} result
+ * @param {{ stdout: string } | undefined} run результат `spawnSync`
  * @returns {any}
  */
-function stdoutJson(result) {
-  const lines = result.stdout.trim().split('\n');
-  assert.equal(lines.length, 1, `ожидалась одна строка JSON, получено: ${result.stdout}`);
-  return JSON.parse(lines[0]);
+function stdoutJson(run) {
+  assert.ok(run, 'CLI запущен');
+  const lines = run.stdout.trim().split('\n');
+  assert.equal(lines.length, 1, `ожидалась одна строка JSON, получено: ${run.stdout}`);
+  return JSON.parse(lines[0] ?? '');
 }
 
 /**
@@ -342,7 +356,8 @@ function isAlive(pid) {
     process.kill(pid, 0);
     return true;
   } catch (error) {
-    return error.code !== 'ESRCH';
+    const code = /** @type {{ code?: unknown }} */ (error).code;
+    return code !== 'ESRCH';
   }
 }
 
@@ -408,7 +423,7 @@ describe('cycle-state: init', () => {
       '--slug',
       'cycle-state',
       '--branch',
-      'chore/157-cycle-state',
+      CYCLE_BRANCH,
       '--now',
       NOW,
     ]);
@@ -420,7 +435,7 @@ describe('cycle-state: init', () => {
     assert.deepEqual(state, {
       applied_decision: null,
       base_sha: baseSha,
-      branch: 'chore/157-cycle-state',
+      branch: CYCLE_BRANCH,
       criteria_source: 'issue',
       escalation: null,
       history: [{ stage: 'INIT', iteration: 1, started_at: NOW, finished_at: NOW, status: 'done' }],
@@ -451,7 +466,7 @@ describe('cycle-state: init', () => {
       '--slug',
       'cycle-state',
       '--branch',
-      'chore/157-cycle-state',
+      CYCLE_BRANCH,
       '--date',
       '2026-01-02',
       '--max-iterations',
@@ -466,6 +481,24 @@ describe('cycle-state: init', () => {
     assert.equal(state.started_at, NOW);
   });
 
+  test('лимит итераций из окружения и вне диапазона — код 2 (#235)', (t) => {
+    const { root } = makeRepo(t);
+    const base = ['init', '--issue', '157', '--slug', 'cycle-state', '--branch', CYCLE_BRANCH];
+
+    // Переменная окружения важнее конфига проекта: ядро читает `HARNESS_LIMIT_<КЛЮЧ>`.
+    const fromEnv = runCli(root, [...base, '--now', NOW], {
+      HARNESS_LIMIT_DEFAULT_MAX_ITERATIONS: '4',
+    });
+    assert.equal(fromEnv.status, 0, fromEnv.stderr);
+    const dir = join(root, '.pi', 'artifacts', '2026-11-16-157-cycle-state');
+    assert.equal(stateJson(dir).max_iterations, 4);
+
+    // Вне диапазона — ошибка, а не молчаливый откат к дефолту.
+    const tooBig = runCli(root, [...base, '--max-iterations', '11'], {});
+    assert.equal(tooBig.status, 2);
+    assert.match(tooBig.stderr, /вне диапазона/u);
+  });
+
   test('повторный init — код 3, файл не меняется', (t) => {
     const { root } = makeRepo(t);
     const args = [
@@ -475,7 +508,7 @@ describe('cycle-state: init', () => {
       '--slug',
       'cycle-state',
       '--branch',
-      'chore/157-cycle-state',
+      CYCLE_BRANCH,
       '--now',
       NOW,
     ];
@@ -553,17 +586,17 @@ describe('cycle-state: переходы §5.3', () => {
     );
 
     for (const from of Object.keys(EXPECTED_TRANSITIONS)) {
-      const actual = TRANSITIONS[from] ?? [];
-      for (const to of EXPECTED_TRANSITIONS[from]) {
+      const expected =
+        EXPECTED_TRANSITIONS[/** @type {keyof typeof EXPECTED_TRANSITIONS} */ (from)];
+      const actual = TRANSITIONS[/** @type {keyof typeof TRANSITIONS} */ (from)] ?? [];
+      if (expected === undefined) continue;
+      for (const to of expected) {
         assert.ok(actual.includes(to), `${from} → ${to} есть в таблице §5.3, но нет в TRANSITIONS`);
       }
       for (const to of actual) {
-        assert.ok(
-          EXPECTED_TRANSITIONS[from].includes(to),
-          `${from} → ${to} есть в TRANSITIONS, но нет в таблице §5.3`,
-        );
+        assert.ok(expected.includes(to), `${from} → ${to} есть в TRANSITIONS, но нет в §5.3`);
       }
-      assert.deepEqual([...actual].sort(), [...EXPECTED_TRANSITIONS[from]].sort(), from);
+      assert.deepEqual([...actual].sort(), [...expected].sort(), from);
     }
 
     for (const from of Object.keys(TRANSITIONS)) {
@@ -572,6 +605,89 @@ describe('cycle-state: переходы §5.3', () => {
         `${from} есть в TRANSITIONS, но в таблице §5.3 исходящих рёбер нет`,
       );
     }
+  });
+
+  test('ESCALATED → DECIDE: только с --owner-approved (#235)', (t) => {
+    const { root, baseSha } = makeRepo(t);
+    const dir = join(root, '.pi', 'artifacts', CYCLE_NAME);
+    mkdirSync(dir, { recursive: true });
+
+    const escalated = stateDoc(baseSha, {
+      stage: 'ESCALATED',
+      stage_status: 'done',
+      escalation: {
+        reason: 'budget',
+        detail: 'бюджет исчерпан',
+        draft_pr_allowed: false,
+        created_at: NOW,
+      },
+    });
+
+    writeState(dir, escalated);
+    const denied = runCli(root, ['advance', '--dir', dir, '--to', 'DECIDE', '--now', LATER]);
+    assert.equal(denied.status, 3, 'без флага возврат запрещён');
+    assert.match(denied.stderr, /--owner-approved/u);
+
+    writeState(dir, escalated);
+    const wrongTarget = runCli(root, [
+      'advance',
+      '--dir',
+      dir,
+      '--to',
+      'PLAN',
+      '--owner-approved',
+      '--now',
+      LATER,
+    ]);
+    assert.equal(wrongTarget.status, 3, 'единственное обратное ребро — в DECIDE');
+
+    writeState(dir, escalated);
+    const resumed = runCli(root, [
+      'advance',
+      '--dir',
+      dir,
+      '--to',
+      'DECIDE',
+      '--owner-approved',
+      '--now',
+      LATER,
+    ]);
+    assert.equal(resumed.status, 0, resumed.stderr);
+
+    const state = stateJson(dir);
+    assert.equal(state.stage, 'DECIDE');
+    assert.equal(state.stage_status, 'running');
+    assert.equal(state.escalation, null, 'эскалация снята: решение пересчитывается');
+    assert.equal(state.updated_at, LATER);
+    assert.deepEqual(state.history.at(-1), {
+      stage: 'DECIDE',
+      iteration: 1,
+      started_at: LATER,
+      finished_at: null,
+      status: 'running',
+    });
+    assert.deepEqual(validateState(state), { ok: true, errors: [] });
+  });
+
+  test('DONE остаётся терминальным: флаг владельца его не открывает', (t) => {
+    const { root, baseSha } = makeRepo(t);
+    const dir = join(root, '.pi', 'artifacts', CYCLE_NAME);
+    mkdirSync(dir, { recursive: true });
+    writeState(dir, stateDoc(baseSha, { stage: 'DONE', stage_status: 'done' }));
+
+    const result = runCli(root, [
+      'advance',
+      '--dir',
+      dir,
+      '--to',
+      'DECIDE',
+      '--owner-approved',
+      '--now',
+      LATER,
+    ]);
+
+    assert.equal(result.status, 3);
+    assert.equal(stateJson(dir).stage, 'DONE');
   });
 
   test('13×13: допустимые рёбра дают 0, остальные — 3', (t) => {
@@ -596,7 +712,11 @@ describe('cycle-state: переходы §5.3', () => {
         const before = writeState(dir, stateDoc(baseSha, { stage: from, stage_status: 'done' }));
         const result = runCli(root, ['advance', '--dir', dir, '--to', to, '--now', LATER]);
         const expected =
-          EXPECTED_TRANSITIONS[from]?.includes(to) === true && to !== 'ESCALATED' ? 0 : 3;
+          EXPECTED_TRANSITIONS[/** @type {keyof typeof EXPECTED_TRANSITIONS} */ (from)]?.includes(
+            /** @type {any} */ (to),
+          ) === true && to !== 'ESCALATED'
+            ? 0
+            : 3;
 
         assert.equal(
           result.status,
@@ -867,7 +987,7 @@ describe('cycle-state: finish', () => {
 describe('cycle-state: apply-decision', () => {
   /**
    * Каталог цикла в DECIDE с решением `decision.1.json`.
-   * @param {import('node:test').TestNode} t
+   * @param {import('node:test').TestContext} t
    * @param {Record<string, unknown>} decision
    * @param {{ state?: Record<string, unknown> }} [options]
    * @returns {{ root: string, dir: string, baseSha: string }}
@@ -1872,7 +1992,9 @@ describe('cycle-state: resume', () => {
     assert.equal(done.stage_status, 'done');
     assert.deepEqual(done.allowed_next, ['EVALUATE', 'DECIDE']);
     assert.equal(
-      stateJson(dir).history.some((entry) => entry.status === 'error'),
+      stateJson(dir).history.some(
+        (/** @type {Record<string, unknown>} */ entry) => entry.status === 'error',
+      ),
       true,
       'в истории остаётся старая ошибка — решение принимается по актуальной попытке',
     );

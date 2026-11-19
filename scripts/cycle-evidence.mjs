@@ -67,11 +67,12 @@
  */
 import { existsSync, mkdirSync, readFileSync, realpathSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import { normalizeDoc } from './cycle-decide.mjs';
 import { resolveBaseSha } from './cycle-gates.mjs';
+import { isDirectRun } from './lib/cycle/cli.mjs';
 import { DEFAULTS, loadConfig } from './lib/cycle/config.mjs';
+import { resolveLimits } from './lib/cycle/limits.mjs';
 import { diffFromBase, intentToAddUntracked } from './lib/cycle/git.mjs';
 import { readJson, tail, writeTextAtomic } from './lib/cycle/io.mjs';
 import {
@@ -137,7 +138,7 @@ const CHECKBOX = /^\[[ xX]\][ \t]*(.*)$/;
 /**
  * Непустая строка после обрезки пробелов.
  * @param {unknown} value
- * @returns {boolean}
+ * @returns {value is string} сужает тип вызывающего кода
  */
 function isText(value) {
   return typeof value === 'string' && value.trim() !== '';
@@ -182,7 +183,7 @@ export function parseSections(body) {
   for (const line of body.split('\n')) {
     const header = SECTION_HEADER.exec(line);
     if (header !== null) {
-      current = { title: header[1].trim(), lines: [] };
+      current = { title: (header[1] ?? '').trim(), lines: [] };
       sections.push(current);
       continue;
     }
@@ -227,8 +228,9 @@ export function parseListItems(text) {
   for (const line of text.split('\n')) {
     const match = LIST_ITEM.exec(line);
     if (match !== null) {
-      const checkbox = CHECKBOX.exec(match[1]);
-      const value = (checkbox === null ? match[1] : checkbox[1]).trim();
+      const itemText = match[1] ?? '';
+      const checkbox = CHECKBOX.exec(itemText);
+      const value = (checkbox === null ? itemText : (checkbox[1] ?? '')).trim();
       if (isNoResponse(value)) {
         // Пункт-заглушка не становится критерием, и продолжение к нему не относится.
         open = null;
@@ -299,7 +301,7 @@ function criteriaMissing(detail) {
  * вход — `{ title, body, labels }` в форме `gh issue view --json title,body,labels`.
  * Порядок секций зависит от метки `type:bug`; для bug без списка критерием становится
  * весь текст секции `Ожидаемый результат`.
- * @param {{ body?: unknown, labels?: unknown }} issue
+ * @param {{ title?: unknown, body?: unknown, labels?: unknown }} issue
  * @returns {CriteriaExtraction}
  */
 export function extractCriteria(issue) {
@@ -342,7 +344,8 @@ export function extractCriteria(issue) {
     reason: null,
     detail: null,
     section: picked.title,
-    template: TEMPLATE_BY_SECTION[picked.title] ?? null,
+    template:
+      TEMPLATE_BY_SECTION[/** @type {keyof typeof TEMPLATE_BY_SECTION} */ (picked.title)] ?? null,
     criteria: items.map((text, index) => ({ id: `C${index + 1}`, text })),
   };
 }
@@ -612,7 +615,7 @@ function readIssue(file) {
   }
 
   /** @type {Record<string, unknown>} */
-  const issue = doc;
+  const issue = /** @type {Record<string, unknown>} */ (doc);
   if (!isText(issue.title)) {
     throw new Error(`issue.json: поле title отсутствует или пустое (${file})`);
   }
@@ -801,7 +804,12 @@ function runCriteria({ dir, issueJson, config }) {
 /**
  * Подкоманда `packet`: сборка `evidence/` для оценщика. При `diff_too_large` файлы не
  * пишутся, в stdout — строка JSON с причиной и размерами, код 4.
- * @param {{ dir: string, root: string, base: string|null }} options
+ * @param {{
+ *   dir: string,
+ *   root: string,
+ *   base: string|null,
+ *   config: ReturnType<typeof loadConfig>,
+ * }} options
  * @returns {number} код выхода
  */
 function runPacket({ dir, root, base, config }) {
@@ -860,6 +868,7 @@ export function parseArgs(argv) {
 
   for (let index = 0; index < rest.length; index += 1) {
     const arg = rest[index];
+    if (arg === undefined) break;
     const value = rest[index + 1];
 
     if (arg === '--dir') {
@@ -918,7 +927,19 @@ function main() {
       return;
     }
 
-    process.exitCode = runPacket({ dir, root, base: args.base, config });
+    // Лимиты диффа и хвостов логов (#235): env → конфиг → дефолт.
+    const resolvedLimits = resolveLimits({
+      config: config.limits,
+      configured: config.limitsExplicit,
+      env: process.env,
+      defaults: DEFAULTS.limits,
+    });
+    const limitsConfig = /** @type {typeof config} */ ({
+      ...config,
+      limits: /** @type {import('./lib/cycle/config.mjs').Limits} */ (resolvedLimits.values),
+    });
+
+    process.exitCode = runPacket({ dir, root, base: args.base, config: limitsConfig });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     process.stderr.write(`cycle-evidence: ${message}\n`);
@@ -927,7 +948,4 @@ function main() {
 }
 
 // Модуль импортируется тестами ради чистых функций; CLI запускается только напрямую.
-const invokedPath = process.argv[1] === undefined ? null : resolve(process.argv[1]);
-if (invokedPath !== null && invokedPath === fileURLToPath(import.meta.url)) {
-  main();
-}
+if (isDirectRun(import.meta.url)) main();

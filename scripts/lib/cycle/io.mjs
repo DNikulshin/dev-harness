@@ -28,7 +28,7 @@ export function readJson(file) {
  * ошибка пробрасывается вызывающему. Переводы строк не меняются: `diff.patch`
  * и логи гейтов должны попадать в пакет свидетельств байт-в-байт.
  * @param {string} file целевой путь
- * @param {string} text содержимое целиком
+ * @param {unknown} text содержимое целиком (нестрока — `TypeError`)
  * @returns {void}
  */
 export function writeTextAtomic(file, text) {
@@ -85,7 +85,7 @@ export function tail(file, lines) {
 const JSON_BLOCK = /```json[ \t]*\r?\n([\s\S]*?)```/g;
 
 /**
- * Последний блок ```json из markdown-вывода агента. Берём именно последний:
+ * Последний блок `json` из markdown-вывода агента. Берём именно последний:
  * агент может сначала привести пример, а итоговый ответ дать ниже.
  * Нет блока или JSON не разбирается — исключение (для `cycle-decide` это сигнал
  * `agent_output_invalid`).
@@ -99,8 +99,14 @@ export function extractLastJsonBlock(markdown) {
     throw new Error('в markdown нет размеченного блока ```json');
   }
 
+  const body = last[1];
+  if (body === undefined) {
+    // Недостижимо: группа 1 есть в самом шаблоне блока. Проверка нужна для типа.
+    throw new Error('последний блок `json` не содержит тела');
+  }
+
   try {
-    return JSON.parse(last[1]);
+    return JSON.parse(body);
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     // Причина сохраняется: диагностика битого вывода агента должна быть полной.

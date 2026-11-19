@@ -64,8 +64,8 @@
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
+import { isDirectRun } from './lib/cycle/cli.mjs';
 import { loadConfig } from './lib/cycle/config.mjs';
 import { readJson } from './lib/cycle/io.mjs';
 import { FIXED_NAMES, findActiveCycle, iterNames, repoRoot } from './lib/cycle/paths.mjs';
@@ -129,7 +129,7 @@ const CRITERION_LINE = /^-[ \t]+(C[1-9]\d*):[ \t]*(.*)$/;
 /**
  * Непустая строка после обрезки пробелов.
  * @param {unknown} value
- * @returns {boolean}
+ * @returns {value is string} сужает тип вызывающего кода
  */
 function isText(value) {
   return typeof value === 'string' && value.trim() !== '';
@@ -207,8 +207,9 @@ export function dedupeUnverified(items) {
     const text = singleLine(item);
     const key = unverifiedKey(text);
     const index = kept.findIndex((entry) => sameUnverified(entry.key, key));
-    if (index === -1) kept.push({ key, text });
-    else if (text.length > kept[index].text.length) kept[index] = { key, text };
+    const existing = kept[index];
+    if (existing === undefined) kept.push({ key, text });
+    else if (text.length > existing.text.length) kept[index] = { key, text };
   }
 
   return kept.map((entry) => entry.text);
@@ -233,8 +234,9 @@ export function listItems(markdown) {
   for (const line of markdown.split(/\r?\n/)) {
     const match = LIST_ITEM.exec(line);
     if (match !== null) {
-      const checkbox = CHECKBOX.exec(match[1]);
-      const value = (checkbox === null ? match[1] : checkbox[1]).trim();
+      const itemText = match[1] ?? '';
+      const checkbox = CHECKBOX.exec(itemText);
+      const value = (checkbox === null ? itemText : (checkbox[1] ?? '')).trim();
       if (value === '') {
         open = null;
         continue;
@@ -277,7 +279,9 @@ export function parseCriteria(markdown) {
   const criteria = [];
   for (const line of markdown.split(/\r?\n/)) {
     const match = CRITERION_LINE.exec(line.trim());
-    if (match !== null) criteria.push({ id: match[1], text: match[2].trim() });
+    const id = match?.[1];
+    const text = match?.[2];
+    if (id !== undefined && text !== undefined) criteria.push({ id, text: text.trim() });
   }
   return criteria;
 }
@@ -331,11 +335,13 @@ function gateNote(gate) {
  * @returns {Record<string, any>[]}
  */
 export function orderGates(value, gateIds = []) {
+  /** @type {Record<string, any>[]} */
   const entries = Array.isArray(value)
-    ? value.filter((gate) => typeof gate === 'object' && gate !== null)
+    ? value.filter((gate) => typeof gate === 'object' && gate !== null && !Array.isArray(gate))
     : [];
   const order = new Map(gateIds.map((id, index) => [id, index]));
-  const known = (gate) => order.get(gate.id) ?? gateIds.length;
+  /** @param {Record<string, any>} gate @returns {number} */
+  const known = (gate) => order.get(String(gate.id)) ?? gateIds.length;
 
   return [...entries].sort((left, right) => {
     const delta = known(left) - known(right);
@@ -579,6 +585,7 @@ export function parseArgs(argv) {
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
+    if (arg === undefined) break;
     if (arg === '--dir') {
       const value = argv[index + 1];
       if (!isText(value) || value.startsWith('--')) {
@@ -716,7 +723,4 @@ function main() {
 }
 
 // Модуль импортируется тестами ради чистых функций; CLI запускается только напрямую.
-const invokedPath = process.argv[1] === undefined ? null : resolve(process.argv[1]);
-if (invokedPath !== null && invokedPath === fileURLToPath(import.meta.url)) {
-  main();
-}
+if (isDirectRun(import.meta.url)) main();

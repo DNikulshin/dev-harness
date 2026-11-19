@@ -37,7 +37,14 @@ function pricesDoc() {
   };
 }
 
-/** Профиль на 1M токенов каждого вида — арифметика проверяется в уме. */
+/**
+ * Профиль на 1M токенов каждого вида — арифметика проверяется в уме.
+ * @param {number} input
+ * @param {number} cacheRead
+ * @param {number} output
+ * @param {number} [reasoning]
+ * @returns {{ calls_per_run: number, input: number, cache_read: number, output: number, reasoning: number }}
+ */
 function profile(input, cacheRead, output, reasoning = 0) {
   return { calls_per_run: 1, input, cache_read: cacheRead, output, reasoning };
 }
@@ -83,7 +90,7 @@ describe('readPrices', () => {
 describe('readProfiles', () => {
   test('требует профиль каждой стадии цикла', () => {
     const doc = profilesDoc();
-    delete doc.stages.review;
+    delete (/** @type {Record<string, unknown>} */ (doc.stages).review);
     assert.throws(() => readProfiles(doc), /profiles\.stages\.review/u);
   });
 
@@ -182,8 +189,8 @@ describe('priceCycle', () => {
         evaluate: 'openai/gpt-6-luna-pro',
       },
     );
-    assert.equal(cycle.stages.plan.total, 118);
-    assert.equal(cycle.stages.code.total, 0);
+    assert.equal(cycle.stages.plan?.total, 118);
+    assert.equal(cycle.stages.code?.total, 0);
     assert.equal(cycle.total, 118);
 
     assert.throws(

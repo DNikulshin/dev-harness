@@ -112,7 +112,10 @@ describe('writeJsonAtomic', () => {
       try {
         assert.throws(
           () => writeJsonAtomic(file, { stage: 'NEW' }),
-          (error) => error.code === 'EACCES' || error.code === 'EPERM',
+          (error) => {
+            const code = /** @type {{ code?: unknown }} */ (error).code;
+            return code === 'EACCES' || code === 'EPERM';
+          },
         );
       } finally {
         chmodSync(dir, 0o755);

@@ -54,7 +54,8 @@ const LIMITS = CONFIG.limits;
  * @returns {ReturnType<typeof runGatesRaw>}
  */
 function runGates(options) {
-  return runGatesRaw({ definitions: GATES, ...options });
+  // `options` — частичные входы теста: объединение с таблицей гейтов делает объект полным.
+  return runGatesRaw(/** @type {any} */ ({ definitions: GATES, ...options }));
 }
 
 /**
@@ -105,7 +106,11 @@ const LEAK_DIFF = [
   "+const line = 'обычная строка';",
 ].join('\n');
 
-/** Гейт таблицы по id: в тестах условий нужны только его префиксы. */
+/**
+ * Гейт таблицы по id: в тестах условий нужны только его префиксы.
+ * @param {string} id
+ * @returns {import('./lib/cycle/config.mjs').LoadedGate}
+ */
 function gateById(id) {
   const gate = GATES.find((candidate) => candidate.id === id);
   assert.ok(gate, `гейт ${id} есть в таблице §5.5`);
@@ -200,7 +205,8 @@ function isAlive(pid) {
     process.kill(pid, 0);
     return true;
   } catch (error) {
-    return error.code !== 'ESRCH';
+    const code = /** @type {{ code?: unknown }} */ (error).code;
+    return code !== 'ESRCH';
   }
 }
 
@@ -254,7 +260,7 @@ describe('cycle-gates: план прогона', () => {
       ['AGENTS.md', 'check_harness'],
     ];
 
-    for (const [changed, id] of cases) {
+    for (const [changed, id] of /** @type {[string, string][]} */ (cases)) {
       const plan = planRun(GATES, { changed: [changed] });
       const item = plan.find((candidate) => candidate.id === id);
       assert.equal(item?.decision, 'run', `${id} должен запускаться при ${changed}`);
@@ -272,6 +278,7 @@ describe('cycle-gates: план прогона', () => {
   });
 
   test('--only: выбранные выполняются, остальные наследуют прежний статус', () => {
+    /** @type {Record<string, any>} */
     const inherited = { contracts_build: { status: 'pass', reason: null } };
     const plan = planRun(GATES, { changed: [], only: ['typecheck'], inherited });
 
@@ -506,7 +513,7 @@ describe('cycle-gates: test_int по логу', () => {
     ['test-int.auth-failed.json', 'fail'],
   ];
 
-  for (const [name, expected] of classifyCases) {
+  for (const [name, expected] of /** @type {[string, string][]} */ (classifyCases)) {
     test(`лог ${name} классифицируется как ${expected}`, () => {
       assert.equal(classifyTestIntLog(fixtureLog(name)), expected);
     });
@@ -522,7 +529,7 @@ describe('cycle-gates: test_int по логу', () => {
     ['', 'fail'],
   ];
 
-  for (const [text, expected] of tokenCases) {
+  for (const [text, expected] of /** @type {[string, string][]} */ (tokenCases)) {
     test(`строка лога ${JSON.stringify(text)} классифицируется как ${expected}`, () => {
       assert.equal(classifyTestIntLog(text), expected);
     });
@@ -633,7 +640,7 @@ describe('cycle-gates: secrets_scan', () => {
       ['apps/service/.env.production', 1],
     ];
 
-    for (const [file, expected] of cases) {
+    for (const [file, expected] of /** @type {[string, number][]} */ (cases)) {
       const findings = scanAddedLines([{ file, lines: [{ line: 7, text: envLine }] }]);
       assert.equal(findings.length > 0 ? 1 : 0, expected, `файл ${file}`);
     }
@@ -686,8 +693,10 @@ describe('cycle-gates: лог и тайм-аут', () => {
 
     const run = await runGates({ definitions, iteration: 1, dir, runner: undefined });
     const entry = run.gates[0];
+    assert.ok(entry, 'запись гейта есть');
 
     assert.equal(entry.status, 'pass', entry.reason ?? '');
+    assert.ok(entry.log, 'лог гейта записан');
     assert.equal(readFileSync(join(dir, entry.log), 'utf8').trim(), 'true');
   });
 
@@ -704,7 +713,7 @@ describe('cycle-gates: лог и тайм-аут', () => {
     const text = readFileSync(file, 'utf8');
     assert.ok(statSync(file).size <= LIMITS.logMaxBytes);
     assert.ok(text.endsWith(`${lines.at(-1)}\n`), 'последняя строка сохранена');
-    assert.ok(!text.startsWith(lines[0]), 'начало файла отрезано');
+    assert.ok(!text.startsWith(lines[0] ?? '\u0000'), 'начало файла отрезано');
     for (const kept of text.replace(/\n$/, '').split('\n')) {
       assert.match(kept, /^x{8191}\d{1,3}$/, 'строка не обрезана посередине');
     }
@@ -769,6 +778,7 @@ describe('cycle-gates: лог и тайм-аут', () => {
     });
 
     const entry = run.gates[0];
+    assert.ok(entry, 'запись гейта есть');
     assert.deepEqual(
       { status: entry.status, reason: entry.reason, exit: entry.exit },
       { status: 'fail', reason: 'timeout', exit: null },
@@ -835,6 +845,7 @@ describe('cycle-gates: лог и тайм-аут', () => {
     });
 
     const entry = run.gates[0];
+    assert.ok(entry, 'запись гейта есть');
     assert.deepEqual(
       { status: entry.status, reason: entry.reason, exit: entry.exit },
       { status: 'fail', reason: 'timeout', exit: null },
@@ -943,6 +954,7 @@ describe('cycle-gates: CLI', () => {
       { id: 'secrets_scan', required: true, status: 'pass' },
     ];
     assert.equal(exitCode({ gates }), 0);
+
     assert.equal(exitCode({ gates: [{ id: 'lint', required: true, status: 'fail' }] }), 1);
     assert.equal(exitCode({ gates: [{ id: 'lint', required: false, status: 'fail' }] }), 0);
   });

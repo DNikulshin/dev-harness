@@ -105,7 +105,7 @@ function gatesDoc(entries) {
 }
 
 /**
- * Документ ревью (блок ```json).
+ * Документ ревью (блок `json`).
  * @param {Record<string, unknown>[]} [findings]
  * @param {'merge-ready'|'needs-changes'} [verdict]
  * @returns {Record<string, unknown>}
@@ -931,7 +931,7 @@ describe('decide: ссылки на .env* не читаются (AGENTS.md)', ()
     assert.equal(result.action, 'REWORK');
     assert.deepEqual(result.downgraded, []);
     assert.equal(result.unresolved_refs, 0);
-    assert.match(result.rework_items[0], /^R1 \[BLOCKER\] \.env\.example:2 — /);
+    assert.match(String(result.rework_items[0]), /^R1 \[BLOCKER\] \.env\.example:2 — /);
   });
 
   test('ссылка на .env в свидетельствах критерия не разрешается', (t) => {
@@ -972,6 +972,7 @@ describe('decide: детерминизм', () => {
   });
 
   test('порядок ключей во входных объектах не влияет на результат', () => {
+    /** @param {Record<string, unknown>} fields @returns {Record<string, unknown>} */
     const reviewWithOrder = (fields) => ({
       verdict: 'merge-ready',
       findings: [fields],
@@ -1106,7 +1107,7 @@ function makeCycleDir(root, options = {}) {
 }
 
 /**
- * Markdown-вывод агента с заключительным блоком ```json.
+ * Markdown-вывод агента с заключительным блоком `json`.
  * @param {unknown} doc
  * @returns {string}
  */
@@ -1153,7 +1154,7 @@ describe('CLI: запись решения', () => {
     const lines = result.stdout.trim().split('\n');
     assert.equal(lines.length, 1, 'в stdout должна быть одна строка JSON');
 
-    const decision = JSON.parse(lines[0]);
+    const decision = JSON.parse(lines[0] ?? '');
     assert.deepEqual(validateDecision(decision), { ok: true, errors: [] });
     assert.deepEqual(JSON.parse(readFileSync(join(dir, 'decision.1.json'), 'utf8')), decision);
 
@@ -1205,7 +1206,35 @@ describe('CLI: запись решения', () => {
     assert.equal(second.status, 0, second.stderr);
     const escalated = JSON.parse(second.stdout);
     assert.equal(escalated.action, 'ESCALATE');
-    assert.deepEqual(escalated.reasons, ['escalate:agent_output_invalid']);
+    // #247: рядом с причиной — подсказка, что именно чинить, и полный текст в stderr.
+    assert.equal(escalated.reasons[0], 'escalate:agent_output_invalid');
+    assert.match(escalated.reasons[1], /^invalid:REVIEW review\.1\.md: /u);
+    assert.match(second.stderr, /review\.1\.md/u);
+  });
+
+  test('предел подсказок по полям и дедупликация (#247)', (t) => {
+    const repo = makeRepo(t);
+    // Шесть нарушений схемы: five-severity-подсказок быть не больше INVALID_OUTPUT_LIMIT.
+    const broken = {
+      verdict: 'merge-ready',
+      findings: [1, 2, 3, 4, 5, 6].map(() => ({ severity: 'НЕТ-ТАКОЙ', in_scope: true })),
+    };
+    const dir = makeCycleDir(repo.root, {
+      reviewMd: mdBlock(broken),
+      evaluationMd: mdBlock(evaluationDoc()),
+    });
+
+    const result = runCli(repo.root, ['--dir', dir]);
+    assert.equal(result.status, 0, result.stderr);
+
+    const decision = JSON.parse(result.stdout);
+    const details = decision.reasons.filter((/** @type {string} */ reason) =>
+      reason.startsWith('invalid:REVIEW '),
+    );
+    assert.equal(details.length, 5, 'не больше пяти подсказок');
+    assert.equal(new Set(details).size, details.length, 'без повторов');
+    // Полный список — в stderr, а не в артефакте.
+    assert.match(result.stderr, /findings\[5\]/u);
   });
 
   test('битый JSON в блоке md — правило 1', (t) => {

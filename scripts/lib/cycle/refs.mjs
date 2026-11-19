@@ -1,11 +1,13 @@
 /**
  * Ссылки на свидетельства цикла (docs/orchestrator-core.md §5.2).
  *
- * Формы: `path:line` (файл репозитория и номер строки), `gate:<id>` (гейт из
- * `gates.<n>.json`), `qa:<id>` (шаг из `qa-web.json`). Ссылки приходят из вывода
- * агентов, поэтому разрешение защитное: абсолютные пути, `..`, `.pi/artifacts/`,
- * `node_modules/` и `.env*` (кроме `.env.example`) запрещены, файл должен
- * существовать, строка — попадать в файл. Запрет `.env*` живёт здесь, а не в
+ * Формы: `path:line` (файл репозитория и номер строки), `path:start-end` (диапазон строк
+ * того же файла, обе границы включительно), `gate:<id>` (гейт из `gates.<n>.json`),
+ * `qa:<id>` (шаг из `qa-web.json`). Ссылки приходят из вывода агентов, поэтому разрешение
+ * защитное: абсолютные пути, `..`, `.pi/artifacts/`, `node_modules/` и `.env*`
+ * (кроме `.env.example`) запрещены, файл должен существовать, строка (обе границы
+ * диапазона) — попадать в файл. Диапазон разрешается по началу: счётчики §5.6 и понижение
+ * невалидных блокеров считают его одной ссылкой, иначе смена формы записи меняла бы вердикты. Запрет `.env*` живёт здесь, а не в
  * потребителях: `resolveRef` открывает файл, чтобы проверить номер строки, значит
  * проверка обязана быть до чтения и в одном месте для всех вызывающих (AGENTS.md,
  * «Персональные данные и безопасность»).
@@ -20,8 +22,11 @@ import { isAbsolute, join, relative, sep } from 'node:path';
 const GATE_REF = /^gate:([A-Za-z0-9_-]+)$/;
 /** `qa:<id>`: id шагов QA — `s1`, `s2`, … (D8). */
 const QA_REF = /^qa:([A-Za-z0-9_-]+)$/;
-/** `path:line`: путь без двоеточия в конце, номер строки — цифры. */
-const PATH_REF = /^(.+):(\d+)$/;
+/**
+ * `path:line` и `path:start-end`: путь без двоеточия в конце, номер строки — цифры,
+ * необязательный диапазон — `start-end` (обе границы включительно).
+ */
+const PATH_REF = /^(.+):(\d+)(?:-(\d+))?$/;
 
 /** Привод Windows-пути: `C:\repo` абсолютен, хотя posix `isAbsolute` этого не видит. */
 const WINDOWS_ABSOLUTE = /^[A-Za-z]:/;
@@ -45,7 +50,8 @@ function isEnvSegment(segment) {
  * @typedef {object} ParsedRef
  * @property {'path'|'gate'|'qa'} kind вид ссылки
  * @property {string} value путь (для `path`) или идентификатор (`gate`, `qa`)
- * @property {number|null} line номер строки; у `gate:`/`qa:` — `null`
+ * @property {number|null} line номер строки (у диапазона — начало); у `gate:`/`qa:` — `null`
+ * @property {number|null} endLine конец диапазона; `null` для одиночной строки и `gate:`/`qa:`
  */
 
 /**
@@ -61,7 +67,8 @@ function isEnvSegment(segment) {
  * @property {string} ref исходная строка
  * @property {'path'|'gate'|'qa'|null} kind вид ссылки (`null`, если форма не распознана)
  * @property {string|null} value нормализованный путь или идентификатор
- * @property {number|null} line номер строки
+ * @property {number|null} line номер строки (у диапазона — начало)
+ * @property {number|null} endLine конец диапазона (`null`, если ссылка не диапазон)
  * @property {string|null} file абсолютный путь к файлу (только для `path`)
  * @property {string|null} error причина отказа (только при `ok: false`)
  */
@@ -80,16 +87,24 @@ export function parseRef(ref) {
   const value = ref.trim();
 
   const gate = GATE_REF.exec(value);
-  if (gate) return { kind: 'gate', value: gate[1], line: null };
+  if (gate) return { kind: 'gate', value: group(gate, 1), line: null, endLine: null };
 
   const qa = QA_REF.exec(value);
-  if (qa) return { kind: 'qa', value: qa[1], line: null };
+  if (qa) return { kind: 'qa', value: group(qa, 1), line: null, endLine: null };
 
   const path = PATH_REF.exec(value);
-  if (path) return { kind: 'path', value: path[1], line: Number(path[2]) };
+  if (path) {
+    const rawEnd = path[3];
+    return {
+      kind: 'path',
+      value: group(path, 1),
+      line: Number(group(path, 2)),
+      endLine: rawEnd === undefined ? null : Number(rawEnd),
+    };
+  }
 
   throw new Error(
-    `ссылка: не распознана форма (ожидается path:line, gate:<id>, qa:<id>): ${value}`,
+    `ссылка: не распознана форма (ожидается path:line, path:start-end, gate:<id>, qa:<id>): ${value}`,
   );
 }
 
@@ -104,6 +119,28 @@ function countLines(text) {
   if (text === '') return 0;
   const parts = text.split('\n');
   return text.endsWith('\n') ? parts.length - 1 : parts.length;
+}
+
+/**
+ * Группа шаблона по индексу. Отсутствующая группа — нарушение инварианта шаблона:
+ * молча подставить пустую строку значило бы принять нераспознанную ссылку.
+ * @param {RegExpExecArray} match
+ * @param {number} index
+ * @returns {string}
+ */
+function group(match, index) {
+  const part = match[index];
+  if (part === undefined) throw new Error('ссылка: не распознана форма');
+  return part;
+}
+
+/**
+ * Непустой объект (не массив): форма документа из внешнего файла не гарантирована.
+ * @param {unknown} value
+ * @returns {value is Record<string, unknown>} сужает тип вызывающего кода
+ */
+function isRecord(value) {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 /**
@@ -152,6 +189,7 @@ function emptyResolution(ref) {
     kind: null,
     value: null,
     line: null,
+    endLine: null,
     file: null,
     error: null,
   };
@@ -171,6 +209,7 @@ function fail(base, parsed, error) {
     kind: parsed ? parsed.kind : null,
     value: parsed ? parsed.value : null,
     line: parsed ? parsed.line : null,
+    endLine: parsed ? parsed.endLine : null,
     error,
   };
 }
@@ -179,7 +218,7 @@ function fail(base, parsed, error) {
  * Разрешает ссылку в контексте цикла. Отсутствие `gates`/`qa` в контексте (`null`)
  * означает, что такие ссылки разрешить нельзя: молча считать их верными нельзя,
  * на этом строится счётчик `unresolved_refs` (§5.6).
- * @param {unknown} ref строка `path:line`, `gate:<id>` или `qa:<id>`
+ * @param {unknown} ref строка `path:line`, `path:start-end`, `gate:<id>` или `qa:<id>`
  * @param {RefContext} ctx
  * @returns {RefResolution}
  */
@@ -277,7 +316,25 @@ function resolvePath(base, parsed, ctx) {
     return fail(base, parsed, `строка ${line} за концом файла ${relativePath} (строк: ${lines})`);
   }
 
-  return { ...base, ok: true, kind: 'path', value: relativePath, line, file };
+  const endLine = parsed.endLine ?? null;
+  if (endLine !== null) {
+    if (endLine < line) {
+      return fail(
+        base,
+        parsed,
+        `диапазон ${line}-${endLine}: конец меньше начала (${relativePath})`,
+      );
+    }
+    if (endLine > lines) {
+      return fail(
+        base,
+        parsed,
+        `строка ${endLine} за концом файла ${relativePath} (строк: ${lines})`,
+      );
+    }
+  }
+
+  return { ...base, ok: true, kind: 'path', value: relativePath, line, endLine, file };
 }
 
 /**
@@ -293,15 +350,12 @@ function resolveGate(base, parsed, ctx) {
     return fail(base, parsed, `gates.<n>.json не передан: ссылка gate:${parsed.value} неразрешима`);
   }
 
-  const entries =
-    typeof gates === 'object' && gates !== null && Array.isArray(gates.gates) ? gates.gates : null;
+  const entries = isRecord(gates) && Array.isArray(gates.gates) ? gates.gates : null;
   if (entries === null) {
     return fail(base, parsed, 'в gates.<n>.json нет массива gates');
   }
 
-  const found = entries.some(
-    (gate) => typeof gate === 'object' && gate !== null && gate.id === parsed.value,
-  );
+  const found = entries.some((gate) => isRecord(gate) && gate.id === parsed.value);
   if (!found) return fail(base, parsed, `гейт не найден в gates.<n>.json: ${parsed.value}`);
 
   return { ...base, ok: true, kind: 'gate', value: parsed.value, line: null };
@@ -320,12 +374,10 @@ function resolveQa(base, parsed, ctx) {
     return fail(base, parsed, `qa-web.json не передан: ссылка qa:${parsed.value} неразрешима`);
   }
 
-  const steps = typeof qa === 'object' && qa !== null && Array.isArray(qa.steps) ? qa.steps : null;
+  const steps = isRecord(qa) && Array.isArray(qa.steps) ? qa.steps : null;
   if (steps === null) return fail(base, parsed, 'в qa-web.json нет массива steps');
 
-  const found = steps.some(
-    (step) => typeof step === 'object' && step !== null && step.id === parsed.value,
-  );
+  const found = steps.some((step) => isRecord(step) && step.id === parsed.value);
   if (!found) return fail(base, parsed, `шаг не найден в qa-web.json: ${parsed.value}`);
 
   return { ...base, ok: true, kind: 'qa', value: parsed.value, line: null };

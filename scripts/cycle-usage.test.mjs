@@ -5,11 +5,16 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { describe, test } from 'node:test';
 
+import { REPO_ONLY } from './lib/testsupport.mjs';
 import { USAGE_STAGES, addStageUsage, parseArgs } from './cycle-usage.mjs';
 
 const SCRIPT = resolve(import.meta.dirname, 'cycle-usage.mjs');
 
-/** Запись транскрипта: ответ ассистента с текстом и usage. */
+/**
+ * Запись транскрипта: ответ ассистента с текстом и usage.
+ * @param {Record<string, unknown>} usage
+ * @returns {string}
+ */
 function assistant(usage) {
   return JSON.stringify({
     recordType: 'message',
@@ -222,7 +227,7 @@ describe('CLI: cycle-usage', () => {
 });
 
 describe('связка с cycle-metrics', () => {
-  test('usage.json, записанный cycle-usage, читается метриками', () => {
+  test('usage.json, записанный cycle-usage, читается метриками', REPO_ONLY, () => {
     // Фикстура метрик копируется целиком: метрики ждут state.json и gates.<n>.json.
     const root = mkdtempSync(join(tmpdir(), 'cycle-usage-metrics-'));
     cpSync(

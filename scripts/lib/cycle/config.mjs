@@ -76,6 +76,41 @@ export const DEFAULTS = deepFreeze({
  * @property {boolean} required
  * @property {readonly string[]} dependsOn
  * @property {readonly string[]} pathPrefixes
+ * @property {boolean} dbGate класс отказа по логу: нет базы → `not_run` с `no_database`
+ */
+
+/**
+ * Лимиты цикла: значения, а не источники. Набор ключей фиксирован схемой конфига —
+ * неизвестный ключ отвергается валидацией, поэтому расширение идёт правкой этого типа.
+ * @typedef {object} Limits
+ * @property {number} maxDiffLines
+ * @property {number} maxDiffBytes
+ * @property {number} logMaxBytes
+ * @property {number} evidenceTailLines
+ * @property {number} defaultMaxIterations
+ * @property {number} maxCycleCostRub
+ */
+
+/**
+ * Пути раскладки: относительные к корню проекта.
+ * @typedef {object} Paths
+ * @property {string} artifactsDir
+ * @property {string} evidenceDir
+ * @property {string} gatesDir
+ * @property {string} agentsDir
+ * @property {string} agentsMd
+ * @property {string} settings
+ * @property {string} cyclePrompt
+ * @property {string} prTemplate пустая строка — шаблон PR не задан
+ */
+
+/**
+ * Пути evals-слоя.
+ * @typedef {object} EvalsPaths
+ * @property {string} prices
+ * @property {string} profiles
+ * @property {string} candidates
+ * @property {string} seedsDir
  */
 
 /** Допустимые секции конфига: всё остальное — ошибка, а не игнор. */
@@ -147,7 +182,7 @@ export class ConfigError extends Error {
 /**
  * Плоский объект: массивы и `null` объектами не считаются.
  * @param {unknown} value
- * @returns {boolean}
+ * @returns {value is Record<string, unknown>} сужает тип вызывающего кода
  */
 function isRecord(value) {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -156,7 +191,7 @@ function isRecord(value) {
 /**
  * Непустая строка.
  * @param {unknown} value
- * @returns {boolean}
+ * @returns {value is string} сужает тип вызывающего кода
  */
 function isText(value) {
   return typeof value === 'string' && value.trim() !== '';
@@ -248,7 +283,9 @@ function stringField(value, path, { allowEmpty = false } = {}) {
 /**
  * Секция `limits`: каждое поле — положительное число, лишние поля запрещены.
  * @param {unknown} value
- * @returns {Record<string, number>}
+ * @returns {{ limits: Limits, explicit: readonly string[] }}
+ *   `explicit` — ключи, заданные в файле: они и только они имеют источник `config`
+ *   (остальные пришли из дефолтов ядра, и `applied_limits` не должен выдавать их за проектные)
  */
 function parseLimits(value) {
   if (!isRecord(value)) {
@@ -256,18 +293,19 @@ function parseLimits(value) {
   }
   assertKnownFields(value, 'limits', SECTION_FIELDS.limits);
 
-  /** @type {Record<string, number>} */
+  /** @type {Limits} */
   const limits = { ...DEFAULTS.limits };
   for (const [key, raw] of Object.entries(value)) {
-    limits[key] = numberField(raw, `limits.${key}`);
+    // Ключ уже проверен `assertKnownFields` по `SECTION_FIELDS.limits`, то есть по схеме.
+    limits[/** @type {keyof Limits} */ (key)] = numberField(raw, `limits.${key}`);
   }
-  return limits;
+  return { limits, explicit: Object.keys(value) };
 }
 
 /**
  * Секция `paths`: строки, `prTemplate` может быть пустой (шаблон не задан).
  * @param {unknown} value
- * @returns {Record<string, string>}
+ * @returns {Paths}
  */
 function parsePaths(value) {
   if (!isRecord(value)) {
@@ -275,10 +313,13 @@ function parsePaths(value) {
   }
   assertKnownFields(value, 'paths', SECTION_FIELDS.paths);
 
-  /** @type {Record<string, string>} */
+  /** @type {Paths} */
   const paths = { ...DEFAULTS.paths };
   for (const [key, raw] of Object.entries(value)) {
-    paths[key] = stringField(raw, `paths.${key}`, { allowEmpty: key === 'prTemplate' });
+    // Ключ уже проверен `assertKnownFields` по `SECTION_FIELDS.paths`, то есть по схеме.
+    paths[/** @type {keyof Paths} */ (key)] = stringField(raw, `paths.${key}`, {
+      allowEmpty: key === 'prTemplate',
+    });
   }
   return paths;
 }
@@ -306,7 +347,7 @@ function parseQaWeb(value) {
 /**
  * Секция `evals`: пути к снапшотам и сидам.
  * @param {unknown} value
- * @returns {Record<string, string>}
+ * @returns {EvalsPaths}
  */
 function parseEvals(value) {
   if (!isRecord(value)) {
@@ -314,10 +355,11 @@ function parseEvals(value) {
   }
   assertKnownFields(value, 'evals', SECTION_FIELDS.evals);
 
-  /** @type {Record<string, string>} */
+  /** @type {EvalsPaths} */
   const evals = { ...DEFAULTS.evals };
   for (const [key, raw] of Object.entries(value)) {
-    evals[key] = stringField(raw, `evals.${key}`);
+    // Ключ уже проверен `assertKnownFields` по `SECTION_FIELDS.evals`, то есть по схеме.
+    evals[/** @type {keyof EvalsPaths} */ (key)] = stringField(raw, `evals.${key}`);
   }
   return evals;
 }
@@ -338,6 +380,7 @@ function parseEvals(value) {
  *   required: boolean,
  *   dependsOn: string[],
  *   pathPrefixes: string[],
+ *   dbGate: boolean,
  * }}
  */
 function parseGate(value, index, ids) {
@@ -357,7 +400,7 @@ function parseGate(value, index, ids) {
   ids.add(id);
 
   const builtin = value.builtin ?? null;
-  if (builtin !== null && !BUILTIN_GATES.includes(builtin)) {
+  if (builtin !== null && (typeof builtin !== 'string' || !BUILTIN_GATES.includes(builtin))) {
     throw new ConfigError(
       `.pi/harness.config.json: ${path}.builtin — неизвестная встроенная проверка ${JSON.stringify(builtin)}`,
     );
@@ -387,7 +430,12 @@ function parseGate(value, index, ids) {
     if (parts.length === 0) {
       throw new ConfigError(`.pi/harness.config.json: ${path}.cmd — пустая команда`);
     }
-    [executable, ...args] = parts;
+    const [head, ...tail] = parts;
+    if (head === undefined) {
+      throw new ConfigError(`.pi/harness.config.json: ${path}.cmd — пустая команда`);
+    }
+    executable = head;
+    args = tail;
     cmd = legacy;
     warnLegacy(path, id);
   } else {
@@ -504,28 +552,22 @@ function parseGateTimeouts(value, gateIds) {
  * Загружает конфигурацию проекта. Отсутствующий файл даёт `DEFAULTS`; частичные секции
  * дополняются дефолтами. Результат заморожен.
  * @param {string} root корень проекта
- * @returns {{
- *   gates: ReadonlyArray<{
- *     id: string,
- *     executable: string|null,
- *     args: readonly string[],
- *     cmd: string|null,
- *     builtin: string|null,
- *     required: boolean,
- *     dependsOn: readonly string[],
- *     pathPrefixes: readonly string[],
- *   }>,
- *   limits: Readonly<typeof DEFAULTS.limits>,
- *   paths: Readonly<typeof DEFAULTS.paths>,
- *   evals: Readonly<typeof DEFAULTS.evals>,
+ * @returns {Readonly<{
+ *   gates: ReadonlyArray<LoadedGate>,
+ *   limits: Limits,
+ *   limitsExplicit: readonly string[],
+ *   paths: Paths,
+ *   evals: EvalsPaths,
+ *   qaWeb: { pathPrefixes: readonly string[] },
  *   provider: string,
- *   gateTimeouts: Readonly<Record<string, number>>,
- * }}
+ *   gateTimeouts: Record<string, number>,
+ * }>}
  */
 export function loadConfig(root) {
   const file = join(root, CONFIG_FILE.dir, CONFIG_FILE.name);
   const doc = readConfigFile(file);
-  if (doc === null) return DEFAULTS;
+  // Файла нет: все лимиты — дефолты ядра, явно заданных ключей нет.
+  if (doc === null) return deepFreeze({ ...DEFAULTS, limitsExplicit: [] });
   if (!isRecord(doc)) {
     throw new ConfigError('.pi/harness.config.json: ожидается объект');
   }
@@ -544,9 +586,15 @@ export function loadConfig(root) {
     throw new ConfigError('.pi/harness.config.json: provider — ожидается префикс с «/» на конце');
   }
 
+  const parsedLimits =
+    doc.limits === undefined
+      ? { limits: DEFAULTS.limits, explicit: /** @type {readonly string[]} */ ([]) }
+      : parseLimits(doc.limits);
+
   return deepFreeze({
     gates,
-    limits: doc.limits === undefined ? DEFAULTS.limits : parseLimits(doc.limits),
+    limits: parsedLimits.limits,
+    limitsExplicit: parsedLimits.explicit,
     paths: doc.paths === undefined ? DEFAULTS.paths : parsePaths(doc.paths),
     evals: doc.evals === undefined ? DEFAULTS.evals : parseEvals(doc.evals),
     qaWeb: doc.qaWeb === undefined ? DEFAULTS.qaWeb : parseQaWeb(doc.qaWeb),

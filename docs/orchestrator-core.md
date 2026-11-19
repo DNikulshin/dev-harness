@@ -28,7 +28,7 @@
 
 | №   | Решение                                                                                                                                                                                                                                                                                                                                     |
 | --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| R1  | Провайдер `polza-ai` и текущие модели не меняются: `plan` GLM-5.3, `code` DeepSeek v4.1 Flash, `review` GPT-6 Luna Pro                                                                                                                                                                                                                      |
+| R1  | Провайдер `polza-ai` и текущие модели не меняются: `plan` GLM-5.3 Flash, `code` DeepSeek v4.1 Flash, `review` GPT-6 Luna Pro **Уточнение:** `plan` переведён на `z-ai/glm-5.3-flash` — вывод дешевле в 17.9× при тех же токенах; откат — `evals/candidates.json#plan-flash` |
 | R2  | Новый агент `evaluate` на `polza-ai/z-ai/glm-5.3`, thinking high; общее семейство с `plan` принято (компенсация: слепота к плану, критерии из issue) **Уточнение:** по A/B (issue #196, #200) модель оценщика заменена на `polza-ai/z-ai/glm-5.3-flash` — та же семья, та же полнота, 7.5× дешевле; риск и условие откатa — `docs/evals.md` |
 | R3  | Блокер из любого источника (ревью или оценка) запускает доработку, если он валиден; число проходов `code` — максимум 2                                                                                                                                                                                                                      |
 | R4  | При эскалации draft PR открывается только по условиям §5.3 спеки (§9 спеки): код написан, обязательные гейты зелёные, причина `iteration_limit`/`budget`/`agent_output_invalid`                                                                                                                                                             |
@@ -95,7 +95,7 @@ scripts/
   check-harness.mjs
   lib/cycle/
     paths.mjs  io.mjs  validate.mjs  refs.mjs  git.mjs  redact.mjs  config.mjs
-    cost.mjs
+    limits.mjs  cli.mjs  cost.mjs
     *.test.mjs                       # рядом с модулем
   fixtures/cycle/**                  # только .json и .md, отформатированные prettier
 ```
@@ -111,11 +111,30 @@ scripts/
 | `paths.mjs`    | корень репо; каталог артефактов; имена файлов с номером итерации (`plan.<n>.md` …); поиск активного цикла (единственный каталог со `stage` ≠ `DONE`/`ESCALATED`, иначе ошибка)                                                                           |
 | `io.mjs`       | `readJson`, `writeJsonAtomic`, `tail(file, lines)`, `extractLastJsonBlock(md)` (последний блок ```json, `JSON.parse`; нет блока — ошибка)                                                                                                                |
 | `validate.mjs` | валидаторы `state`, `gates`, `review`, `evaluation`, `qaWeb`, `decision`; возвращают `{ ok, errors[] }`; перечисления и обязательные поля — Приложение A                                                                                                 |
-| `refs.mjs`     | `parseRef(str)` и `resolveRef(ref, ctx)`: `path:line`, `gate:<id>`, `qa:<id>`; запрещены абсолютные пути, `..`, `.pi/artifacts/`, `node_modules/`; файл существует, строка не больше числа строк; гейт есть в `gates.<n>.json`; шаг есть в `qa-web.json` |
+| `refs.mjs`     | `parseRef(str)` и `resolveRef(ref, ctx)`: `path:line`, `path:start-end` (обе границы включительно, начало не больше конца), `gate:<id>`, `qa:<id>`; запрещены абсолютные пути, `..`, `.pi/artifacts/`, `node_modules/`; файл существует, строка не больше числа строк; гейт есть в `gates.<n>.json`; шаг есть в `qa-web.json` |
 | `git.mjs`      | `baseSha()`, `intentToAddUntracked()`, `diffFromBase(base)`, `changedFiles(base)`, `addedLines(diff)`; все вызовы через `execFileSync('git', …)`                                                                                                         |
 | `redact.mjs`   | `redactLog(text)`, `redactQa(obj)`, `scanSecrets(addedLines)` (§5.4, §5.5)                                                                                                                                                                               |
 | `config.mjs`   | определения гейтов, пути-условия, лимиты (`maxDiffLines` 2000 / `maxDiffBytes` 400 КБ, `logMaxBytes` 5 МБ, `evidenceTailLines` 200, `defaultMaxIterations` 2, `maxCycleCostRub` 30 ₽), стартовые тайм-ауты                                               |
+| `limits.mjs`   | `resolveLimits({ config, configured, cli, env, defaults })` — приоритет CLI → env → конфиг → дефолт и источники значений; `checkLimitValue` (диапазоны), `describedLimits` (блок `applied_limits`), `LIMIT_FLAGS`, `envNameFor`. Файлов не читает: конфиг приходит загруженным |
 | `cost.mjs`     | `normalizeUsage`, `priceUsage`, `priceKeyFor`, `readUsage`, `readPriceSnapshot`, `cycleCostRub`: расход и его стоимость по `usage.json` и `evals/prices.json` — одна формула и для `metrics.json`, и для бюджетного порога                               |
+
+**Источники лимитов (#235).** Шесть лимитов — `maxCycleCostRub`, `defaultMaxIterations`,
+`maxDiffLines`, `maxDiffBytes`, `logMaxBytes`, `evidenceTailLines` — читаются из проектного
+конфига `.pi/harness.config.json` (раздел `limits`), который разбирает `config.mjs`, а поверх
+работают переопределения из `lib/cycle/limits.mjs`. Приоритет по каждому ключу: CLI-флаг
+(`--max-cost-rub` у `cycle-decide`, `--max-iterations` у `cycle-state init`) → переменная
+окружения `HARNESS_LIMIT_<КЛЮЧ_В_SNAKE_UPPER>` → конфиг проекта → дефолт в `config.mjs`.
+Невалидное значение (не число, не целое где нужно, вне диапазона, неизвестный ключ, битый JSON) —
+ошибка с кодом 2, а не молчаливый откат к дефолту. Применённые значения и их источник видны
+в `decision.<n>.json` (`applied_limits`) и `metrics.json` (`applied_limits`), а источник порога
+бюджета — в тексте причины `budget: … (правило 7 §5.6, лимит: …)`.
+
+**Ветка цикла (#274).** `init` фиксирует имя ветки только в `state.json` и git не трогает, поэтому
+перед записью состояния проверяется, что ветка существует и `HEAD` на ней: иначе коммиты и
+`gh pr create` уходили бы не туда, а рассинхрон всплывал бы только на PR-стадии. Та же сверка
+выполняется в `advance --to PR` и в `apply-decision`, если решение открывает `PR` (`PROCEED*`).
+Проверка ничего не мутирует: ветку создаёт человек или агент, CLI только отказывается работать
+в чужой ветке и печатает готовую команду `git switch`.
 
 ### 5.3 `cycle-state.mjs`
 
@@ -124,7 +143,7 @@ scripts/
 ```
 init     --issue N --slug S --branch B [--date YYYY-MM-DD] [--max-iterations 2] [--dir D]
 get      [--dir D] [--field F]
-advance  --to STAGE [--dir D] [--owner-approved]
+advance  --to STAGE [--dir D] [--owner-approved]   --to PR и выход из ESCALATED сверяют ветку
 finish   --stage STAGE --status done|error [--detail T] [--dir D]
 apply-decision [--dir D]              применяет decision.<n>.json
 escalate --reason R [--detail T] [--dir D]   пишет escalation.json, ставит ESCALATED
@@ -170,6 +189,12 @@ lock [--dir D] [--slug S] | unlock [--dir D]  блокировка дерева,
 **`QA_WEB → ESCALATED`** реализовано (issue #202): ребро есть в `TRANSITIONS.QA_WEB`, его
 требует Приложение B (`escalate --reason diff_too_large` на ANALYSIS уже после QA_WEB).
 `advance --to ESCALATED` при этом остаётся запрещён на любом этапе.
+
+**`ESCALATED → DECIDE`** (#235) — единственное обратное ребро из терминального этапа: владелец
+поднимает бюджет и цикл досчитывает решение в том же каталоге, вместо ручного оформления PR.
+Разрешено только `advance --to DECIDE --owner-approved`; эскалация снимается (`escalation: null`),
+`iteration` и `history` сохраняются, запись `DECIDE` открывается заново (`stage_status: running`).
+Любая другая цель из `ESCALATED` — код 3, и `DONE` остаётся терминальным без исключений.
 
 Защиты:
 
@@ -320,6 +345,9 @@ node scripts/cycle-decide.mjs --dir D [--iteration N]
      stage = первый невалидный из [REVIEW, EVALUATE]
      retries[stage] < 1  → RETRY_STAGE(stage)
      иначе               → ESCALATE(agent_output_invalid)
+   Причина дополняется путями полей для починки (#247): до 5 строк
+   `invalid:<STAGE> <файл>: <путь поля>: <что не так>`, без повторов; полный список
+   ошибок схемы CLI печатает в stderr, поэтому артефакт остаётся коротким.
 2. Блокеры (каждый обязан быть валиден, иначе downgraded → FOLLOW-UP):
    a. required-гейт со status = fail                                       → gate:<id>
    b. review: BLOCKER, валиден если file, repro, ref разрешается, !preexisting

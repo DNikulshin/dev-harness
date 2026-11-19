@@ -62,13 +62,13 @@ Telegram-мост, изменения RAG, продуктовая функцио
 
 ## 4. Роли и модели
 
-| Роль                   | Кто                   | Модель (без изменений)                  | Thinking | Инструменты                                                             |
+| Роль                   | Кто                   | Модель                                  | Thinking | Инструменты                                                             |
 | ---------------------- | --------------------- | --------------------------------------- | -------- | ----------------------------------------------------------------------- |
 | Супервизор             | главная сессия pi     | `polza-ai/deepseek/deepseek-v4.1-flash` | low      | git, gh, MCP (`playwright`, `local-rag`, `postgres` read-only), скрипты |
-| `plan`                 | субагент              | `polza-ai/z-ai/glm-5.3`                 | high     | read, grep, find, ls                                                    |
+| `plan`                 | субагент              | `polza-ai/z-ai/glm-5.3-flash`           | high     | read, grep, find, ls                                                    |
 | `code`                 | субагент              | `polza-ai/deepseek/deepseek-v4.1-flash` | low      | read, grep, find, ls, edit, write, bash                                 |
 | `review`               | субагент              | `polza-ai/openai/gpt-6-luna-pro`        | medium   | read, grep, find, ls, bash (только чтение и проверки)                   |
-| `evaluate` (**новый**) | субагент              | `polza-ai/z-ai/glm-5.3`                 | high     | read, grep, find, ls, bash (только `git` для чтения)                    |
+| `evaluate` (**новый**) | субагент              | `polza-ai/z-ai/glm-5.3-flash`           | high     | read, grep, find, ls, bash (только `git` для чтения)                    |
 | Скрипты                | детерминированный код | —                                       | —        | `scripts/cycle-*.mjs`                                                   |
 
 **Семейство модели** = второй сегмент пути: `deepseek`, `z-ai`, `openai`.
@@ -590,13 +590,13 @@ node scripts/cycle-report.mjs [--dir <каталог артефактов>] [--j
 ---
 name: evaluate
 description: 'Независимая приёмка результата цикла по критериям issue и свидетельствам. Код не правит; плана и ревью не видит.'
-model: polza-ai/z-ai/glm-5.3
+model: polza-ai/z-ai/glm-5.3-flash
 thinking: high
 tools: read, grep, find, ls, bash
 ---
 
-Ты независимый оценщик проекта hair-lab (салон красоты). Ты не автор кода, не автор плана и
-не ревьюер. Сначала прочитай AGENTS.md (и CLAUDE.md).
+Ты независимый оценщик проекта. Ты не автор кода, не автор плана и
+не ревьюер. Сначала прочитай `AGENTS.md`.
 
 Входные данные: только каталог `evidence/`, указанный в задаче (issue.md, criteria.md,
 diff.patch, gates.json и логи, qa-web.json), и код репозитория. Не читай ничего в

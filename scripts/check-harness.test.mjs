@@ -6,6 +6,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, test } from 'node:test';
 
+import { REPO_ONLY } from './lib/testsupport.mjs';
 import {
   AGENT_NAMES,
   STAGES,
@@ -526,7 +527,7 @@ describe('CLI на фикстурных деревьях', () => {
     assert.equal(runCli(['--root', root]).stdout, runCli(['--root', root]).stdout);
   });
 
-  test('без --root проверяется корень репозитория', () => {
+  test('без --root проверяется корень репозитория', REPO_ONLY, () => {
     const result = runCli([]);
     assert.equal(result.stderr, '');
     assert.ok(result.code === 0 || result.code === 1);
