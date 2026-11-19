@@ -27,6 +27,9 @@ argument-hint: '<номер issue и что сделать>'
 4. `node scripts/cycle-evidence.mjs criteria --dir <dir> --issue-json <dir>/issue.json`. Код ≠ 0 →
    `cycle-state escalate --reason criteria_missing`, комментарий в issue (`status:blocked`,
    `needs-owner`), стоп.
+5. `node scripts/cycle-state.mjs freeze-criteria` — закрепляет критерии в `state.json`. Код 3
+   (`criteria_drift`) → `escalate --reason criteria_drift`, стоп: цель меняет владелец. Повторный
+   прогон с теми же критериями — no-op, его можно вызывать перед каждым `DECIDE`.
 
 ## PLAN
 

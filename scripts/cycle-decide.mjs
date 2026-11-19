@@ -77,6 +77,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 
 import { isDirectRun } from './lib/cycle/cli.mjs';
+import { CRITERIA_FILE, criteriaDigest, parseCriteria } from './lib/cycle/criteria.mjs';
 import { changedFiles } from './lib/cycle/git.mjs';
 import { cycleCostRub, readPriceSnapshot } from './lib/cycle/cost.mjs';
 import { DEFAULTS, loadConfig } from './lib/cycle/config.mjs';
@@ -737,6 +738,34 @@ function readOptionalJson(file, validator, label) {
 }
 
 /**
+ * Критерии не изменились после заморозки (#22). Дайджест в `state.json` пишет
+ * `cycle-state freeze-criteria`; его нет — цикл старый, сверять нечего.
+ * @param {{ dir: string, config: ReturnType<typeof loadConfig>, state: Record<string, any> }} options
+ * @returns {void}
+ * @throws {Error} при расхождении: решение считалось бы по подменённой цели
+ */
+function assertCriteriaFrozen({ dir, config, state }) {
+  const frozen = typeof state.criteria_sha256 === 'string' ? state.criteria_sha256 : null;
+  if (frozen === null) return;
+
+  const file = join(dir, config.paths.evidenceDir, CRITERIA_FILE);
+  if (!existsSync(file)) {
+    throw new Error(
+      `state.criteria_sha256: критерии заморожены, а ${config.paths.evidenceDir}/${CRITERIA_FILE} нет`,
+    );
+  }
+
+  const digest = criteriaDigest(parseCriteria(readFileSync(file, 'utf8')));
+  if (digest !== frozen) {
+    throw new Error(
+      'criteria_drift: критерии приёмки изменились после заморозки ' +
+        `(${frozen.slice(0, 12)}… → ${digest.slice(0, 12)}…): решение по подменённой цели ` +
+        'не принимается',
+    );
+  }
+}
+
+/**
  * Блок `json` из md-вывода агента: `doc: null`, если файла нет, блока нет, JSON битый
  * или схема нарушена, плюс причина для подсказки в `reasons[]` (#247). Это вход правила 1,
  * а не отказ CLI: полный список ошибок печатается в stderr.
@@ -778,6 +807,9 @@ function main() {
     const dir = args.dir === null ? findActiveCycle() : resolve(args.dir);
 
     const state = readRequiredJson(join(dir, FIXED_NAMES.state), validateState, 'state.json');
+    // Решение по незамороженной цели бессмысленно: сверка критериев с закреплённым
+    // дайджестом — до любых правил (§5.6, #22).
+    assertCriteriaFrozen({ dir, config, state });
     const iteration = args.iteration ?? state.iteration;
     const names = iterNames(iteration);
 

@@ -184,6 +184,7 @@ function stateDoc(baseSha, overrides = {}) {
     ],
     escalation: null,
     applied_decision: null,
+    criteria_sha256: null,
     started_at: NOW,
     updated_at: NOW,
     ...overrides,
@@ -436,6 +437,7 @@ describe('cycle-state: init', () => {
       applied_decision: null,
       base_sha: baseSha,
       branch: CYCLE_BRANCH,
+      criteria_sha256: null,
       criteria_source: 'issue',
       escalation: null,
       history: [{ stage: 'INIT', iteration: 1, started_at: NOW, finished_at: NOW, status: 'done' }],
@@ -1209,6 +1211,142 @@ describe('cycle-state: apply-decision', () => {
       },
     });
     assert.equal(runCli(root, ['apply-decision', '--dir', foreign, '--now', LATER]).status, 3);
+  });
+});
+
+describe('cycle-state: freeze-criteria', () => {
+  /** Текст `evidence/criteria.md` в форме `renderCriteria`. */
+  const CRITERIA = [
+    '# Критерии приёмки',
+    '',
+    'Источник: секция «Критерии приёмки» (feature).',
+    '',
+    '- C1: Запрос без `serviceId` отклоняется',
+    '- C2: Поведение записи не меняется',
+    '',
+  ].join('\n');
+
+  /**
+   * Каталог цикла с замороженными или нет критериями.
+   * @param {import('node:test').TestContext} t
+   * @param {{ state?: Record<string, unknown>, criteria?: string|null }} [options]
+   * @returns {{ root: string, dir: string, baseSha: string }}
+   */
+  function cycleWithCriteria(t, { state = {}, criteria = CRITERIA } = {}) {
+    const repo = makeRepo(t);
+    /** @type {Record<string, string>} */
+    const files = {};
+    if (criteria !== null) files['evidence/criteria.md'] = criteria;
+
+    const dir = makeCycle(repo.root, {
+      state: stateDoc(repo.baseSha, {
+        stage: 'GATES',
+        stage_status: 'done',
+        history: [historyEntry('INIT', 'done'), historyEntry('GATES', 'done')],
+        ...state,
+      }),
+      files,
+    });
+    return { ...repo, dir };
+  }
+
+  test('первый прогон закрепляет дайджест и пишет его в state.json', (t) => {
+    const { root, dir } = cycleWithCriteria(t);
+
+    const run = runCli(root, ['freeze-criteria', '--dir', dir, '--now', LATER]);
+    assert.equal(run.status, 0, run.stderr);
+
+    const summary = stdoutJson(run);
+    assert.deepEqual(summary.criteria, ['C1', 'C2']);
+    assert.equal(summary.frozen, true);
+    assert.match(summary.digest, /^[0-9a-f]{64}$/u);
+
+    const state = stateJson(dir);
+    assert.equal(state.criteria_sha256, summary.digest);
+    assert.equal(state.updated_at, LATER);
+    assert.equal(validateState(state).ok, true, validateState(state).errors.join('\n'));
+  });
+
+  test('повторный прогон с теми же критериями — no-op: файл не перезаписывается', (t) => {
+    const { root, dir } = cycleWithCriteria(t);
+
+    assert.equal(runCli(root, ['freeze-criteria', '--dir', dir, '--now', LATER]).status, 0);
+    const before = stateText(dir);
+
+    const second = runCli(root, ['freeze-criteria', '--dir', dir, '--now', '2026-11-16T11:00:00Z']);
+    assert.equal(second.status, 0, second.stderr);
+    assert.equal(stdoutJson(second).frozen, false);
+    assert.equal(stateText(dir), before, 'идемпотентность: state.json не перезаписан');
+  });
+
+  test('изменённые критерии — конфликт (код 3) и state.json не меняется', (t) => {
+    const { root, dir } = cycleWithCriteria(t, { state: { criteria_sha256: 'a'.repeat(64) } });
+    const before = stateText(dir);
+
+    const run = runCli(root, ['freeze-criteria', '--dir', dir, '--now', LATER]);
+    assert.equal(run.status, 3, run.stdout);
+    assert.match(run.stderr, /criteria_drift/u);
+    assert.equal(stateText(dir), before, 'цель не подменяется');
+  });
+
+  test('владелец может обновить заморозку при criteria_source = plan_owner_approved', (t) => {
+    const { root, dir } = cycleWithCriteria(t, {
+      state: { criteria_sha256: 'a'.repeat(64), criteria_source: 'plan_owner_approved' },
+    });
+
+    const run = runCli(root, ['freeze-criteria', '--dir', dir, '--owner-approved', '--now', LATER]);
+    assert.equal(run.status, 0, run.stderr);
+    assert.notEqual(stateJson(dir).criteria_sha256, 'a'.repeat(64));
+  });
+
+  test('plan_owner_approved без флага владельца — всё равно конфликт', (t) => {
+    const { root, dir } = cycleWithCriteria(t, {
+      state: { criteria_sha256: 'a'.repeat(64), criteria_source: 'plan_owner_approved' },
+    });
+
+    assert.equal(runCli(root, ['freeze-criteria', '--dir', dir, '--now', LATER]).status, 3);
+  });
+
+  test('нет evidence/criteria.md — ошибка использования (код 2)', (t) => {
+    const { root, dir } = cycleWithCriteria(t, { criteria: null });
+
+    const run = runCli(root, ['freeze-criteria', '--dir', dir, '--now', LATER]);
+    assert.equal(run.status, 2, run.stdout);
+    assert.match(run.stderr, /criteria\.md: критерии не собраны/u);
+  });
+
+  test('файл без строк вида «- C1: …» — код 2: закреплять нечего', (t) => {
+    const { root, dir } = cycleWithCriteria(t, { criteria: '# Критерии приёмки\n\nнет пунктов\n' });
+
+    const run = runCli(root, ['freeze-criteria', '--dir', dir, '--now', LATER]);
+    assert.equal(run.status, 2, run.stdout);
+    assert.match(run.stderr, /нет строк вида/u);
+  });
+
+  test('терминальный этап — конфликт (код 3): состояние не меняется', (t) => {
+    const { root, dir } = cycleWithCriteria(t, {
+      state: {
+        stage: 'DONE',
+        stage_status: 'done',
+        history: [
+          historyEntry('INIT', 'done'),
+          historyEntry('PR', 'done'),
+          historyEntry('DONE', 'done'),
+        ],
+      },
+    });
+
+    const run = runCli(root, ['freeze-criteria', '--dir', dir, '--now', LATER]);
+    assert.equal(run.status, 3, run.stdout);
+    assert.equal(stateJson(dir).criteria_sha256, null);
+  });
+
+  test('флаг, которого у подкоманды нет, — код 2', (t) => {
+    const { root, dir } = cycleWithCriteria(t);
+
+    const run = runCli(root, ['freeze-criteria', '--dir', dir, '--to', 'REVIEW']);
+    assert.equal(run.status, 2, run.stdout);
+    assert.match(run.stderr, /не поддерживается/u);
   });
 });
 

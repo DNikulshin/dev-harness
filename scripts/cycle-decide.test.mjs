@@ -4,6 +4,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+import { criteriaDigest, parseCriteria } from './lib/cycle/criteria.mjs';
 import { describe, test } from 'node:test';
 
 import { decide, diffTouchesWeb, normalizeDoc } from './cycle-decide.mjs';
@@ -1179,6 +1181,78 @@ describe('CLI: запись решения', () => {
       'criteria:C3 unverified',
     ]);
     assert.equal(decision.unresolved_refs, 0);
+  });
+
+  test('замороженные критерии: совпадение — решение считается', (t) => {
+    const repo = makeRepo(t);
+    writeRepoFile(repo.root, 'scripts/lib/cycle/refs.mjs', 200);
+    writeRepoFile(repo.root, 'scripts/lib/cycle/redact.mjs', 100);
+    writeRepoFile(repo.root, 'scripts/lib/cycle/validate.mjs', 10);
+
+    const criteriaText = '# Критерии приёмки\n\n- C1: пример\n';
+    const dir = makeCycleDir(repo.root, {
+      state: stateDoc(repo.baseSha, {
+        criteria_sha256: criteriaDigest(parseCriteria(criteriaText)),
+      }),
+      gates: gatesDoc([gate('test_scripts', 'pass'), gate('test_int', 'pass')]),
+      reviewMd: readFileSync(new URL('review.valid.md', FIXTURES), 'utf8'),
+      evaluationMd: readFileSync(new URL('evaluation.valid.md', FIXTURES), 'utf8'),
+    });
+    mkdirSync(join(dir, 'evidence'), { recursive: true });
+    writeFileSync(join(dir, 'evidence', 'criteria.md'), criteriaText);
+
+    const result = runCli(repo.root, ['--dir', dir]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(JSON.parse(result.stdout).action, 'REWORK');
+  });
+
+  test('дрейф критериев после заморозки — код 2, решение не пишется', (t) => {
+    const repo = makeRepo(t);
+    const dir = makeCycleDir(repo.root, {
+      state: stateDoc(repo.baseSha, { criteria_sha256: 'c'.repeat(64) }),
+      reviewMd: readFileSync(new URL('review.valid.md', FIXTURES), 'utf8'),
+      evaluationMd: readFileSync(new URL('evaluation.valid.md', FIXTURES), 'utf8'),
+    });
+    mkdirSync(join(dir, 'evidence'), { recursive: true });
+    writeFileSync(
+      join(dir, 'evidence', 'criteria.md'),
+      '# Критерии приёмки\n\n- C1: подменённый\n',
+    );
+
+    const result = runCli(repo.root, ['--dir', dir]);
+
+    assert.equal(result.status, 2, result.stdout);
+    assert.match(result.stderr, /criteria_drift/u);
+    assert.equal(
+      existsSync(join(dir, 'decision.1.json')),
+      false,
+      'решение по чужой цели не пишется',
+    );
+  });
+
+  test('критерии заморожены, а criteria.md нет — код 2', (t) => {
+    const repo = makeRepo(t);
+    const dir = makeCycleDir(repo.root, {
+      state: stateDoc(repo.baseSha, { criteria_sha256: 'c'.repeat(64) }),
+      reviewMd: readFileSync(new URL('review.valid.md', FIXTURES), 'utf8'),
+      evaluationMd: readFileSync(new URL('evaluation.valid.md', FIXTURES), 'utf8'),
+    });
+
+    const result = runCli(repo.root, ['--dir', dir]);
+    assert.equal(result.status, 2, result.stdout);
+    assert.match(result.stderr, /критерии заморожены, а evidence\/criteria\.md нет/u);
+  });
+
+  test('старый цикл без criteria_sha256 читается: сверять нечего', (t) => {
+    const repo = makeRepo(t);
+    const dir = makeCycleDir(repo.root, {
+      state: stateDoc(repo.baseSha),
+      reviewMd: readFileSync(new URL('review.valid.md', FIXTURES), 'utf8'),
+      evaluationMd: readFileSync(new URL('evaluation.valid.md', FIXTURES), 'utf8'),
+    });
+
+    const result = runCli(repo.root, ['--dir', dir]);
+    assert.equal(result.status, 0, result.stderr);
   });
 
   test('без блока json в md — правило 1 и никаких review/evaluation json', (t) => {

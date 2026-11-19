@@ -72,6 +72,7 @@ import { normalizeDoc } from './cycle-decide.mjs';
 import { resolveBaseSha } from './cycle-gates.mjs';
 import { isDirectRun } from './lib/cycle/cli.mjs';
 import { DEFAULTS, loadConfig } from './lib/cycle/config.mjs';
+import { CRITERIA_OWNER_APPROVED, criteriaDigest } from './lib/cycle/criteria.mjs';
 import { resolveLimits } from './lib/cycle/limits.mjs';
 import { diffFromBase, intentToAddUntracked } from './lib/cycle/git.mjs';
 import { readJson, tail, writeTextAtomic } from './lib/cycle/io.mjs';
@@ -107,6 +108,13 @@ const EMPTY_FIELD = '_No response_';
 
 /** Причина отказа §5.4: критериев в issue нет. */
 const REASON_CRITERIA_MISSING = 'criteria_missing';
+
+/**
+ * Критерии изменились после заморозки (#22): перезаписывать `criteria.md` нельзя — цель
+ * итерации закреплена в `state.json` (`cycle-state freeze-criteria`), и подмена её тихой
+ * записью сделала бы оценку бессмысленной.
+ */
+const REASON_CRITERIA_DRIFT = 'criteria_drift';
 
 /** Причина отказа §5.2: дифф больше лимита (код 4). */
 const REASON_DIFF_TOO_LARGE = 'diff_too_large';
@@ -755,9 +763,39 @@ function writeEvidenceFiles(dir, files) {
 }
 
 /**
+/**
+ * Дрейф критериев относительно заморозки: `null`, если `state.criteria_sha256` не задан,
+ * совпадает с извлечёнными критериями или критерии вправе измениться
+ * (`criteria_source = plan_owner_approved` — решение владельца, §5.3).
+ * @param {string} dir каталог цикла
+ * @param {ReturnType<typeof loadConfig>} config
+ * @param {import('./lib/cycle/criteria.mjs').Criterion[]} criteria извлечённые критерии
+ * @returns {string|null} закреплённый дайджест при дрейфе
+ */
+function criteriaDrift(dir, config, criteria) {
+  const file = join(dir, FIXED_NAMES.state);
+  if (!existsSync(file)) return null;
+
+  /** @type {Record<string, any>} */
+  let state;
+  try {
+    state = /** @type {Record<string, any>} */ (readJson(file));
+  } catch {
+    // Битый state.json — забота cycle-state: здесь нечего сверять, файл критериев не трогаем.
+    return null;
+  }
+
+  const frozen = typeof state.criteria_sha256 === 'string' ? state.criteria_sha256 : null;
+  if (frozen === null) return null;
+  if (state.criteria_source === CRITERIA_OWNER_APPROVED) return null;
+  return frozen === criteriaDigest(criteria) ? null : frozen;
+}
+
+/**
  * Подкоманда `criteria`: извлечение критериев и запись `evidence/issue.md` и
  * `evidence/criteria.md`. При `criteria_missing` файлы не пишутся, в stdout — строка JSON
- * с причиной, код 2.
+ * с причиной, код 2. При `criteria_drift` (критерии изменились после заморозки, #22) файлы
+ * тоже не пишутся: цель итерации закреплена в `state.json` и меняется только владельцем.
  * @param {{ dir: string, issueJson: string, config: ReturnType<typeof loadConfig> }} options
  * @returns {number} код выхода
  */
@@ -776,6 +814,19 @@ function runCriteria({ dir, issueJson, config }) {
   }
 
   const evidenceDir = join(dir, config.paths.evidenceDir);
+  const drift = criteriaDrift(dir, config, extraction.criteria);
+  if (drift !== null) {
+    process.stdout.write(
+      `${JSON.stringify(normalizeDoc({ command: 'criteria', reason: REASON_CRITERIA_DRIFT }))}\n`,
+    );
+    process.stderr.write(
+      `cycle-evidence: ${REASON_CRITERIA_DRIFT}: критерии изменились после заморозки ` +
+        `(${drift} → ${criteriaDigest(extraction.criteria).slice(0, 12)}…); цель меняет ` +
+        'владелец, файл не перезаписан\n',
+    );
+    return 2;
+  }
+
   mkdirSync(evidenceDir, { recursive: true });
   writeTextAtomic(join(evidenceDir, EVIDENCE_FILES.issue), renderIssue(issue.title, issue.body));
   writeTextAtomic(

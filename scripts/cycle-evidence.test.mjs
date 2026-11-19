@@ -13,6 +13,8 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+import { criteriaDigest, parseCriteria } from './lib/cycle/criteria.mjs';
 import { describe, test } from 'node:test';
 
 import {
@@ -526,6 +528,57 @@ describe('criteria: CLI', () => {
         '',
       ].join('\n'),
     );
+  });
+
+  test('замороженные критерии не перезаписываются: дрейф — код 2, criteria_drift', (t) => {
+    const { root, baseSha } = makeRepo(t);
+    const dir = makeCycleDir(root, {
+      baseSha,
+      state: stateDoc(baseSha, { criteria_sha256: 'b'.repeat(64) }),
+      criteria: '# Критерии приёмки\n\n- C1: другое\n',
+    });
+    writeFileSync(join(dir, 'issue.json'), `${JSON.stringify(FEATURE_ISSUE, null, 2)}\n`);
+    writeFileSync(join(dir, 'evidence', 'issue.md'), 'старое свидетельство\n');
+
+    const result = runCli(root, ['criteria', '--dir', dir]);
+
+    assert.equal(result.status, 2, result.stdout);
+    assert.deepEqual(stdoutJson(result), { command: 'criteria', reason: 'criteria_drift' });
+    assert.match(result.stderr, /criteria_drift: критерии изменились после заморозки/u);
+    assert.equal(evidence(dir, 'criteria.md'), '# Критерии приёмки\n\n- C1: другое\n');
+    assert.equal(evidence(dir, 'issue.md'), 'старое свидетельство\n', 'issue.md тоже не тронут');
+  });
+
+  test('Замороженные критерии совпадают с issue — запись разрешена', (t) => {
+    const { root, baseSha } = makeRepo(t);
+    const dir = makeCycleDir(root, { baseSha });
+    writeFileSync(join(dir, 'issue.json'), `${JSON.stringify(FEATURE_ISSUE, null, 2)}\n`);
+
+    assert.equal(runCli(root, ['criteria', '--dir', dir]).status, 0);
+    const frozen = criteriaDigest(parseCriteria(evidence(dir, 'criteria.md')));
+    writeFileSync(
+      join(dir, 'state.json'),
+      `${JSON.stringify(stateDoc(baseSha, { criteria_sha256: frozen }), null, 2)}\n`,
+    );
+
+    const result = runCli(root, ['criteria', '--dir', dir]);
+    assert.equal(result.status, 0, result.stderr);
+  });
+
+  test('plan_owner_approved: критерии вправе измениться, перезапись разрешена', (t) => {
+    const { root, baseSha } = makeRepo(t);
+    const dir = makeCycleDir(root, {
+      baseSha,
+      state: stateDoc(baseSha, {
+        criteria_sha256: 'b'.repeat(64),
+        criteria_source: 'plan_owner_approved',
+      }),
+    });
+    writeFileSync(join(dir, 'issue.json'), `${JSON.stringify(FEATURE_ISSUE, null, 2)}\n`);
+
+    const result = runCli(root, ['criteria', '--dir', dir]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(evidence(dir, 'criteria.md'), /- C1: повторная отправка/u);
   });
 
   test('два прогона дают побайтно одинаковые файлы', (t) => {
