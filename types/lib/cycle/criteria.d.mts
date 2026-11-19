@@ -31,6 +31,23 @@ export type Criterion = {
  */
 export declare function parseCriteria(markdown: string): Criterion[];
 /**
+ * Закреплённый дайджест критериев из `state.json`: `null`, если заморозки не было (старый цикл
+ * или цикл до шага `freeze-criteria`).
+ * @param {Record<string, any>} state проверенное состояние
+ * @returns {string|null}
+ */
+export declare function frozenDigest(state: Record<string, any>): string | null;
+/**
+ * Дрейф цели: `null`, если заморозки нет или критерии совпадают с закреплёнными, иначе —
+ * закреплённый дайджест. Чистая функция: файлы читает вызывающий, поэтому одна проверка
+ * работает и в `cycle-decide` (файл — вход решения), и в `cycle-evidence packet` (вход судьи),
+ * и в `cycle-pr-body` (публикуемая цель), и в `cycle-evidence criteria` (критерии из issue).
+ * @param {readonly Criterion[]} criteria критерии в актуальном виде
+ * @param {Record<string, any>} state проверенное состояние
+ * @returns {string|null}
+ */
+export declare function criteriaMismatch(criteria: readonly Criterion[], state: Record<string, any>): string | null;
+/**
  * `sha256` канонической формы критериев: пары `[id, text]` в порядке файла.
  *
  * Канон — не текст файла, а именно пары: заголовок, источник (`Источник: секция …`) и

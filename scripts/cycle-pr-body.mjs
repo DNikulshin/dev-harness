@@ -68,7 +68,7 @@ import { join, resolve } from 'node:path';
 
 import { isDirectRun } from './lib/cycle/cli.mjs';
 import { loadConfig } from './lib/cycle/config.mjs';
-import { CRITERIA_FILE, parseCriteria } from './lib/cycle/criteria.mjs';
+import { CRITERIA_FILE, criteriaMismatch, parseCriteria } from './lib/cycle/criteria.mjs';
 import { readJson } from './lib/cycle/io.mjs';
 import { FIXED_NAMES, findActiveCycle, iterNames, repoRoot } from './lib/cycle/paths.mjs';
 import { redactLog } from './lib/cycle/redact.mjs';
@@ -750,6 +750,13 @@ function main() {
     );
     if (criteria.length === 0) {
       throw new Error(`${CRITERIA_FILE}: нет строк вида «- C1: формулировка»`);
+    }
+    // Тело PR публикует цель: критерии, отличные от замороженных, показывать нельзя (#22).
+    if (criteriaMismatch(criteria, state) !== null) {
+      throw new Error(
+        `${CRITERIA_FILE}: критерии не совпадают с замороженными (criteria_drift): ` +
+          'тело PR собиралось бы по чужой цели',
+      );
     }
 
     const escalation = args.draftEscalation

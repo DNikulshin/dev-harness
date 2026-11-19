@@ -105,6 +105,15 @@ describe('criteriaDigest', () => {
     assert.notEqual(criteriaDigest(criteria), criteriaDigest(changed));
   });
 
+  test('эталонный дайджест закреплён литералом: смена канона не пройдёт незамеченной', () => {
+    // Дайджест персистится в `state.json` и сверяется другими версиями кода: смена канонической
+    // формы (разделитель, состав пар) превратила бы все замороженные циклы в `criteria_drift`.
+    assert.equal(
+      criteriaDigest(criteria),
+      'fe6ab74de944d78bb143fa85472400c0550608217f4241c8d8b7a88c1a1c63b8',
+    );
+  });
+
   test('не массив — TypeError', () => {
     assert.throws(() => criteriaDigest(/** @type {any} */ ('- C1: x')), /ожидается массив/u);
   });

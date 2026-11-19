@@ -77,7 +77,12 @@ import { existsSync, readFileSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 
 import { isDirectRun } from './lib/cycle/cli.mjs';
-import { CRITERIA_FILE, criteriaDigest, parseCriteria } from './lib/cycle/criteria.mjs';
+import {
+  CRITERIA_FILE,
+  criteriaMismatch,
+  frozenDigest,
+  parseCriteria,
+} from './lib/cycle/criteria.mjs';
 import { changedFiles } from './lib/cycle/git.mjs';
 import { cycleCostRub, readPriceSnapshot } from './lib/cycle/cost.mjs';
 import { DEFAULTS, loadConfig } from './lib/cycle/config.mjs';
@@ -745,22 +750,31 @@ function readOptionalJson(file, validator, label) {
  * @throws {Error} при расхождении: решение считалось бы по подменённой цели
  */
 function assertCriteriaFrozen({ dir, config, state }) {
-  const frozen = typeof state.criteria_sha256 === 'string' ? state.criteria_sha256 : null;
+  const file = join(dir, config.paths.evidenceDir, CRITERIA_FILE);
+  const frozen = frozenDigest(state);
+
+  // Новый цикл отличается от старого наличием поля: `init` пишет `null`, а в старых
+  // `state.json` поля нет вовсе. Молчать в первом случае нельзя — пропущенный шаг
+  // заморозки означает решение по незакреплённой цели (#22).
+  if (frozen === null && Object.hasOwn(state, 'criteria_sha256')) {
+    process.stderr.write(
+      'cycle-decide: предупреждение: критерии не заморожены (state.criteria_sha256 = null): ' +
+        'цель итерации не закреплена, шаг freeze-criteria пропущен\n',
+    );
+  }
   if (frozen === null) return;
 
-  const file = join(dir, config.paths.evidenceDir, CRITERIA_FILE);
   if (!existsSync(file)) {
     throw new Error(
       `state.criteria_sha256: критерии заморожены, а ${config.paths.evidenceDir}/${CRITERIA_FILE} нет`,
     );
   }
 
-  const digest = criteriaDigest(parseCriteria(readFileSync(file, 'utf8')));
-  if (digest !== frozen) {
+  const mismatch = criteriaMismatch(parseCriteria(readFileSync(file, 'utf8')), state);
+  if (mismatch !== null) {
     throw new Error(
       'criteria_drift: критерии приёмки изменились после заморозки ' +
-        `(${frozen.slice(0, 12)}… → ${digest.slice(0, 12)}…): решение по подменённой цели ` +
-        'не принимается',
+        `(${mismatch.slice(0, 12)}…): решение по подменённой цели не принимается`,
     );
   }
 }

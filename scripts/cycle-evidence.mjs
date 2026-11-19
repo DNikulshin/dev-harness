@@ -72,7 +72,12 @@ import { normalizeDoc } from './cycle-decide.mjs';
 import { resolveBaseSha } from './cycle-gates.mjs';
 import { isDirectRun } from './lib/cycle/cli.mjs';
 import { DEFAULTS, loadConfig } from './lib/cycle/config.mjs';
-import { CRITERIA_OWNER_APPROVED, criteriaDigest } from './lib/cycle/criteria.mjs';
+import {
+  criteriaDigest,
+  criteriaMismatch,
+  frozenDigest,
+  parseCriteria,
+} from './lib/cycle/criteria.mjs';
 import { resolveLimits } from './lib/cycle/limits.mjs';
 import { diffFromBase, intentToAddUntracked } from './lib/cycle/git.mjs';
 import { readJson, tail, writeTextAtomic } from './lib/cycle/io.mjs';
@@ -608,7 +613,7 @@ function readRequiredJson(file, validator, label) {
  * @param {string} file
  * @returns {{ title: string, body: string, labels: unknown }}
  */
-function readIssue(file) {
+export function readIssue(file) {
   /** @type {unknown} */
   let doc;
   try {
@@ -684,6 +689,19 @@ function buildPacket({ dir, root, base = null, config = loadConfig(root) }) {
       `${FIXED_NAMES.evidenceDir}/${EVIDENCE_FILES.criteria}: критерии не собраны, сначала ` +
         'подкоманда criteria',
     );
+  }
+
+  // Пакет — вход судьи: отдать ему критерии, отличные от замороженных, значит оценивать не ту
+  // цель (#22). Сверка здесь, а не только в решении: решение случается позже.
+  const frozen = frozenDigest(state);
+  if (frozen !== null) {
+    const criteriaText = readFileSync(join(evidenceDir, EVIDENCE_FILES.criteria), 'utf8');
+    if (criteriaMismatch(parseCriteria(criteriaText), state) !== null) {
+      throw new Error(
+        `${FIXED_NAMES.evidenceDir}/${EVIDENCE_FILES.criteria}: критерии не совпадают с ` +
+          'замороженными (criteria_drift): пересоберите criteria или подтвердите цель владельцем',
+      );
+    }
   }
 
   // Приоритет базы: явный `--base` → база прогона гейтов → база цикла. База гейтов
@@ -763,32 +781,39 @@ function writeEvidenceFiles(dir, files) {
 }
 
 /**
-/**
- * Дрейф критериев относительно заморозки: `null`, если `state.criteria_sha256` не задан,
- * совпадает с извлечёнными критериями или критерии вправе измениться
- * (`criteria_source = plan_owner_approved` — решение владельца, §5.3).
+ * Дрейф критериев относительно заморозки (#22): `null`, если заморозки нет или извлечённые из
+ * issue критерии совпадают с закреплённым дайджестом.
+ *
+ * Сравнение идёт с **критериями из issue**, а не с файлом `criteria.md`: файл производный, и
+ * подмена в нём не должна засчитываться как цель. `state.json` обязан быть валидным — битое
+ * состояние не «отключает» заморозку, а останавливает команду (fail-closed): иначе достаточно
+ * испортить файл, чтобы защита исчезла.
  * @param {string} dir каталог цикла
- * @param {ReturnType<typeof loadConfig>} config
- * @param {import('./lib/cycle/criteria.mjs').Criterion[]} criteria извлечённые критерии
+ * @param {import('./lib/cycle/criteria.mjs').Criterion[]} criteria критерии, извлечённые из issue
  * @returns {string|null} закреплённый дайджест при дрейфе
+ * @throws {Error} если `state.json` не читается или нарушает схему
  */
-function criteriaDrift(dir, config, criteria) {
+function criteriaDrift(dir, criteria) {
   const file = join(dir, FIXED_NAMES.state);
-  if (!existsSync(file)) return null;
-
-  /** @type {Record<string, any>} */
-  let state;
+  /** @type {unknown} */
+  let doc;
   try {
-    state = /** @type {Record<string, any>} */ (readJson(file));
-  } catch {
-    // Битый state.json — забота cycle-state: здесь нечего сверять, файл критериев не трогаем.
-    return null;
+    doc = readJson(file);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(`${FIXED_NAMES.state}: не читается как JSON (${file}): ${reason}`, {
+      cause: error,
+    });
   }
 
-  const frozen = typeof state.criteria_sha256 === 'string' ? state.criteria_sha256 : null;
-  if (frozen === null) return null;
-  if (state.criteria_source === CRITERIA_OWNER_APPROVED) return null;
-  return frozen === criteriaDigest(criteria) ? null : frozen;
+  const checked = validateState(doc);
+  if (!checked.ok) {
+    throw new Error(
+      `${FIXED_NAMES.state}: схема нарушена (${file}):\n${checked.errors.join('\n')}`,
+    );
+  }
+
+  return criteriaMismatch(criteria, /** @type {Record<string, any>} */ (doc));
 }
 
 /**
@@ -814,7 +839,7 @@ function runCriteria({ dir, issueJson, config }) {
   }
 
   const evidenceDir = join(dir, config.paths.evidenceDir);
-  const drift = criteriaDrift(dir, config, extraction.criteria);
+  const drift = criteriaDrift(dir, extraction.criteria);
   if (drift !== null) {
     process.stdout.write(
       `${JSON.stringify(normalizeDoc({ command: 'criteria', reason: REASON_CRITERIA_DRIFT }))}\n`,

@@ -146,7 +146,7 @@ init     --issue N --slug S --branch B [--date YYYY-MM-DD] [--max-iterations 2] 
 get      [--dir D] [--field F]
 advance  --to STAGE [--dir D] [--owner-approved]   --to PR и выход из ESCALATED сверяют ветку
 finish   --stage STAGE --status done|error [--detail T] [--dir D]
-freeze-criteria [--dir D] [--owner-approved]  закрепляет дайджест evidence/criteria.md
+freeze-criteria [--dir D] [--owner-approved]  закрепляет дайджест критериев из issue.json
 apply-decision [--dir D]              применяет decision.<n>.json
 escalate --reason R [--detail T] [--dir D]   пишет escalation.json, ставит ESCALATED
 resume   [--dir D]                    печатает первый незавершённый этап
@@ -216,11 +216,13 @@ lock [--dir D] [--slug S] | unlock [--dir D]  блокировка дерева,
   общим правилам, а когда переход уже невозможен (не `DECIDE`, терминальный этап) — код 3,
   а не молчаливый успех;
 - `freeze-criteria` закрепляет цель итерации: в `state.json` пишется `criteria_sha256` —
-  `sha256` пар `[id, формулировка]` из `evidence/criteria.md` (`lib/cycle/criteria.mjs`).
+  `sha256` пар `[id, формулировка]` критериев, **извлечённых из `issue.json`** тем же разбором,
+  что в `cycle-evidence` (`lib/cycle/criteria.mjs`). Источник — issue, а не `evidence/criteria.md`:
+  файл производный, и закреплять его значило бы разрешить подменить цель до первой заморозки.
   Повторный прогон с теми же критериями — no-op (код 0, файл не перезаписывается), изменённые
-  критерии — код 3 `criteria_drift`, пока их не подтвердит владелец
-  (`--owner-approved` при `criteria_source = plan_owner_approved`). Нет критериев — код 2:
-  закреплять нечего. Терминальный этап — код 3, как у любой мутации;
+  критерии — код 3 `criteria_drift`, пока их не подтвердит владелец флагом `--owner-approved`
+  (подтверждение фиксируется в `state.owner_approved`). Нет `issue.json` или критериев в нём —
+  код 2: закреплять нечего. Терминальный этап — код 3, как у любой мутации;
 - `escalate` вычисляет `draft_pr_allowed` (§9): проход `code` завершён и обязательные гейты
   зелёные, то есть `gates.<n>.json` текущей итерации валиден, содержит ≥ 1 гейт
   `required: true`, и каждый обязательный гейт — `pass` или `not_run` с причиной
@@ -745,10 +747,11 @@ A1–A9 статически; запуск `node --test` и `gh` остаётс�
 четырёх полей — no-op. Валидатор `state` лишние поля игнорирует, поэтому старые `state.json`
 без этого поля остаются валидными.
 
-`criteria_sha256` — заморозка критериев приёмки (#22): `sha256` пар `[id, формулировка]` из
-`evidence/criteria.md`, пишется `cycle-state freeze-criteria`, сверяется `cycle-decide` до
-применения правил (расхождение — код 2 `criteria_drift`: решение по подменённой цели не
-принимается) и `cycle-evidence criteria` (расхождение — код 2, файл не перезаписывается).
+`criteria_sha256` — заморозка критериев приёмки (#22): `sha256` пар `[id, формулировка]`
+критериев из `issue.json`, пишется `cycle-state freeze-criteria`. Сверка идёт в четырёх местах:
+`cycle-evidence criteria` (критерии из issue против закреплённых — расхождение код 2, файлы не
+перезаписываются), `cycle-evidence packet` (пакет — вход судьи), `cycle-decide` (до применения
+правил) и `cycle-pr-body` (публикуемая цель) — расхождение везде код 2 `criteria_drift`.
 Поле необязательное: `null` и отсутствие равнозначны «не заморожено», старые `state.json`
 остаются валидными, мусор в поле — ошибка схемы.
 
@@ -811,7 +814,8 @@ INIT       gh issue view N --json title,body,labels > <dir>/issue.json
            node scripts/cycle-evidence.mjs criteria --dir <dir> --issue-json <dir>/issue.json
              (код ≠ 0 → cycle-state escalate --reason criteria_missing; комментарий в issue; стоп)
            node scripts/cycle-state.mjs freeze-criteria
-             (код 3 criteria_drift → стоп: цель цикла меняет владелец, а не исполнение)
+             (код 3 criteria_drift → escalate --reason criteria_drift, стоп: цель цикла
+              меняет владелец; подтверждение — freeze-criteria --owner-approved)
 PLAN       advance --to PLAN → субагент plan → plan.<n>.md → finish
              (план просит выбрать вариант → escalate --reason plan_ambiguous)
 CODE       advance --to CODE → субагент code → code-report.<n>.md → finish

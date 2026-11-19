@@ -53,12 +53,13 @@
  *   терминальное состояние) — завершается кодом 3, а не молчаливым успехом. Поле вне
  *   Приложения A: валидатор лишние поля игнорирует. `digest` детерминирован, поэтому
  *   артефакты остаются побайтно воспроизводимыми.
- * - **Заморозка критериев (#22).** `freeze-criteria` пишет в `state.json` дайджест
- *   `evidence/criteria.md` (`criteria_sha256`, Формат — `lib/cycle/criteria.mjs`). Повторный
- *   запуск с теми же критериями — no-op с кодом 0 (файл не перезаписывается); изменённые
- *   критерии — код 3 (`criteria_drift`), обновить дайджест можно только при
- *   `criteria_source = plan_owner_approved` и флаге `--owner-approved`: цель цикла меняет
- *   владелец, а не исполнение. Нет критериев — код 2: закреплять нечего.
+ * - **Заморозка критериев (#22).** `freeze-criteria` пишет в `state.json` дайджест критериев,
+ *   извлечённых из `issue.json` (`criteria_sha256`, формат — `lib/cycle/criteria.mjs`).
+ *   Источник — issue, а не `evidence/criteria.md`: файл производный, иначе цель можно было бы
+ *   подменить до первой заморозки. Повторный запуск с теми же критериями — no-op с кодом 0
+ *   (файл не перезаписывается); изменённые критерии — код 3 (`criteria_drift`), новую цель
+ *   подтверждает владелец флагом `--owner-approved` (подтверждение фиксируется в
+ *   `state.owner_approved`). Нет `issue.json` или критериев в нём — код 2.
  * - **`history[]`.** `advance`/`startStage` дописывают открытую запись
  *   `{ stage, iteration, started_at: now, finished_at: null, status: 'running' }` и ставят
  *   `stage_status = 'running'`; `finish` закрывает последнюю открытую запись
@@ -143,7 +144,7 @@ import {
 import { dirname, join, resolve } from 'node:path';
 
 import { normalizeDoc } from './cycle-decide.mjs';
-import { assertWritableDir } from './cycle-evidence.mjs';
+import { assertWritableDir, extractCriteria, readIssue } from './cycle-evidence.mjs';
 import { isDirectRun } from './lib/cycle/cli.mjs';
 import { DEFAULTS, loadConfig } from './lib/cycle/config.mjs';
 import {
@@ -1499,18 +1500,22 @@ function runApplyDecision(args, root) {
 }
 
 /**
- * `freeze-criteria`: закрепляет в `state.json` дайджест `evidence/criteria.md` — цель, по
- * которой оценивают итерацию, не должна меняться под сделанное (#22).
+ * `freeze-criteria`: закрепляет в `state.json` дайджест критериев приёмки — цель, по которой
+ * оценивают итерацию, не должна меняться под сделанное (#22).
+ *
+ * Источник истины — `issue.json` (его пишет INIT по `gh issue view`), а не `evidence/criteria.md`:
+ * файл производный, и закреплять его содержимое значило бы разрешить подменить цель до первой
+ * заморозки. Дайджест считается по критериям, извлечённым из issue тем же разбором, что в
+ * `cycle-evidence`.
  *
  * Идемпотентность — как у `apply-decision`: тот же дайджест не перезаписывает файл. Дрейф —
- * конфликт состояния (код 3), а не тихая замена цели; снять его может только владелец
- * (`--owner-approved` при `criteria_source = plan_owner_approved`).
+ * конфликт состояния (код 3), а не тихая замена цели; снять его может только владелец флагом
+ * `--owner-approved`, и подтверждение фиксируется в `state.owner_approved`.
  * @param {ReturnType<typeof parseArgs>} args
  * @param {string} root
- * @param {ReturnType<typeof loadConfig>} config
  * @returns {number} код выхода
  */
-function runFreezeCriteria(args, root, config) {
+function runFreezeCriteria(args, root) {
   const dir = cycleDir(args);
   assertWritableDir(dir, root);
 
@@ -1518,28 +1523,24 @@ function runFreezeCriteria(args, root, config) {
   const state = readState(file);
   assertNotTerminal(state);
 
-  const criteriaFile = join(dir, config.paths.evidenceDir, CRITERIA_FILE);
-  if (!existsSync(criteriaFile)) {
-    throw new UsageError(
-      `${config.paths.evidenceDir}/${CRITERIA_FILE}: критерии не собраны, сначала ` +
-        '`cycle-evidence criteria`',
-    );
+  const issuePath = join(dir, 'issue.json');
+  if (!existsSync(issuePath)) {
+    throw new UsageError('issue.json: файл не найден, сначала `cycle-evidence criteria`');
   }
 
-  const criteria = parseCriteria(readFileSync(criteriaFile, 'utf8'));
-  if (criteria.length === 0) {
-    throw new UsageError(
-      `${config.paths.evidenceDir}/${CRITERIA_FILE}: нет строк вида «- C1: формулировка»`,
-    );
+  const extraction = extractCriteria(readIssue(issuePath));
+  if (!extraction.ok) {
+    throw new UsageError(`${extraction.reason}: ${extraction.detail} (issue.json)`);
   }
 
+  const criteria = extraction.criteria;
   const digest = criteriaDigest(criteria);
   const frozen = typeof state.criteria_sha256 === 'string' ? state.criteria_sha256 : null;
   const summary = {
     command: 'freeze-criteria',
     criteria: criteria.map((criterion) => criterion.id),
     digest,
-    frozen: frozen === null,
+    newly_frozen: frozen === null,
   };
 
   if (frozen === digest) {
@@ -1547,17 +1548,22 @@ function runFreezeCriteria(args, root, config) {
     return 0;
   }
 
-  if (frozen !== null) {
-    if (state.criteria_source !== CRITERIA_OWNER_APPROVED || !args.ownerApproved) {
-      throw new ConflictError(
-        'criteria_drift: критерии приёмки изменились после заморозки ' +
-          `(${frozen.slice(0, 12)}… → ${digest.slice(0, 12)}…); цель меняет владелец: ` +
-          `--owner-approved при criteria_source = ${CRITERIA_OWNER_APPROVED}`,
-      );
-    }
+  if (frozen !== null && !args.ownerApproved) {
+    throw new ConflictError(
+      'criteria_drift: критерии приёмки изменились после заморозки ' +
+        `(${frozen.slice(0, 12)}… → ${digest.slice(0, 12)}…); новую цель подтверждает владелец: ` +
+        '`freeze-criteria --owner-approved`',
+    );
   }
 
-  const next = { ...state, criteria_sha256: digest, updated_at: resolveNow(args) };
+  const next = {
+    ...state,
+    criteria_sha256: digest,
+    // Подтверждение владельца остаётся в состоянии: по нему видно, что цель менялась решением,
+    // а не исполнением (§5.3).
+    owner_approved: frozen === null ? state.owner_approved : true,
+    updated_at: resolveNow(args),
+  };
   writeState(file, next);
   printJson(summary);
   return 0;
@@ -2036,7 +2042,7 @@ function run(args, root, config) {
     case 'finish':
       return runFinish(args, root);
     case 'freeze-criteria':
-      return runFreezeCriteria(args, root, config);
+      return runFreezeCriteria(args, root);
     case 'apply-decision':
       return runApplyDecision(args, root);
     case 'escalate':

@@ -565,7 +565,7 @@ describe('criteria: CLI', () => {
     assert.equal(result.status, 0, result.stderr);
   });
 
-  test('plan_owner_approved: критерии вправе измениться, перезапись разрешена', (t) => {
+  test('criteria_source=plan_owner_approved не открывает обход: дрейф всё равно отказ', (t) => {
     const { root, baseSha } = makeRepo(t);
     const dir = makeCycleDir(root, {
       baseSha,
@@ -577,8 +577,8 @@ describe('criteria: CLI', () => {
     writeFileSync(join(dir, 'issue.json'), `${JSON.stringify(FEATURE_ISSUE, null, 2)}\n`);
 
     const result = runCli(root, ['criteria', '--dir', dir]);
-    assert.equal(result.status, 0, result.stderr);
-    assert.match(evidence(dir, 'criteria.md'), /- C1: повторная отправка/u);
+    assert.equal(result.status, 2, result.stdout);
+    assert.deepEqual(stdoutJson(result), { command: 'criteria', reason: 'criteria_drift' });
   });
 
   test('два прогона дают побайтно одинаковые файлы', (t) => {
@@ -765,15 +765,42 @@ describe('CLI: ограничение --dir (§4)', () => {
   });
 
   test('каталог вне корня репозитория разрешён (smoke на временном каталоге)', (t) => {
-    const { root } = makeRepo(t);
+    const { root, baseSha } = makeRepo(t);
     const outside = mkdtempSync(join(tmpdir(), 'harness-evidence-outside-'));
     t.after(() => rmSync(outside, { recursive: true, force: true }));
     writeFileSync(join(outside, 'issue.json'), `${JSON.stringify(FEATURE_ISSUE, null, 2)}\n`);
+    writeFileSync(join(outside, 'state.json'), `${JSON.stringify(stateDoc(baseSha), null, 2)}\n`);
 
     const result = runCli(root, ['criteria', '--dir', outside]);
 
     assert.equal(result.status, 0, result.stderr);
     assert.equal(existsSync(join(outside, 'evidence', 'criteria.md')), true);
+  });
+
+  test('нет state.json — код 2: заморозку нельзя «отключить» отсутствием файла', (t) => {
+    const { root } = makeRepo(t);
+    const outside = mkdtempSync(join(tmpdir(), 'harness-evidence-nostate-'));
+    t.after(() => rmSync(outside, { recursive: true, force: true }));
+    writeFileSync(join(outside, 'issue.json'), `${JSON.stringify(FEATURE_ISSUE, null, 2)}\n`);
+
+    const result = runCli(root, ['criteria', '--dir', outside]);
+
+    assert.equal(result.status, 2, result.stdout);
+    assert.match(result.stderr, /state\.json: не читается/u);
+    assert.equal(existsSync(join(outside, 'evidence', 'criteria.md')), false);
+  });
+
+  test('битый state.json — код 2, criteria.md не перезаписывается', (t) => {
+    const { root, baseSha } = makeRepo(t);
+    const dir = makeCycleDir(root, { baseSha });
+    writeFileSync(join(dir, 'issue.json'), `${JSON.stringify(FEATURE_ISSUE, null, 2)}\n`);
+    writeFileSync(join(dir, 'state.json'), '{"stage":\n');
+
+    const result = runCli(root, ['criteria', '--dir', dir]);
+
+    assert.equal(result.status, 2, result.stdout);
+    assert.match(result.stderr, /state\.json: не читается/u);
+    assert.match(evidence(dir, 'criteria.md'), /- C1: пример/u);
   });
 });
 
@@ -965,6 +992,39 @@ describe('packet: лимиты диффа', () => {
     assert.equal(result.status, 4, result.stderr);
     assert.equal(stdoutJson(result).reason, 'diff_too_large');
     assert.equal(existsSync(join(dir, 'evidence', 'diff.patch')), false);
+  });
+});
+
+describe('packet: сверка критериев с заморозкой (#22)', () => {
+  test('критерии не совпадают с замороженными — код 2, пакет не собран', (t) => {
+    const { root, baseSha } = makeRepo(t);
+    const dir = makeCycleDir(root, {
+      baseSha,
+      state: stateDoc(baseSha, { criteria_sha256: 'c'.repeat(64) }),
+      criteria: '# Критерии приёмки\n\n- C1: подменённый\n',
+    });
+
+    const result = runCli(root, ['packet', '--dir', dir]);
+
+    assert.equal(result.status, 2, result.stdout);
+    assert.match(result.stderr, /criteria_drift/u);
+    assert.equal(existsSync(join(dir, 'evidence', 'diff.patch')), false);
+  });
+
+  test('критерии совпадают с замороженными — пакет собирается', (t) => {
+    const { root, baseSha } = makeRepo(t);
+    const criteriaText = '# Критерии приёмки\n\n- C1: пример\n';
+    const dir = makeCycleDir(root, {
+      baseSha,
+      state: stateDoc(baseSha, {
+        criteria_sha256: criteriaDigest(parseCriteria(criteriaText)),
+      }),
+      criteria: criteriaText,
+    });
+
+    const result = runCli(root, ['packet', '--dir', dir]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(existsSync(join(dir, 'evidence', 'diff.patch')), true);
   });
 });
 

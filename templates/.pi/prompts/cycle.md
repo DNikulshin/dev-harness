@@ -24,12 +24,14 @@ argument-hint: '<номер issue и что сделать>'
 2. `gh issue view <N> --json title,body,labels > <dir>/issue.json`.
 3. `node scripts/cycle-state.mjs init --issue <N> --slug <slug> --branch <ветка>`, ветка от `main`:
    `feat|fix|chore|data|design/<номер>-<коротко>`.
-4. `node scripts/cycle-evidence.mjs criteria --dir <dir> --issue-json <dir>/issue.json`. Код ≠ 0 →
-   `cycle-state escalate --reason criteria_missing`, комментарий в issue (`status:blocked`,
-   `needs-owner`), стоп.
-5. `node scripts/cycle-state.mjs freeze-criteria` — закрепляет критерии в `state.json`. Код 3
-   (`criteria_drift`) → `escalate --reason criteria_drift`, стоп: цель меняет владелец. Повторный
-   прогон с теми же критериями — no-op, его можно вызывать перед каждым `DECIDE`.
+4. `node scripts/cycle-evidence.mjs criteria --dir <dir> --issue-json <dir>/issue.json`. Причина
+   отказа берётся из поля `reason` в stdout: `criteria_missing` →
+   `escalate --reason criteria_missing`, `criteria_drift` → `escalate --reason criteria_drift`. В
+   обоих случаях — комментарий в issue (`status:blocked`, `needs-owner`) и стоп.
+5. `node scripts/cycle-state.mjs freeze-criteria` — закрепляет критерии (они извлекаются из
+   `issue.json`) в `state.json`. Код 3 (`criteria_drift`) → `escalate --reason criteria_drift`,
+   стоп: цель меняет владелец; подтверждение — `freeze-criteria --owner-approved` после правки issue
+   и повторного `cycle-evidence criteria`. Повторный прогон с теми же критериями — no-op.
 
 ## PLAN
 

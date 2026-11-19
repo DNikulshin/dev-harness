@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { loadConfig } from './lib/cycle/config.mjs';
+import { criteriaDigest } from './lib/cycle/criteria.mjs';
 import {
   dedupeUnverified,
   listItems,
@@ -603,6 +605,46 @@ describe('парсеры', () => {
 
     assert.ok(text.includes('Гейты не запускались.'));
     assert.ok(!text.includes('- [x]'));
+  });
+});
+
+describe('заморозка критериев (#22)', () => {
+  test('критерии не совпадают с закреплёнными — код 2, тело не печатается', (t) => {
+    const cycleDir = mkdtempSync(join(tmpdir(), 'harness-pr-body-drift-'));
+    t.after(() => rmSync(cycleDir, { recursive: true, force: true }));
+    cpSync(dir('proceed'), cycleDir, { recursive: true });
+
+    const state = JSON.parse(readFileSync(join(cycleDir, 'state.json'), 'utf8'));
+    writeFileSync(
+      join(cycleDir, 'state.json'),
+      `${JSON.stringify({ ...state, criteria_sha256: 'd'.repeat(64) }, null, 2)}\n`,
+    );
+
+    const result = runCli(['--dir', cycleDir]);
+    assert.equal(result.status, 2, result.stdout);
+    assert.match(result.stderr, /criteria_drift/u);
+    assert.equal(result.stdout, '');
+  });
+
+  test('совпадение с заморозкой — тело собирается', (t) => {
+    const cycleDir = mkdtempSync(join(tmpdir(), 'harness-pr-body-frozen-'));
+    t.after(() => rmSync(cycleDir, { recursive: true, force: true }));
+    cpSync(dir('proceed'), cycleDir, { recursive: true });
+
+    const state = JSON.parse(readFileSync(join(cycleDir, 'state.json'), 'utf8'));
+    const criteriaText = readFileSync(join(cycleDir, 'evidence', 'criteria.md'), 'utf8');
+    writeFileSync(
+      join(cycleDir, 'state.json'),
+      `${JSON.stringify(
+        { ...state, criteria_sha256: criteriaDigest(parseCriteria(criteriaText)) },
+        null,
+        2,
+      )}\n`,
+    );
+
+    const result = runCli(['--dir', cycleDir]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.ok(result.stdout.includes('## Риски'));
   });
 });
 
