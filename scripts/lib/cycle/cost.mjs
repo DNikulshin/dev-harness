@@ -28,11 +28,22 @@ const READ_ERROR_REASONS = Object.freeze({
 /**
  * Плоский объект: массивы и `null` объектами не считаются.
  * @param {unknown} value
- * @returns {boolean}
+ * @returns {value is Record<string, unknown>} сужает тип вызывающего кода
  */
 export function isRecord(value) {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
+
+/**
+ * Расход одного этапа (§5.4): счётчики целые ≥ 0.
+ * @typedef {object} StageUsage
+ * @property {number} runs
+ * @property {number} input
+ * @property {number} cache_read
+ * @property {number} cache_write
+ * @property {number} output
+ * @property {number} reasoning
+ */
 
 /**
  * Человекочитаемая причина ошибки чтения.
@@ -42,7 +53,9 @@ export function isRecord(value) {
 export function describeReadError(error) {
   const code = /** @type {{ code?: unknown } | null | undefined} */ (error)?.code;
   if (typeof code !== 'string' || code === '') return 'ошибка чтения';
-  return Object.hasOwn(READ_ERROR_REASONS, code) ? READ_ERROR_REASONS[code] : code;
+  return Object.hasOwn(READ_ERROR_REASONS, code)
+    ? (READ_ERROR_REASONS[/** @type {keyof typeof READ_ERROR_REASONS} */ (code)] ?? code)
+    : code;
 }
 
 /**
@@ -53,8 +66,7 @@ export function describeReadError(error) {
  */
 export function describeJsonError(error) {
   if (!(error instanceof Error)) return 'ошибка разбора JSON';
-  const reason = error.message
-    .split(/\r?\n/u)[0]
+  const reason = (error.message.split(/\r?\n/u)[0] ?? '')
     .replace(/,\s*".*$/u, '')
     .replace(/ in JSON at position.*$/u, '')
     .trim();
@@ -76,7 +88,7 @@ function readFailureReason(error) {
  * автомата. Лишние ключи — ошибка данных: неизвестный этап означал бы, что расход
  * посчитан не по тому словарю, и молча потерять его нельзя.
  * @param {unknown} usage содержимое `usage.json`
- * @returns {Record<string, { runs: number, input: number, cache_read: number, cache_write: number, output: number, reasoning: number }>}
+ * @returns {Record<string, StageUsage>}
  */
 export function normalizeUsage(usage) {
   if (!isRecord(usage)) throw new Error('usage.json: ожидается объект этапов');
@@ -88,14 +100,14 @@ export function normalizeUsage(usage) {
       throw new Error(`usage.json: неизвестный этап ${stage}`);
     }
     if (!isRecord(value)) throw new Error(`usage.json.${stage}: ожидается объект`);
-    /** @type {Record<string, number>} */
-    const entry = {};
+    /** @type {StageUsage} */
+    const entry = { runs: 0, input: 0, cache_read: 0, cache_write: 0, output: 0, reasoning: 0 };
     for (const field of ['runs', 'input', 'cache_read', 'cache_write', 'output', 'reasoning']) {
-      const number = value[field] ?? 0;
-      if (!Number.isInteger(number) || number < 0) {
+      const raw = value[field] ?? 0;
+      if (typeof raw !== 'number' || !Number.isInteger(raw) || raw < 0) {
         throw new Error(`usage.json.${stage}.${field}: ожидается целое ≥ 0`);
       }
-      entry[field] = number;
+      entry[/** @type {keyof StageUsage} */ (field)] = raw;
     }
     tokens[stage] = entry;
   }
@@ -110,7 +122,7 @@ export function normalizeUsage(usage) {
  * этого требует H4), а `evals/prices.json` — без него. Точное совпадение проверяется
  * первым, чтобы не зависеть от формы записи; затем пробуется вариант без первого сегмента.
  * `null` — модели нет в снапшоте, считать не по чему.
- * @param {string} model как записано в `state.models`
+ * @param {unknown} model как записано в `state.models` (нестрока — `null`)
  * @param {Record<string, unknown>} prices снапшот цен
  * @returns {string|null}
  */
@@ -129,7 +141,7 @@ export function priceKeyFor(model, prices) {
 
 /**
  * Стоимость расхода по ценам и моделям этапов.
- * @param {Record<string, Record<string, number>>} tokens нормализованный расход
+ * @param {Record<string, StageUsage>} tokens нормализованный расход
  * @param {Record<string, unknown>} models `state.models`
  * @param {Record<string, import('../evals/cost.mjs').ModelPrice>} prices снапшот цен
  * @returns {number|null} рубли с копейками или `null`, если считать не по чему
@@ -141,10 +153,12 @@ export function priceUsage(tokens, models, prices) {
 
   let total = 0;
   for (const stage of stages) {
-    const key = priceKeyFor(models[stage], prices);
+    const model = models[stage];
+    const key = typeof model === 'string' ? priceKeyFor(model, prices) : null;
     if (key === null) return null;
 
     const entry = tokens[stage];
+    if (entry === undefined) return null;
     const priced = priceStage({ prices }, key, {
       calls_per_run: 0,
       input: entry.input,
@@ -204,7 +218,7 @@ export function readPriceSnapshot(root, pricesPath = 'evals/prices.json') {
  * Стоимость цикла по накопленному `usage.json` — вход бюджетного порога (§5.6, правило 7).
  * `null` означает «замера нет»: нет `usage.json`, пустой расход или модели/цены неизвестны.
  * Ноль вместо `null` был бы враньём — бюджет проверялся бы по несуществующим данным.
- * @param {{ dir: string, models: unknown, prices: Record<string, unknown>|null }} options
+ * @param {{ dir: string, models: unknown, prices: Record<string, import('../evals/cost.mjs').ModelPrice>|null }} options
  * @returns {number|null} рубли с копейками или `null`
  */
 export function cycleCostRub({ dir, models, prices }) {

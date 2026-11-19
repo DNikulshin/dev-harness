@@ -52,7 +52,11 @@ export const ALL_SEVERITIES = Object.freeze(['BLOCKER', 'MAJOR', 'MINOR', 'FOLLO
  * @property {string[]} deleted удалённые файлы
  */
 
-/** Плоский объект: массивы и `null` объектами не считаются. */
+/**
+ * Плоский объект: массивы и `null` объектами не считаются.
+ * @param {unknown} value
+ * @returns {value is Record<string, unknown>} сужает тип вызывающего кода
+ */
 function isRecord(value) {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -191,6 +195,7 @@ export function readSeed(doc) {
 
   const rawCriteria = Array.isArray(doc.criteria) ? doc.criteria : [];
   if (rawCriteria.length === 0) errors.push('criteria: нужен хотя бы один критерий');
+  /** @type {string[]} */
   const criteria = [];
   rawCriteria.forEach((item, index) => {
     if (reqText(item, `criteria[${index}]`, errors)) criteria.push(/** @type {string} */ (item));

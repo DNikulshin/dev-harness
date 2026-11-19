@@ -126,5 +126,10 @@ export function findActiveCycle(dir = artifactsDir()) {
     const names = active.map((path) => basename(path)).join(', ');
     throw new Error(`активных циклов больше одного в ${dir}: ${names}`);
   }
-  return active[0];
+  const only = active[0];
+  if (only === undefined) {
+    // Недостижимо: пустой список отсечён выше. Проверка нужна, чтобы тип не был `undefined`.
+    throw new Error(`активный цикл не найден в ${dir}`);
+  }
+  return only;
 }

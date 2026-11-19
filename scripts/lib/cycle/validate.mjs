@@ -107,6 +107,9 @@ const ESCALATION_REASONS = Object.freeze([
   'internal_error',
 ]);
 
+/** Источники значений лимитов (`applied_limits`, #235). */
+const LIMIT_SOURCES = Object.freeze(['cli', 'env', 'config', 'default']);
+
 /** Этапы, которые можно повторить через `RETRY_STAGE` (§5.6, правило 1). */
 const RETRY_STAGES = Object.freeze(['REVIEW', 'EVALUATE']);
 
@@ -137,7 +140,7 @@ const BLOCKED_BY_PATTERN = /^blocked_by:[a-z][a-z0-9_]*$/;
 /**
  * Плоский объект: массивы и `null` объектами не считаются.
  * @param {unknown} value
- * @returns {boolean}
+ * @returns {value is Record<string, unknown>} сужает тип вызывающего кода
  */
 function isRecord(value) {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -153,6 +156,25 @@ function isLeapYear(year) {
 }
 
 /**
+ * Число из группы шаблона. Отсутствующая группа (её нет в конкретном совпадении) даёт
+ * `NaN`: сравнения ниже тогда ложны, и значение считается невалидным, а не проходит проверку.
+ * @param {string | undefined} part
+ * @returns {number}
+ */
+function groupNumber(part) {
+  return part === undefined ? Number.NaN : Number(part);
+}
+
+/**
+ * Число дней в месяце; для несуществующего месяца — 0, чтобы любое число дней было невалидным.
+ * @param {number} month месяц 1–12
+ * @returns {number}
+ */
+function monthDays(month) {
+  return MONTH_DAYS[month - 1] ?? 0;
+}
+
+/**
  * Календарная валидность значения, уже прошедшего `ISO_PATTERN`: месяц 1–12, день не
  * больше числа дней в месяце, часы 0–23, минуты и секунды 0–59, смещение зоны правдоподобно.
  * @param {string} value
@@ -162,12 +184,19 @@ function isCalendarValid(value) {
   const match = ISO_PATTERN.exec(value);
   if (match === null) return false;
 
-  const [year, month, day, hour, minute, second, offsetHour, offsetMinute] = match
-    .slice(1)
-    .map((part) => (part === undefined ? undefined : Number(part)));
+  // Группы читаются по индексу: их отсутствие (недостижимо для этого шаблона) даёт `NaN`.
+  const groups = match.slice(1);
+  const year = groupNumber(groups[0]);
+  const month = groupNumber(groups[1]);
+  const day = groupNumber(groups[2]);
+  const hour = groupNumber(groups[3]);
+  const minute = groupNumber(groups[4]);
+  const second = groupNumber(groups[5]);
+  const offsetHour = groups[6] === undefined ? undefined : groupNumber(groups[6]);
+  const offsetMinute = groupNumber(groups[7]);
 
   if (month < 1 || month > 12) return false;
-  const maxDay = month === 2 && isLeapYear(year) ? 29 : MONTH_DAYS[month - 1];
+  const maxDay = month === 2 && isLeapYear(year) ? 29 : monthDays(month);
   if (day < 1 || day > maxDay) return false;
   if (hour > 23 || minute > 59 || second > 59) return false;
   // `Z` в группах смещения не попал — это допустимая зона.
@@ -362,42 +391,96 @@ function record(value, path, errors, check) {
   return true;
 }
 
-/** Обязательное поле + `int`. */
+/**
+ * Обязательное поле + `int`.
+ * @param {unknown} parent
+ * @param {string} key
+ * @param {string} prefix
+ * @param {string[]} errors
+ * @param {{ min?: number, max?: number }} [options]
+ * @returns {boolean}
+ */
 function reqInt(parent, key, prefix, errors, options) {
   const path = `${prefix}.${key}`;
   return int(req(parent, key, path, errors), path, errors, options);
 }
 
-/** Обязательное поле + `str`. */
+/**
+ * Обязательное поле + `str`.
+ * @param {unknown} parent
+ * @param {string} key
+ * @param {string} prefix
+ * @param {string[]} errors
+ * @param {{ pattern?: RegExp, allowEmpty?: boolean }} [options]
+ * @returns {boolean}
+ */
 function reqStr(parent, key, prefix, errors, options) {
   const path = `${prefix}.${key}`;
   return str(req(parent, key, path, errors), path, errors, options);
 }
 
-/** Обязательное поле + `isoStr`. */
+/**
+ * Обязательное поле + `isoStr`.
+ * @param {unknown} parent
+ * @param {string} key
+ * @param {string} prefix
+ * @param {string[]} errors
+ * @returns {boolean}
+ */
 function reqIso(parent, key, prefix, errors) {
   const path = `${prefix}.${key}`;
   return isoStr(req(parent, key, path, errors), path, errors);
 }
 
-/** Обязательное поле + `oneOf`. */
+/**
+ * Обязательное поле + `oneOf`.
+ * @param {unknown} parent
+ * @param {string} key
+ * @param {string} prefix
+ * @param {string[]} errors
+ * @param {readonly string[]} allowed
+ * @returns {boolean}
+ */
 function reqOneOf(parent, key, prefix, errors, allowed) {
   const path = `${prefix}.${key}`;
   return oneOf(req(parent, key, path, errors), path, errors, allowed);
 }
 
-/** Обязательное поле + `bool`. */
+/**
+ * Обязательное поле + `bool`.
+ * @param {unknown} parent
+ * @param {string} key
+ * @param {string} prefix
+ * @param {string[]} errors
+ * @returns {boolean}
+ */
 function reqBool(parent, key, prefix, errors) {
   return bool(req(parent, key, `${prefix}.${key}`, errors), `${prefix}.${key}`, errors);
 }
 
-/** Обязательное поле + `list`. */
+/**
+ * Обязательное поле + `list`.
+ * @param {unknown} parent
+ * @param {string} key
+ * @param {string} prefix
+ * @param {string[]} errors
+ * @param {(item: unknown, path: string, errors: string[]) => void} each
+ * @returns {boolean}
+ */
 function reqList(parent, key, prefix, errors, each) {
   const path = `${prefix}.${key}`;
   return list(req(parent, key, path, errors), path, errors, each);
 }
 
-/** Обязательное поле + `record`. */
+/**
+ * Обязательное поле + `record`.
+ * @param {unknown} parent
+ * @param {string} key
+ * @param {string} prefix
+ * @param {string[]} errors
+ * @param {(value: Record<string, unknown>, path: string, errors: string[]) => void} check
+ * @returns {boolean}
+ */
 function reqRecord(parent, key, prefix, errors, check) {
   const path = `${prefix}.${key}`;
   return record(req(parent, key, path, errors), path, errors, check);
@@ -420,7 +503,13 @@ function reqNullable(parent, key, prefix, errors, check) {
   return true;
 }
 
-/** Элемент-список строк: непустая строка. */
+/**
+ * Элемент-список строк: непустая строка.
+ * @param {unknown} item
+ * @param {string} path
+ * @param {string[]} errors
+ * @returns {void}
+ */
 function textItem(item, path, errors) {
   str(item, path, errors, { allowEmpty: false });
 }
@@ -437,7 +526,13 @@ function rawItem(item, path, errors) {
   str(item, path, errors);
 }
 
-/** Причина гейта: `null`, причина из списка §5.5 или `blocked_by:<id>`. */
+/**
+ * Причина гейта: `null`, причина из списка §5.5 или `blocked_by:<id>`.
+ * @param {unknown} value
+ * @param {string} path
+ * @param {string[]} errors
+ * @returns {void}
+ */
 function gateReason(value, path, errors) {
   if (value === null) return;
   const ok =
@@ -485,12 +580,36 @@ function validateHistoryEntry(item, path, errors) {
 }
 
 /**
+ * Необязательный блок `applied_limits`: ключ → `{ value, source }`. Отсутствие блока —
+ * валидное состояние: артефакт, записанный до #235, не переписывается.
+ * @param {Record<string, unknown>} doc
+ * @param {string} name имя артефакта (`decision`/`metrics`)
+ * @param {string[]} errors
+ * @returns {void}
+ */
+function optionalAppliedLimits(doc, name, errors) {
+  if (doc.applied_limits === undefined) return;
+  reqRecord(doc, 'applied_limits', name, errors, (limits, limitsPath, errs) => {
+    for (const [key, entry] of Object.entries(limits)) {
+      const entryPath = `${limitsPath}.${key}`;
+      if (!isRecord(entry)) {
+        errs.push(`${entryPath}: ожидается объект со value и source`);
+        continue;
+      }
+      num(entry.value, `${entryPath}.value`, errs, { min: 0 });
+      oneOf(entry.source, `${entryPath}.source`, errs, LIMIT_SOURCES);
+    }
+  });
+}
+
+/**
  * `state.json` (Приложение A). Счётчики `retries` — целые ≥ 0, `iteration` не больше
  * `max_iterations`, кроме случая явного одобрения владельца (`owner_approved`).
  * @param {unknown} doc
  * @returns {ValidationResult}
  */
 export function validateState(doc) {
+  /** @type {string[]} */
   const errors = [];
   if (!isRecord(doc)) {
     return { ok: false, errors: [`state: ожидается объект, получено ${describe(doc)}`] };
@@ -577,6 +696,7 @@ function validateGateEntry(item, path, errors) {
  * @returns {ValidationResult}
  */
 export function validateGates(doc) {
+  /** @type {string[]} */
   const errors = [];
   if (!isRecord(doc)) {
     return { ok: false, errors: [`gates: ожидается объект, получено ${describe(doc)}`] };
@@ -624,11 +744,12 @@ function validateFinding(item, path, errors) {
 }
 
 /**
- * Блок ```json из `review.<n>.md` (Приложение A).
+ * Блок `json` из `review.<n>.md` (Приложение A).
  * @param {unknown} doc
  * @returns {ValidationResult}
  */
 export function validateReview(doc) {
+  /** @type {string[]} */
   const errors = [];
   if (!isRecord(doc)) {
     return { ok: false, errors: [`review: ожидается объект, получено ${describe(doc)}`] };
@@ -697,11 +818,12 @@ function validateUnverified(item, path, errors) {
 }
 
 /**
- * Блок ```json из `evaluation.<n>.md` (Приложение A).
+ * Блок `json` из `evaluation.<n>.md` (Приложение A).
  * @param {unknown} doc
  * @returns {ValidationResult}
  */
 export function validateEvaluation(doc) {
+  /** @type {string[]} */
   const errors = [];
   if (!isRecord(doc)) {
     return { ok: false, errors: [`evaluation: ожидается объект, получено ${describe(doc)}`] };
@@ -755,6 +877,7 @@ function validateQaStep(item, path, errors) {
  * @returns {ValidationResult}
  */
 export function validateQaWeb(doc) {
+  /** @type {string[]} */
   const errors = [];
   if (!isRecord(doc)) {
     return { ok: false, errors: [`qa-web: ожидается объект, получено ${describe(doc)}`] };
@@ -776,6 +899,7 @@ export function validateQaWeb(doc) {
  * @returns {ValidationResult}
  */
 export function validateDecision(doc) {
+  /** @type {string[]} */
   const errors = [];
   if (!isRecord(doc)) {
     return { ok: false, errors: [`decision: ожидается объект, получено ${describe(doc)}`] };
@@ -801,6 +925,7 @@ export function validateDecision(doc) {
   });
 
   reqInt(doc, 'unresolved_refs', 'decision', errors, { min: 0 });
+  optionalAppliedLimits(doc, 'decision', errors);
 
   return { ok: errors.length === 0, errors };
 }
@@ -811,6 +936,7 @@ export function validateDecision(doc) {
  * @returns {ValidationResult}
  */
 export function validateEscalation(doc) {
+  /** @type {string[]} */
   const errors = [];
   if (!isRecord(doc)) {
     return { ok: false, errors: [`escalation: ожидается объект, получено ${describe(doc)}`] };
@@ -847,7 +973,7 @@ function reqSeverityCounts(parent, key, prefix, errors, severities) {
 function sumDurations(map) {
   const total = Object.keys(map)
     .sort()
-    .reduce((sum, key) => sum + map[key], 0);
+    .reduce((sum, key) => sum + (map[key] ?? 0), 0);
   return Math.round(total * 1e6) / 1e6;
 }
 
@@ -890,6 +1016,7 @@ function requireTotalOfMap(map, total, mapName, totalPath, errors) {
  * @returns {ValidationResult}
  */
 export function validateMetrics(doc) {
+  /** @type {string[]} */
   const errors = [];
   if (!isRecord(doc)) {
     return { ok: false, errors: [`metrics: ожидается объект, получено ${describe(doc)}`] };
@@ -1008,6 +1135,8 @@ export function validateMetrics(doc) {
   reqNullable(doc, 'cost_rub', 'metrics', errors, (value, valuePath, errs) => {
     num(value, valuePath, errs, { min: 0 });
   });
+
+  optionalAppliedLimits(doc, 'metrics', errors);
 
   return { ok: errors.length === 0, errors };
 }

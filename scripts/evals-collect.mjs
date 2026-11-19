@@ -23,8 +23,8 @@
  */
 import { existsSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
+import { isDirectRun } from './lib/cycle/cli.mjs';
 import { SCORED_STAGES } from './lib/evals/score.mjs';
 import {
   addUsage,
@@ -48,6 +48,7 @@ export function parseArgs(argv) {
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
+    if (arg === undefined) break;
     const key = arg.startsWith('--') ? arg.slice(2) : null;
     if (
       key === 'run' ||
@@ -78,7 +79,8 @@ function main() {
   try {
     const args = parseArgs(process.argv.slice(2));
     if (args.run === null) throw new Error('--run: обязателен (каталог прогона)');
-    if (args.stage === null || !SCORED_STAGES.includes(args.stage)) {
+    const stage = args.stage;
+    if (stage === null || !SCORED_STAGES.includes(/** @type {any} */ (stage))) {
       throw new Error(`--stage: ожидается ${SCORED_STAGES.join('|')}`);
     }
     if (args.transcript === null) throw new Error('--transcript: обязателен (путь к *.jsonl)');
@@ -106,21 +108,26 @@ function main() {
     writeTextAtomic(join(runDir, outName), `${text}\n`);
 
     const usageFile = join(runDir, 'usage.json');
-    /** @type {Record<string, unknown>} */
-    const usage = existsSync(usageFile) ? /** @type {any} */ (readJson(usageFile)) : {};
-    const previous = /** @type {any} */ (usage[args.stage]);
+    /** @type {Record<string, import('./lib/cycle/cost.mjs').StageUsage>} */
+    const usage = existsSync(usageFile)
+      ? /** @type {Record<string, import('./lib/cycle/cost.mjs').StageUsage>} */ (
+          readJson(usageFile)
+        )
+      : {};
+    const previous = stage === null ? undefined : usage[stage];
     const base = previous === undefined ? emptyUsage() : { ...emptyUsage(), ...previous };
-    usage[args.stage] = addUsage(base, sumUsage(records));
+    if (stage !== null) usage[stage] = addUsage(base, sumUsage(records));
     writeJsonAtomic(usageFile, usage, {
       serialize: (data) => `${JSON.stringify(data, null, 2)}\n`,
     });
 
     const hasBlock = text.includes('```json');
+    const stageUsage = stage === null ? null : usage[stage];
     process.stdout.write(
       [
         `собрано: ${join(runDir, outName)}`,
-        `  стадия: ${args.stage}, символов: ${text.length}, блок json: ${hasBlock ? 'есть' : 'НЕТ'}`,
-        `  токены: вход ${usage[args.stage].input}, кэш ${usage[args.stage].cache_read}, вывод ${usage[args.stage].output}`,
+        `  стадия: ${stage}, символов: ${text.length}, блок json: ${hasBlock ? 'есть' : 'НЕТ'}`,
+        `  токены: вход ${stageUsage?.input ?? 0}, кэш ${stageUsage?.cache_read ?? 0}, вывод ${stageUsage?.output ?? 0}`,
         '',
       ].join('\n'),
     );
@@ -132,7 +139,4 @@ function main() {
 }
 
 // Модуль импортируется тестами ради чистых функций; CLI запускается только напрямую.
-const invokedPath = process.argv[1] === undefined ? null : resolve(process.argv[1]);
-if (invokedPath !== null && invokedPath === fileURLToPath(import.meta.url)) {
-  main();
-}
+if (isDirectRun(import.meta.url)) main();

@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
 
+import { REPO_ONLY } from '../testsupport.mjs';
 import {
   loadSeeds,
   readSeed,
@@ -12,7 +13,11 @@ import {
   seedOrder,
 } from './seeds.mjs';
 
-/** Валидный сид-дефект: используется как база для негативных проверок. */
+/**
+ * Валидный сид-дефект: используется как база для негативных проверок.
+ * Тип намеренно свободный: негативные тесты подменяют `expect` и карты файлов.
+ * @returns {any}
+ */
 function defectSeed() {
   return {
     id: 'E5',
@@ -120,7 +125,7 @@ describe('readSeed', () => {
 });
 
 describe('loadSeeds', () => {
-  test('читает сиды репозитория по возрастанию номера', () => {
+  test('читает сиды репозитория по возрастанию номера', REPO_ONLY, () => {
     const seeds = loadSeeds(
       join(import.meta.dirname, '..', '..', '..', 'evals', 'orchestrator', 'seeds'),
     );

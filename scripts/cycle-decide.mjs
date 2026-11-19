@@ -74,12 +74,19 @@
  * Shebang нужен: файл запускается напрямую.
  */
 import { existsSync, readFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { basename, join, resolve } from 'node:path';
 
+import { isDirectRun } from './lib/cycle/cli.mjs';
 import { changedFiles } from './lib/cycle/git.mjs';
 import { cycleCostRub, readPriceSnapshot } from './lib/cycle/cost.mjs';
 import { DEFAULTS, loadConfig } from './lib/cycle/config.mjs';
+import {
+  LIMIT_FLAGS,
+  checkLimitValue,
+  describedLimits,
+  resolveLimits,
+  sourceLabel,
+} from './lib/cycle/limits.mjs';
 import { extractLastJsonBlock, readJson, writeJsonAtomic } from './lib/cycle/io.mjs';
 import { FIXED_NAMES, findActiveCycle, iterNames, repoRoot } from './lib/cycle/paths.mjs';
 import { redactLog } from './lib/cycle/redact.mjs';
@@ -93,6 +100,12 @@ import {
 } from './lib/cycle/validate.mjs';
 
 /** Этапы, повтор которых описан правилом 1 §5.6. */
+/**
+ * Сколько ошибок схемы попадает в `reasons[]` при невалидном выводе агента (#247):
+ * полный список уходит в stderr, решение говорит только кодом причины.
+ */
+const INVALID_OUTPUT_LIMIT = 5;
+
 const REVIEW_STAGE = 'REVIEW';
 const EVALUATE_STAGE = 'EVALUATE';
 
@@ -127,7 +140,7 @@ const DOWNGRADE_REASONS = Object.freeze({
  * @property {number} iteration номер итерации, целое ≥ 1
  * @property {number} maxIterations `state.max_iterations`
  * @property {Retries} retries `state.retries`
- * @property {{ gates?: unknown[] }} gates проверенный `gates.<n>.json`
+ * @property {{ gates?: GateEntry[] }} gates проверенный `gates.<n>.json`
  * @property {Record<string, any>|null} review проверенный блок ревью или `null`
  * @property {Record<string, any>|null} evaluation проверенный блок оценки или `null`
  * @property {{ status?: string, reason?: string|null, steps?: unknown[] }|null} qaWeb
@@ -137,7 +150,32 @@ const DOWNGRADE_REASONS = Object.freeze({
  * @property {number|null} [costRub] стоимость цикла по `usage.json` и `evals/prices.json`:
  *   `null` (по умолчанию) — замера нет (нет `usage.json`, неизвестна модель или цены),
  *   и тогда бюджетный порог не проверяется: ноль был бы выдуманными данными
+ * @property {Record<string, string[]>} [agentErrors] сообщения валидаторов по этапам
+ *   (`REVIEW`/`EVALUATE`): из них строятся подсказки `invalid:<STAGE> …` (#247)
  * @property {{ maxCycleCostRub: number }} [limits] лимиты проекта (по умолчанию из DEFAULTS)
+ * @property {Record<string, { value: number, source: import('./lib/cycle/limits.mjs').LimitSource }>} [appliedLimits] применённые
+ *   лимиты с источниками для `decision.applied_limits`; считает CLI, а не эта функция
+ */
+
+/**
+ * Запись гейта в `gates.<n>.json` в объёме, нужном решению. Поля необязательны: чистая
+ * функция не полагается на валидатор и допускает частичный документ.
+ * @typedef {object} GateEntry
+ * @property {string} [id]
+ * @property {boolean} [required]
+ * @property {string} [status]
+ * @property {string|null} [reason] причина `not_run`/`fail` (§5.5), `null` — без причины
+ */
+
+/**
+ * Счётчики решения (§5.6): то, что попадает в `decision.<n>.json` и метрики.
+ * @typedef {object} DecisionCounts
+ * @property {number} blockers
+ * @property {number} major
+ * @property {number} minor
+ * @property {number} followups
+ * @property {number} partial_criteria
+ * @property {number} verdict_without_evidence
  */
 
 /**
@@ -150,7 +188,8 @@ const DOWNGRADE_REASONS = Object.freeze({
  * @property {string[]} rework_items
  * @property {string[]} unverified
  * @property {string[]} downgraded
- * @property {Record<string, number>} counts
+ * @property {DecisionCounts} counts
+ * @property {Record<string, { value: number, source: import('./lib/cycle/limits.mjs').LimitSource }>} [applied_limits] лимиты и их источники
  * @property {number} unresolved_refs
  */
 
@@ -196,7 +235,7 @@ export function diffTouchesWeb(files, prefixes = DEFAULTS.qaWeb.pathPrefixes) {
 /**
  * Непустая строка после обрезки пробелов.
  * @param {unknown} value
- * @returns {boolean}
+ * @returns {value is string} сужает тип вызывающего кода
  */
 function isText(value) {
   return typeof value === 'string' && value.trim() !== '';
@@ -265,8 +304,9 @@ function safeResolveRef(ref, ctx) {
     ok: false,
     ref,
     kind: 'path',
-    value: ref.trim().replace(/:\d+$/, ''),
+    value: ref.trim().replace(/:\d+(?:-\d+)?$/, ''),
     line: null,
+    endLine: null,
     file: null,
     error: 'файл .env* не читается (AGENTS.md)',
   };
@@ -282,7 +322,8 @@ function safeResolveRef(ref, ctx) {
 function countRefs(refs, ctx) {
   const counts = { resolved: 0, unresolved: 0 };
   for (const ref of refs) {
-    if (safeResolveRef(ref, ctx).ok) counts.resolved += 1;
+    // Ссылка обязана быть строкой: `refs[]` приходит из документов, форма не гарантирована.
+    if (typeof ref === 'string' && safeResolveRef(ref, ctx).ok) counts.resolved += 1;
     else counts.unresolved += 1;
   }
   return counts;
@@ -319,6 +360,21 @@ function defectDowngradeReason(defect, resolvedRefs) {
 }
 
 /**
+ * Ошибки схемы этапа для `reasons[]`: не больше `INVALID_OUTPUT_LIMIT` штук и без
+ * повторов (валидатор может сообщить одно и то же с разными путями). Это подсказка
+ * агенту на повтор, а не замена полного вывода в stderr.
+ * @param {Record<string, string[]>} agentErrors
+ * @param {string} stage
+ * @returns {string[]}
+ */
+function invalidOutputDetails(agentErrors, stage) {
+  const list = agentErrors === null || agentErrors === undefined ? [] : agentErrors[stage];
+  if (!Array.isArray(list)) return [];
+  const unique = [...new Set(list.filter((item) => isText(item)))];
+  return unique.slice(0, INVALID_OUTPUT_LIMIT);
+}
+
+/**
  * Расчёт решения цикла. Чистая функция: файлов не читает и не пишет, время и
  * случайность не использует — на одних и тех же входах результат совпадает.
  * @param {DecideInputs} inputs
@@ -336,10 +392,12 @@ export function decide(inputs) {
     webDiff,
     root,
     costRub = null,
+    agentErrors = {},
     limits = DEFAULTS.limits,
+    appliedLimits = null,
   } = inputs;
 
-  /** @type {Record<string, number>} */
+  /** @type {DecisionCounts} */
   const counts = {
     blockers: 0,
     major: 0,
@@ -381,6 +439,7 @@ export function decide(inputs) {
       unverified,
       downgraded,
       counts,
+      ...(appliedLimits === null ? {} : { applied_limits: appliedLimits }),
       unresolved_refs: unresolvedRefs,
     };
   }
@@ -389,7 +448,11 @@ export function decide(inputs) {
   // порога останавливается до любых доработок, ведь каждая из них тратит ещё. `null` —
   // замера нет, проверять нечего: порог не срабатывает, решение идёт по общим правилам.
   if (costRub !== null && costRub > limits.maxCycleCostRub) {
-    reasons.push(`budget: ${costRub} ₽ > ${limits.maxCycleCostRub} ₽ (правило 7 §5.6)`);
+    const budgetSource = appliedLimits?.maxCycleCostRub?.source;
+    const sourceNote = budgetSource === undefined ? '' : `, лимит: ${sourceLabel(budgetSource)}`;
+    reasons.push(
+      `budget: ${costRub} ₽ > ${limits.maxCycleCostRub} ₽ (правило 7 §5.6${sourceNote})`,
+    );
     reasons.push('escalate:budget');
     return finalize('ESCALATE');
   }
@@ -400,9 +463,17 @@ export function decide(inputs) {
     const stageRetries = invalidStage === REVIEW_STAGE ? retries.REVIEW : retries.EVALUATE;
     if (stageRetries < 1) {
       reasons.push(`retry:${invalidStage} agent_output_invalid`);
+      // Причина «agent_output_invalid» сама по себе не говорит, что чинить (#247):
+      // рядом кладём пути полей из валидатора, полный список — в stderr CLI.
+      for (const detail of invalidOutputDetails(agentErrors, invalidStage)) {
+        reasons.push(`invalid:${invalidStage} ${detail}`);
+      }
       return finalize('RETRY_STAGE', { retryStage: invalidStage });
     }
     reasons.push('escalate:agent_output_invalid');
+    for (const detail of invalidOutputDetails(agentErrors, invalidStage)) {
+      reasons.push(`invalid:${invalidStage} ${detail}`);
+    }
     return finalize('ESCALATE');
   }
 
@@ -411,10 +482,13 @@ export function decide(inputs) {
   // Документы уже проверены валидаторами, но чистая функция не полагается на это:
   // тесты и будущие вызовы могут передать частичный документ.
   const gateEntries = Array.isArray(gates.gates) ? gates.gates : [];
-  const findings = Array.isArray(review.findings) ? review.findings : [];
-  const criteria = Array.isArray(evaluation.criteria) ? evaluation.criteria : [];
-  const defects = Array.isArray(evaluation.defects) ? evaluation.defects : [];
-  const evalUnverified = Array.isArray(evaluation.unverified) ? evaluation.unverified : [];
+  const findings = review !== null && Array.isArray(review.findings) ? review.findings : [];
+  const criteria =
+    evaluation !== null && Array.isArray(evaluation.criteria) ? evaluation.criteria : [];
+  const defects =
+    evaluation !== null && Array.isArray(evaluation.defects) ? evaluation.defects : [];
+  const evalUnverified =
+    evaluation !== null && Array.isArray(evaluation.unverified) ? evaluation.unverified : [];
 
   // Правило 2a: провалившиеся required-гейты. В `counts` они не входят (§5.6, уточнение 2).
   for (const gate of gateEntries) {
@@ -521,7 +595,7 @@ export function decide(inputs) {
   }
 
   // Вердикт модели `REWORK` без валидного блокера не блокирует, но фиксируется метрикой.
-  if (evaluation.verdict === 'REWORK' && blocking === 0) {
+  if (evaluation !== null && evaluation.verdict === 'REWORK' && blocking === 0) {
     counts.verdict_without_evidence = 1;
   }
 
@@ -566,13 +640,15 @@ export function decide(inputs) {
 /**
  * Разбирает аргументы командной строки. Любой мусор — ошибка использования (код 2).
  * @param {string[]} argv
- * @returns {{ dir: string|null, iteration: number|null }}
+ * @returns {{ dir: string|null, iteration: number|null, maxCostRub: number|null }}
  */
 function parseArgs(argv) {
   /** @type {string|null} */
   let dir = null;
   /** @type {number|null} */
   let iteration = null;
+  /** @type {number|null} */
+  let maxCostRub = null;
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -595,10 +671,22 @@ function parseArgs(argv) {
       index += 1;
       continue;
     }
+    // Флаг объявлен в `LIMIT_FLAGS` рядом с остальными лимитами; литерал — страховка типа.
+    const flag = LIMIT_FLAGS.maxCycleCostRub ?? '--max-cost-rub';
+    if (arg === flag) {
+      const raw = argv[index + 1];
+      const value = typeof raw === 'string' && raw.trim() !== '' ? Number(raw) : Number.NaN;
+      if (!Number.isFinite(value)) {
+        throw new Error(`--max-cost-rub: ожидается число, получено ${JSON.stringify(raw)}`);
+      }
+      maxCostRub = checkLimitValue('maxCycleCostRub', value, flag);
+      index += 1;
+      continue;
+    }
     throw new Error(`неизвестный аргумент: ${arg}`);
   }
 
-  return { dir, iteration };
+  return { dir, iteration, maxCostRub };
 }
 
 /**
@@ -649,23 +737,32 @@ function readOptionalJson(file, validator, label) {
 }
 
 /**
- * Блок ```json из md-вывода агента: `null`, если файла нет, блока нет, JSON битый
- * или схема нарушена. Это вход правила 1, а не отказ CLI.
+ * Блок `json` из md-вывода агента: `doc: null`, если файла нет, блока нет, JSON битый
+ * или схема нарушена, плюс причина для подсказки в `reasons[]` (#247). Это вход правила 1,
+ * а не отказ CLI: полный список ошибок печатается в stderr.
  * @param {string} file
  * @param {(doc: unknown) => { ok: boolean, errors: string[] }} validator
- * @returns {Record<string, any>|null}
+ * @returns {{ doc: Record<string, any>|null, errors: string[] }}
  */
 function readAgentBlock(file, validator) {
-  if (!existsSync(file)) return null;
+  const label = basename(file);
+  if (!existsSync(file)) return { doc: null, errors: [`${label}: файл не найден`] };
 
   /** @type {unknown} */
   let doc;
   try {
     doc = extractLastJsonBlock(readFileSync(file, 'utf8'));
-  } catch {
-    return null;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      doc: null,
+      errors: [`${label}: нет блока \`json\` или JSON не разбирается (${message})`],
+    };
   }
-  return validator(doc).ok ? /** @type {Record<string, any>} */ (doc) : null;
+
+  const result = validator(doc);
+  if (result.ok) return { doc: /** @type {Record<string, any>} */ (doc), errors: [] };
+  return { doc: null, errors: result.errors.map((item) => `${label}: ${item}`) };
 }
 
 /**
@@ -685,8 +782,10 @@ function main() {
     const names = iterNames(iteration);
 
     const gates = readRequiredJson(join(dir, names.gates), validateGates, names.gates);
-    const review = readAgentBlock(join(dir, names.reviewMd), validateReview);
-    const evaluation = readAgentBlock(join(dir, names.evaluationMd), validateEvaluation);
+    const reviewBlock = readAgentBlock(join(dir, names.reviewMd), validateReview);
+    const evaluationBlock = readAgentBlock(join(dir, names.evaluationMd), validateEvaluation);
+    const review = reviewBlock.doc;
+    const evaluation = evaluationBlock.doc;
     const qaWeb = readOptionalJson(join(dir, FIXED_NAMES.qaWeb), validateQaWeb, FIXED_NAMES.qaWeb);
 
     // Web-дифф читается от базы цикла; индекс не меняется (его готовит супервизор).
@@ -703,6 +802,21 @@ function main() {
       prices: readPriceSnapshot(root, config.evals.prices),
     });
 
+    // Лимиты проекта (#235): CLI → env → конфиг → дефолт. Значения и источники уходят
+    // в артефакт, поэтому по `decision.json` видно, с каким порогом считали.
+    const resolvedLimits = resolveLimits({
+      config: config.limits,
+      configured: config.limitsExplicit,
+      cli: { maxCycleCostRub: args.maxCostRub },
+      env: process.env,
+      defaults: DEFAULTS.limits,
+    });
+
+    const agentErrors = {
+      [REVIEW_STAGE]: reviewBlock.errors,
+      [EVALUATE_STAGE]: evaluationBlock.errors,
+    };
+
     const decision = decide({
       iteration,
       maxIterations: state.max_iterations,
@@ -714,8 +828,15 @@ function main() {
       webDiff,
       root,
       costRub,
-      limits: config.limits,
+      agentErrors,
+      limits: /** @type {{ maxCycleCostRub: number }} */ (resolvedLimits.values),
+      appliedLimits: describedLimits(resolvedLimits),
     });
+
+    // Полный список ошибок схемы — в stderr (решение говорит только кодом причины, #247).
+    for (const message of [...reviewBlock.errors, ...evaluationBlock.errors]) {
+      process.stderr.write(`cycle-decide: ${message}\n`);
+    }
 
     // Артефакты из md пишутся только при валидном блоке (D4): иначе оставляем
     // предыдущие файлы нетронутыми, а правило 1 уже отражено в решении.
@@ -742,7 +863,4 @@ function main() {
 }
 
 // Модуль импортируется тестами ради `decide`; CLI запускается только напрямую.
-const invokedPath = process.argv[1] === undefined ? null : resolve(process.argv[1]);
-if (invokedPath !== null && invokedPath === fileURLToPath(import.meta.url)) {
-  main();
-}
+if (isDirectRun(import.meta.url)) main();

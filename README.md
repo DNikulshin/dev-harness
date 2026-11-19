@@ -17,7 +17,8 @@ evals-слой.
 
 ## Подключение к проекту
 
-Зависимость по git-тегу (после первого релиза):
+Ядро подключается **как пакет**, а не копированием файлов: копия в проекте повторила бы ровно ту
+проблему дублей, из-за которой ядро выносилось. Зависимость по git-тегу:
 
 ```json
 {
@@ -27,27 +28,63 @@ evals-слой.
 }
 ```
 
-До релиза — по ветке или коммиту:
+До первого релиза — по ветке или коммиту:
 
 ```bash
-pnpm add -D github:DNikulshin/dev-harness#feat/1-core-from-hair-lab
+pnpm add -D github:DNikulshin/dev-harness#main
 ```
 
-Дальше проект переносит к себе нужные файлы (копированием или скриптом) и настраивает конфиг:
+Репозиторий публичный: токен для установки не нужен, `pnpm add` читает его анонимно. `private: true`
+в пакете означает «не публикуется в npm», а не «нет доступа»: установка идёт только по git-ссылке, и
+это не мешает `pnpm add`/`npm i` и `pnpm pack`.
 
-| Что переносится                                     | Куда в проекте                            |
+Если репозиторий снова закроют, потребителю понадобится PAT на чтение (`HARNESS_READ_TOKEN` в
+`devDependencies` через `//npm.pkg.github.com/` не подойдёт — это git-зависимость): приватный
+git-URL потребует настроенного доступа `git`/`gh` на машине сборки и в CI.
+
+### Команды пакета (`bin`)
+
+| Команда                                             | Скрипт                       |
+| --------------------------------------------------- | ---------------------------- |
+| `harness-cycle-state`                               | `scripts/cycle-state.mjs`    |
+| `harness-cycle-gates`                               | `scripts/cycle-gates.mjs`    |
+| `harness-cycle-evidence`                            | `scripts/cycle-evidence.mjs` |
+| `harness-cycle-decide`                              | `scripts/cycle-decide.mjs`   |
+| `harness-cycle-metrics`                             | `scripts/cycle-metrics.mjs`  |
+| `harness-cycle-report`                              | `scripts/cycle-report.mjs`   |
+| `harness-cycle-pr-body`                             | `scripts/cycle-pr-body.mjs`  |
+| `harness-cycle-usage`                               | `scripts/cycle-usage.mjs`    |
+| `harness-check-layout`                              | `scripts/check-harness.mjs`  |
+| `harness-evals-collect`, `-cost`, `-pack`, `-score` | `scripts/evals-*.mjs`        |
+| `harness-selftest`                                  | `scripts/selftest.mjs`       |
+
+`harness-selftest` прогоняет тесты ядра из установленного пакета. Проверки, которым нужен сам
+репозиторий ядра (корень репозитория, сиды `evals/`, снапшот цен), в пакете пропускаются с причиной:
+этих данных потребитель не получает и приносит свои.
+
+### Импорт модулей ядра
+
+Скрипты одновременно CLI и библиотеки, поэтому из проекта доступны прямые импорты:
+
+```js
+import { runGates } from '@dnikulshin/harness/scripts/cycle-gates';
+import { loadConfig } from '@dnikulshin/harness/scripts/lib/cycle/config';
+```
+
+### Что проект приносит себе сам
+
+Политика остаётся проектной: шаблоны ролей и промпта копируются из пакета и адаптируются под проект,
+конфиг собирается из примера. Копия ядра при этом не появляется — `scripts/` в проекте пуст по
+отношению к циклу.
+
+| Что берётся из пакета                               | Куда в проекте                            |
 | --------------------------------------------------- | ----------------------------------------- |
-| `scripts/cycle-*.mjs`                               | `scripts/`                                |
-| `scripts/check-harness.mjs`                         | `scripts/`                                |
-| `scripts/evals-*.mjs`                               | `scripts/`                                |
-| `scripts/lib/cycle/**`                              | `scripts/lib/cycle/`                      |
-| `scripts/lib/evals/**`                              | `scripts/lib/evals/`                      |
 | `templates/.pi/agents/*.md`                         | `.pi/agents/` (и адаптировать под проект) |
 | `templates/.pi/prompts/cycle.md`                    | `.pi/prompts/cycle.md`                    |
 | `templates/.pi/harness.config.example.json`         | `.pi/harness.config.json`                 |
 | `docs/orchestrator-core.md`, `docs/orchestrator.md` | `docs/`                                   |
 
-Ядро не импортирует проектные модули, поэтому переносить достаточно этих файлов.
+Готовые файлы лежат в `node_modules/@dnikulshin/harness/`; ядро не импортирует проектные модули.
 
 ## Конфигурация `.pi/harness.config.json`
 
@@ -65,7 +102,7 @@ pnpm add -D github:DNikulshin/dev-harness#feat/1-core-from-hair-lab
 
 ```json
 {
-  "provider": "acme-ai/",
+  "provider": "polza-ai/",
   "gates": [
     {
       "id": "test",
@@ -118,6 +155,18 @@ pnpm add -D github:DNikulshin/dev-harness#feat/1-core-from-hair-lab
 }
 ```
 
+### Лимиты и их источники
+
+Каждый из шести лимитов разрешается по одному приоритету: **CLI-флаг → переменная окружения → конфиг
+проекта → дефолт ядра**. Флаги есть только у двух ключей (`--max-cost-rub` у `cycle-decide`,
+`--max-iterations` у `cycle-state init`), остальные переопределяются окружением
+`HARNESS_LIMIT_<КЛЮЧ_В_SNAKE_UPPER>` — например `HARNESS_LIMIT_MAX_DIFF_LINES=5000`.
+
+Невалидное значение (не число, не целое где нужно, вне диапазона) — ошибка с кодом 2, а не
+молчаливый откат к дефолту: иначе поднятый порог «не применяется» без следа. Применённые значения и
+их источник пишутся в `decision.<n>.json` и `metrics.json` (`applied_limits`), а источник порога
+бюджета — в причине `budget: …`. Правило целиком — `docs/orchestrator-core.md`, §5.2.
+
 Правила:
 
 - `gates[]` — порядок выполнения; `executable` + `args` запускаются без оболочки, аргументы не
@@ -137,11 +186,20 @@ pnpm add -D github:DNikulshin/dev-harness#feat/1-core-from-hair-lab
 ## Команды
 
 ```bash
-node --test          # все тесты
-pnpm format:check    # prettier --check .
-pnpm format          # prettier --write .
-pnpm check           # node --test && prettier --check .
+node --test             # все тесты
+pnpm typecheck          # tsc --noEmit: строгая проверка типов (strict + noUncheckedIndexedAccess)
+pnpm typecheck:types    # пересобрать `types/` — .d.ts для потребителя пакета
+pnpm format:check       # prettier --check .
+pnpm format             # prettier --write .
+pnpm check              # node --test && tsc --noEmit && prettier --check .
+pnpm board:sync         # сверить доску Projects с issues (docs/board.md)
+pnpm board:sync:dry     # то же, но только план: в проект ничего не пишется
 ```
+
+Код остаётся `.mjs`: источник типов — JSDoc, проверка — `tsc` (решение и цена —
+[docs/adr/0002](./docs/adr/0002-strict-typing.md)). `.d.ts` для потребителя генерируются из JSDoc и
+**коммитятся** в `types/`; CI сверяет их актуальность (`pnpm typecheck:types:check`), поэтому
+установка пакета ничего не собирает и не тянет devDependencies.
 
 ## Документация
 
@@ -149,4 +207,12 @@ pnpm check           # node --test && prettier --check .
 - [docs/vision.md](./docs/vision.md) — зачем репозиторий и границы v0.1.
 - [docs/extraction-from-harness.md](./docs/extraction-from-harness.md) — что и откуда перенесено
   (инвентаризация hair-lab, issue DNikulshin/hair-lab#233).
+- [docs/adr/](./docs/adr/README.md) — принятые архитектурные решения: профили и классы артефактов,
+  строгая типизация, граница «инфраструктура среды не в ядре».
+- [docs/rag.md](./docs/rag.md) — правило работы с индексом `local-rag`: что синхронизировать, как
+  искать и что делать без RAG. Потребитель берёт себе этот текст, а не скрипт автоматизации.
+- [docs/board.md](./docs/board.md) — доска Projects: правила колонок, метки `status:*`, сверка
+  `pnpm board:sync` и секрет `PROJECT_TOKEN`. Инфраструктура репозитория, в пакет не входит.
+- [docs/workflow.md](./docs/workflow.md) — процесс разработки: роли, ветки, коммиты, PR, релизы,
+  Definition of Done.
 - [AGENTS.md](./AGENTS.md) — правила разработки самого dev-harness.

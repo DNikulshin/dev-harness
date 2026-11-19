@@ -55,10 +55,11 @@ import {
 import { join, resolve } from 'node:path';
 import { finished } from 'node:stream/promises';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { fileURLToPath } from 'node:url';
 
 import { normalizeDoc } from './cycle-decide.mjs';
+import { isDirectRun } from './lib/cycle/cli.mjs';
 import { DEFAULTS, loadConfig } from './lib/cycle/config.mjs';
+import { resolveLimits } from './lib/cycle/limits.mjs';
 import {
   addedLinesByFile,
   baseSha,
@@ -139,7 +140,7 @@ const NO_DATABASE_PATTERNS = Object.freeze([
 /**
  * Непустая строка после обрезки пробелов.
  * @param {unknown} value
- * @returns {boolean}
+ * @returns {value is string} сужает тип вызывающего кода
  */
 function isText(value) {
   return typeof value === 'string' && value.trim() !== '';
@@ -190,7 +191,7 @@ export function planRun(definitions, { changed = [], only = null, inherited = {}
  * Классифицирует лог `test_int` (§5.5): ошибки соединения — `no_database`, всё остальное,
  * включая `password authentication failed`, — `fail`. Чистая функция: вход — только текст
  * лога, поэтому тесты идут на образцах из `scripts/fixtures/cycle/`.
- * @param {string} text содержимое лога гейта
+ * @param {unknown} text содержимое лога гейта (нестрока — `TypeError`)
  * @returns {'no_database'|'fail'}
  */
 export function classifyTestIntLog(text) {
@@ -214,7 +215,7 @@ function isEnvExample(file) {
  * находки, значение секрета не сохраняется. Файл `.env.example` — единственное исключение.
  * `scanSecrets` нумерует строки относительно переданного массива, поэтому номер строки
  * в файле берётся из соответствующего элемента `addedLinesByFile`.
- * @param {{ file: string, lines: { line: number, text: string }[] }[]} files
+ * @param {unknown} files массив `{ file, lines }` (не массив — `TypeError`)
  * @returns {{ file: string, line: number, kind: string }[]}
  */
 export function scanAddedLines(files) {
@@ -225,15 +226,16 @@ export function scanAddedLines(files) {
   /** @type {{ file: string, line: number, kind: string }[]} */
   const findings = [];
 
-  for (const entry of files) {
+  for (const entry of /** @type {{ file: string, lines: { line: number, text: string }[] }[]} */ (
+    files
+  )) {
     if (isEnvExample(entry.file)) continue;
     const lines = entry.lines.map((line) => line.text);
     for (const finding of scanSecrets(lines)) {
-      findings.push({
-        file: entry.file,
-        line: entry.lines[finding.line - 1].line,
-        kind: finding.kind,
-      });
+      const source = entry.lines[finding.line - 1];
+      // Строка есть по построению: `scanSecrets` нумерует отданные ему линии.
+      if (source === undefined) continue;
+      findings.push({ file: entry.file, line: source.line, kind: finding.kind });
     }
   }
 
@@ -367,6 +369,9 @@ async function runCommandGate(
   },
 ) {
   const [command, ...args] = gateCommand(definition);
+  if (command === undefined) {
+    throw new Error(`гейт ${definition.id}: не задана команда (executable или cmd)`);
+  }
   const startedMs = now();
   const stream = createWriteStream(logFile);
   /** @type {Error|null} */
@@ -572,7 +577,10 @@ export async function runGates(options) {
       continue;
     }
 
-    const blocker = definition.dependsOn.find((id) => BLOCKING_STATUSES.includes(statuses.get(id)));
+    const blocker = definition.dependsOn.find((id) => {
+      const parentStatus = statuses.get(id);
+      return parentStatus !== undefined && BLOCKING_STATUSES.includes(parentStatus);
+    });
     if (blocker !== undefined) {
       const entry = makeEntry(definition, { status: 'not_run', reason: `blocked_by:${blocker}` });
       gates.push(entry);
@@ -746,7 +754,8 @@ function previousGates(file, label) {
 /**
  * Код выхода по документу гейтов (§5.5): `0` — обязательных `fail` нет, `1` — есть.
  * Код `2` ставит `main` при любой ошибке использования или внутренней ошибке.
- * @param {{ gates: GateEntry[] }} doc
+ * @param {{ gates: Record<string, unknown>[] }} doc
+ *   читаются только `required` и `status`, поэтому частичные документы допустимы
  * @returns {0|1}
  */
 export function exitCode(doc) {
@@ -790,6 +799,14 @@ async function main() {
     const gatesFile = join(dir, names.gates);
     const inherited = args.only === null ? {} : previousGates(gatesFile, names.gates);
 
+    // Лимиты (#235): env → конфиг → дефолт. Флагов у этого скрипта нет.
+    const resolvedLimits = resolveLimits({
+      config: config.limits,
+      configured: config.limitsExplicit,
+      env: process.env,
+      defaults: DEFAULTS.limits,
+    });
+
     const run = await runGates({
       definitions: config.gates,
       changed,
@@ -800,7 +817,7 @@ async function main() {
       dir,
       root,
       timeouts: config.gateTimeouts,
-      limits: config.limits,
+      limits: /** @type {{ logMaxBytes: number }} */ (resolvedLimits.values),
     });
     // `base_sha` в документе — разрешённый полный sha базы, от которой фактически
     // считался дифф (`--base` или `state.base_sha`): по нему `cycle-evidence`
@@ -812,7 +829,10 @@ async function main() {
       throw new Error(`${names.gates}: схема нарушена:\n${checked.errors.join('\n')}`);
     }
 
-    const normalized = normalizeDoc(doc);
+    // Документ уже прошёл `validateGates`, поэтому форма известна; `normalizeDoc`
+    // возвращает `unknown` намеренно — он общий для всех артефактов.
+    /** @type {{ gates: GateEntry[] }} */
+    const normalized = /** @type {{ gates: GateEntry[] }} */ (normalizeDoc(doc));
     writeJsonAtomic(gatesFile, normalized, { serialize: serializeArtifact });
     process.stdout.write(`${JSON.stringify(normalized)}\n`);
     process.exitCode = exitCode(normalized);
@@ -824,7 +844,4 @@ async function main() {
 }
 
 // Модуль импортируется тестами ради чистых функций; CLI запускается только напрямую.
-const invokedPath = process.argv[1] === undefined ? null : resolve(process.argv[1]);
-if (invokedPath !== null && invokedPath === fileURLToPath(import.meta.url)) {
-  await main();
-}
+if (isDirectRun(import.meta.url)) await main();

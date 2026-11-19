@@ -12,3 +12,4 @@ docs/orchestrator.md
 .pi/agents/
 templates/.pi/agents/
 .nvmrc
+types/

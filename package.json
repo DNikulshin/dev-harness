@@ -7,13 +7,55 @@
   "engines": {
     "node": ">=26.13 <27"
   },
+  "files": [
+    "scripts/",
+    "types/",
+    "templates/",
+    "docs/",
+    "README.md"
+  ],
+  "exports": {
+    "./scripts/*": {
+      "types": "./types/*.d.mts",
+      "default": "./scripts/*.mjs"
+    },
+    "./templates/*": "./templates/*",
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "harness-check-layout": "./scripts/check-harness.mjs",
+    "harness-cycle-decide": "./scripts/cycle-decide.mjs",
+    "harness-cycle-evidence": "./scripts/cycle-evidence.mjs",
+    "harness-cycle-gates": "./scripts/cycle-gates.mjs",
+    "harness-cycle-metrics": "./scripts/cycle-metrics.mjs",
+    "harness-cycle-pr-body": "./scripts/cycle-pr-body.mjs",
+    "harness-cycle-report": "./scripts/cycle-report.mjs",
+    "harness-cycle-state": "./scripts/cycle-state.mjs",
+    "harness-cycle-usage": "./scripts/cycle-usage.mjs",
+    "harness-evals-collect": "./scripts/evals-collect.mjs",
+    "harness-evals-cost": "./scripts/evals-cost.mjs",
+    "harness-evals-pack": "./scripts/evals-pack.mjs",
+    "harness-evals-score": "./scripts/evals-score.mjs",
+    "harness-selftest": "./scripts/selftest.mjs"
+  },
   "scripts": {
     "test": "node --test",
+    "rag:sync": "node tooling/rag-sync.mjs",
+    "typecheck": "tsc -p tsconfig.json",
+    "typecheck:types": "tsc -p tsconfig.build.json",
+    "typecheck:types:check": "pnpm typecheck:types && test -z \"$(git status --porcelain --untracked-files=all types)\"",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "check": "node --test && prettier --check ."
+    "check": "node --test && tsc -p tsconfig.json && prettier --check .",
+    "board:sync": "node tooling/board-sync.mjs",
+    "board:sync:dry": "DRY_RUN=1 node tooling/board-sync.mjs",
+    "prepare": "git rev-parse --git-dir >/dev/null 2>&1 && git config core.hooksPath .githooks || true",
+    "precommit": "node tooling/precommit.mjs",
+    "git:hygiene": "node tooling/git-hygiene.mjs"
   },
   "devDependencies": {
-    "prettier": "^3.10.1"
+    "@types/node": "^26.6.6",
+    "prettier": "^3.10.1",
+    "typescript": "^7.0.2"
   }
 }

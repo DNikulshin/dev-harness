@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
 
+import { REPO_ONLY } from '../testsupport.mjs';
 import {
   FIXED_NAMES,
   artifactsDir,
@@ -40,7 +41,7 @@ function makeCycle(artifacts, name, state) {
 }
 
 describe('repoRoot / artifactsDir', () => {
-  test('repoRoot совпадает с корнем, который видит git', () => {
+  test('repoRoot совпадает с корнем, который видит git', REPO_ONLY, () => {
     const expected = execFileSync('git', ['rev-parse', '--show-toplevel'], {
       encoding: 'utf8',
     }).trim();

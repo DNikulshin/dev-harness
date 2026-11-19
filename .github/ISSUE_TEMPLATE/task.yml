@@ -1,0 +1,33 @@
+name: Инфраструктура / техническая задача
+description: CI, доска, зависимости, рефакторинг без изменения поведения
+labels: ['type:chore', 'status:todo']
+body:
+  - type: textarea
+    id: why
+    attributes:
+      label: Зачем
+      description: Какой риск или неудобство снимаем. «Так чище» — не причина.
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Что делаем
+    validations:
+      required: true
+  - type: textarea
+    id: done
+    attributes:
+      label: Готово, когда
+      placeholder: |
+        - `pnpm check` зелёный
+        - правило проверяется механизмом, а не памятью
+    validations:
+      required: true
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Приоритет
+      options: ['p1 — блокирует потребителя', 'p2 — нужно к релизу', 'p3 — можно позже']
+    validations:
+      required: true

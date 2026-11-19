@@ -29,8 +29,8 @@
  */
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
+import { isDirectRun } from './lib/cycle/cli.mjs';
 import { loadConfig } from './lib/cycle/config.mjs';
 import { readJson } from './lib/cycle/io.mjs';
 import { FIXED_NAMES, artifactsDir, repoRoot } from './lib/cycle/paths.mjs';
@@ -91,15 +91,17 @@ function round2(value) {
 /**
  * Медиана чисел; `null` для пустого списка. Для чётного числа — среднее двух средних
  * (так же считается `alert = 2 × медиана` в §11).
- * @param {number[]} values
+ * @param {unknown} values список чисел (не массив или пустой — `null`)
  * @returns {number|null}
  */
 export function median(values) {
   if (!Array.isArray(values) || values.length === 0) return null;
   const sorted = [...values].sort((left, right) => left - right);
   const middle = Math.floor(sorted.length / 2);
-  if (sorted.length % 2 === 1) return round2(sorted[middle]);
-  return round2((sorted[middle - 1] + sorted[middle]) / 2);
+  const upper = sorted[middle] ?? 0;
+  if (sorted.length % 2 === 1) return round2(upper);
+  const lower = sorted[middle - 1] ?? 0;
+  return round2((lower + upper) / 2);
 }
 
 /**
@@ -218,11 +220,13 @@ export function aggregateGates(cycles, gateIds = []) {
   const totals = new Map();
   for (const cycle of cycles) {
     for (const [id, outcomes] of Object.entries(cycle.gate_outcomes)) {
-      if (totals.has(id) === false) {
-        totals.set(id, Object.fromEntries(GATE_STATUSES.map((status) => [status, 0])));
-      }
-      const entry = /** @type {Record<string, number>} */ (totals.get(id));
-      for (const status of GATE_STATUSES) entry[status] += count(outcomes?.[status]);
+      const fresh = /** @type {Record<string, number>} */ (
+        Object.fromEntries(GATE_STATUSES.map((status) => [status, 0]))
+      );
+      const entry = totals.get(id) ?? fresh;
+      totals.set(id, entry);
+      for (const status of GATE_STATUSES)
+        entry[status] = (entry[status] ?? 0) + count(outcomes?.[status]);
     }
   }
 
@@ -233,7 +237,13 @@ export function aggregateGates(cycles, gateIds = []) {
       if (leftIndex !== rightIndex) return leftIndex - rightIndex;
       return left < right ? -1 : left > right ? 1 : 0;
     })
-    .map(([id, entry]) => ({ id, ...entry }));
+    .map(
+      ([id, entry]) =>
+        /** @type {{ id: string, pass: number, fail: number, skipped: number, not_run: number }} */ ({
+          id,
+          ...entry,
+        }),
+    );
 }
 
 /**
@@ -391,7 +401,4 @@ function main() {
 }
 
 // Модуль импортируется тестами ради чистых функций; CLI запускается только напрямую.
-const invokedPath = process.argv[1] === undefined ? null : resolve(process.argv[1]);
-if (invokedPath !== null && invokedPath === fileURLToPath(import.meta.url)) {
-  main();
-}
+if (isDirectRun(import.meta.url)) main();

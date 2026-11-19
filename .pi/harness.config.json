@@ -1,10 +1,18 @@
 {
-  "provider": "acme-ai/",
+  "provider": "polza-ai/",
   "gates": [
     {
       "id": "test",
       "executable": "node",
       "args": ["--test"],
+      "required": true,
+      "dependsOn": [],
+      "pathPrefixes": []
+    },
+    {
+      "id": "typecheck",
+      "executable": "pnpm",
+      "args": ["exec", "tsc", "-p", "tsconfig.json"],
       "required": true,
       "dependsOn": [],
       "pathPrefixes": []
@@ -18,11 +26,20 @@
       "pathPrefixes": []
     }
   ],
+  "limits": {
+    "maxDiffLines": 2000,
+    "maxDiffBytes": 409600,
+    "logMaxBytes": 5242880,
+    "evidenceTailLines": 200,
+    "defaultMaxIterations": 2,
+    "maxCycleCostRub": 30
+  },
   "paths": {
     "prTemplate": ""
   },
   "gateTimeouts": {
     "test": 600000,
-    "format_check": 120000
+    "format_check": 120000,
+    "typecheck": 180000
   }
 }

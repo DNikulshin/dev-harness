@@ -21,8 +21,15 @@ import { LINE_TOLERANCE } from '../../cycle-metrics.mjs';
 import { validateEvaluation, validateReview } from '../cycle/validate.mjs';
 import { HIT_SEVERITIES } from './seeds.mjs';
 
+/**
+ * Стадия, по которой считается прогон сида.
+ * @typedef {'review'|'evaluate'} ScoredStage
+ */
+
 /** Этапы, которые участвуют в прогонах сидов: `code` не запускается (§15). */
-export const SCORED_STAGES = Object.freeze(['review', 'evaluate']);
+export const SCORED_STAGES = /** @type {readonly ScoredStage[]} */ (
+  Object.freeze(['review', 'evaluate'])
+);
 
 /** Ранги серьёзности: находка «не ниже» ожидаемой считается попаданием. */
 const SEVERITY_RANK = Object.freeze({ MAJOR: 1, BLOCKER: 2 });
@@ -33,15 +40,19 @@ export const RUN_STATUSES = Object.freeze(['hit', 'miss', 'clean', 'false_positi
 /** Ссылка `path:line` из `evidence[]` оценщика. */
 const REF_PATTERN = /^(.+):([1-9]\d*)$/u;
 
-/** Плоский объект: массивы и `null` объектами не считаются. */
+/**
+ * Плоский объект: массивы и `null` объектами не считаются.
+ * @param {unknown} value
+ * @returns {value is Record<string, unknown>} сужает тип вызывающего кода
+ */
 function isRecord(value) {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 /**
- * Все блоки ```json из markdown, в порядке появления. Блок с битым JSON пропускается:
+ * Все блоки `json` из markdown, в порядке появления. Блок с битым JSON пропускается:
  * агент мог показать пример схемы, а не результат.
- * @param {string} markdown
+ * @param {unknown} markdown ответ агента (нестрока — пустой список блоков)
  * @returns {unknown[]}
  */
 export function extractJsonBlocks(markdown) {
@@ -52,7 +63,7 @@ export function extractJsonBlocks(markdown) {
   const pattern = /```json[ \t]*\r?\n([\s\S]*?)```/gu;
 
   for (const match of markdown.matchAll(pattern)) {
-    const text = match[1].trim();
+    const text = (match[1] ?? '').trim();
     if (text === '') continue;
     try {
       blocks.push(JSON.parse(text));
@@ -125,9 +136,12 @@ function defectPositions(defect) {
     if (typeof ref !== 'string') continue;
     const match = REF_PATTERN.exec(ref.trim());
     if (match === null) continue;
-    const file = match[1].trim();
+    const rawFile = match[1];
+    const rawLine = match[2];
+    if (rawFile === undefined || rawLine === undefined) continue;
+    const file = rawFile.trim();
     if (file === '') continue;
-    positions.push({ file, line: Number(match[2]), severity });
+    positions.push({ file, line: Number(rawLine), severity });
   }
   return positions;
 }
@@ -135,10 +149,11 @@ function defectPositions(defect) {
 /**
  * Позиции всех находок ответа в нормализованном виде.
  * @param {'review'|'evaluate'} stage
- * @param {Record<string, any>} doc проверенный ответ
+ * @param {unknown} doc ответ агента (форма проверяется здесь, а не вызывающим)
  * @returns {{ file: string, line: number, severity: string }[]}
  */
 export function positionsOf(stage, doc) {
+  if (!isRecord(doc)) return [];
   if (stage === 'review') {
     const findings = Array.isArray(doc.findings) ? doc.findings : [];
     return findings.map(reviewPosition).filter((item) => item !== null);
@@ -165,7 +180,8 @@ function severityAtLeast(actual, expected) {
  * Для сида-дефекта попаданием считается находка серьёзности не ниже ожидаемой в том же
  * файле и в пределах допуска по строке. Если у сида строка не задана, достаточно файла.
  * Для чистого сида любая находка `BLOCKER`/`MAJOR` — ложная блокировка.
- * @param {import('./seeds.mjs').Seed} seed
+ * @param {{ expect: import('./seeds.mjs').SeedExpectation }} seed ожидание сида
+ *   (полный `Seed` не нужен: читается только `expect`)
  * @param {'review'|'evaluate'} stage
  * @param {string} markdown ответ агента
  * @returns {{ status: string, reason: string }}
@@ -178,8 +194,8 @@ export function scoreRun(seed, stage, markdown) {
 
   if (seed.expect.kind === 'clean') {
     const blocking = positions.filter((item) => HIT_SEVERITIES.includes(item.severity));
-    if (blocking.length > 0) {
-      const first = blocking[0];
+    const first = blocking[0];
+    if (first !== undefined) {
       return {
         status: 'false_positive',
         reason: `${first.severity} в ${first.file}:${first.line}`,
@@ -191,6 +207,7 @@ export function scoreRun(seed, stage, markdown) {
   const expected = seed.expect;
   const accepted = expected.severities ?? null;
   const minimum = expected.severity ?? 'BLOCKER';
+  /** @param {string} severity @returns {boolean} */
   const severityOk = (severity) =>
     accepted === null ? severityAtLeast(severity, minimum) : accepted.includes(severity);
 
@@ -258,7 +275,7 @@ export function buildReport({ runs, seeds, thresholds }) {
     let misses = 0;
     let cleanRuns = 0;
     let falsePositives = 0;
-    /** @type {Record<string, number>} */
+    /** @type {{ review: number, evaluate: number }} */
     const exclusive = { review: 0, evaluate: 0 };
 
     for (const [seedId, seedEntry] of Object.entries(config.by_seed)) {
@@ -285,7 +302,11 @@ export function buildReport({ runs, seeds, thresholds }) {
       if (statuses.includes('hit')) {
         seedEntry.union = 'hit';
         hits += 1;
-        if (hitStages.length === 1) exclusive[hitStages[0]] += 1;
+        const onlyHit = hitStages[0];
+        // Эксклюзивный хит: сид поймала ровно одна стадия, значит её и записываем.
+        if (hitStages.length === 1 && (onlyHit === 'review' || onlyHit === 'evaluate')) {
+          exclusive[onlyHit] += 1;
+        }
         continue;
       }
 
@@ -315,6 +336,7 @@ export function buildReport({ runs, seeds, thresholds }) {
     config.name = name;
   }
 
+  /** @type {string[]} */
   const failures = [];
   for (const config of Object.values(configs)) {
     const summary = config.summary;

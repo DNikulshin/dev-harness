@@ -8,7 +8,12 @@ import { describe, test } from 'node:test';
 /** Путь к CLI относительно теста: тест не зависит от текущего каталога запуска. */
 const SCRIPT = resolve(import.meta.dirname, 'evals-pack.mjs');
 
-/** Агент harness: проверяется только `model`, остальное — минимальный валидный frontmatter. */
+/**
+ * Агент harness: проверяется только `model`, остальное — минимальный валидный frontmatter.
+ * @param {string} name
+ * @param {string} model
+ * @returns {string}
+ */
 function agent(name, model) {
   return `---\nname: ${name}\ndescription: 'тест'\nmodel: acme-ai/${model}\nthinking: low\ntools: read\n---\n\nтекст\n`;
 }
@@ -31,12 +36,12 @@ const SEED = {
 function fixtureRoot() {
   const root = mkdtempSync(join(tmpdir(), 'evals-pack-'));
 
-  for (const [name, model] of [
+  for (const [name, model] of /** @type {[string, string][]} */ ([
     ['plan', 'z-ai/glm-5.3'],
     ['code', 'deepseek/deepseek-v4.1-flash'],
     ['review', 'openai/gpt-6-luna-pro'],
     ['evaluate', 'z-ai/glm-5.3'],
-  ]) {
+  ])) {
     mkdirSync(join(root, '.pi', 'agents'), { recursive: true });
     writeFileSync(join(root, '.pi', 'agents', `${name}.md`), agent(name, model));
   }

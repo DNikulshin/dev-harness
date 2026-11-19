@@ -28,8 +28,8 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve, sep } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
+import { isDirectRun } from './lib/cycle/cli.mjs';
 import { readAgentModels } from './lib/evals/agents.mjs';
 import { applyDelta, readCandidates } from './lib/evals/cost.mjs';
 import { loadSeeds, seedCriteriaMarkdown, seedIssueMarkdown } from './lib/evals/seeds.mjs';
@@ -55,6 +55,7 @@ export function parseArgs(argv) {
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
+    if (arg === undefined) break;
     if (arg === '--force') {
       args.force = true;
       continue;
@@ -244,7 +245,4 @@ function main() {
 }
 
 // Модуль импортируется тестами ради чистых функций; CLI запускается только напрямую.
-const invokedPath = process.argv[1] === undefined ? null : resolve(process.argv[1]);
-if (invokedPath !== null && invokedPath === fileURLToPath(import.meta.url)) {
-  main();
-}
+if (isDirectRun(import.meta.url)) main();

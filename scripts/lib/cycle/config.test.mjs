@@ -52,6 +52,30 @@ const GATE = {
   args: ['test'],
 };
 
+/**
+ * Гейт по индексу: таблица в тестах всегда непустая, `undefined` означал бы ошибку теста.
+ * @param {readonly import('./config.mjs').LoadedGate[]} gates
+ * @param {number} index
+ * @returns {import('./config.mjs').LoadedGate}
+ */
+function gateAt(gates, index) {
+  const gate = gates[index];
+  assert.ok(gate, `гейт #${index} есть в конфиге`);
+  return gate;
+}
+
+/**
+ * Гейт по id: `undefined` означал бы, что конфиг потерял объявленный гейт.
+ * @param {readonly import('./config.mjs').LoadedGate[]} gates
+ * @param {string} id
+ * @returns {import('./config.mjs').LoadedGate}
+ */
+function gateById(gates, id) {
+  const gate = gates.find((candidate) => candidate.id === id);
+  assert.ok(gate, `гейт ${id} есть в конфиге`);
+  return gate;
+}
+
 describe('loadConfig: дефолты без конфига', () => {
   test('нет файла — работают нейтральные дефолты, гейтов нет', (t) => {
     const root = makeRoot(t);
@@ -110,10 +134,10 @@ describe('loadConfig: переопределения проекта', () => {
       config.gates.map((gate) => gate.id),
       ['test', 'build'],
     );
-    assert.deepEqual(config.gates[1].dependsOn, ['test']);
-    assert.equal(config.gates[1].required, false);
-    assert.equal(config.gates[0].cmd, 'pnpm test');
-    assert.ok(Object.isFrozen(config.gates[0]), 'гейты заморожены');
+    assert.deepEqual(gateAt(config.gates, 1).dependsOn, ['test']);
+    assert.equal(gateAt(config.gates, 1).required, false);
+    assert.equal(gateAt(config.gates, 0).cmd, 'pnpm test');
+    assert.ok(Object.isFrozen(gateAt(config.gates, 0)), 'гейты заморожены');
   });
 
   test('старый cmd разбирается по пробелам и печатает предупреждение', (t) => {
@@ -122,8 +146,8 @@ describe('loadConfig: переопределения проекта', () => {
 
     const config = loadConfig(root);
 
-    assert.deepEqual(config.gates[0].args, ['--filter', '@acme/core', 'build']);
-    assert.equal(config.gates[0].cmd, 'pnpm --filter @acme/core build');
+    assert.deepEqual(gateAt(config.gates, 0).args, ['--filter', '@acme/core', 'build']);
+    assert.equal(gateAt(config.gates, 0).cmd, 'pnpm --filter @acme/core build');
   });
 
   test('builtin-гейт не требует executable', (t) => {
@@ -132,8 +156,8 @@ describe('loadConfig: переопределения проекта', () => {
 
     const config = loadConfig(root);
 
-    assert.equal(config.gates[0].executable, null);
-    assert.equal(config.gates[0].cmd, null);
+    assert.equal(gateAt(config.gates, 0).executable, null);
+    assert.equal(gateAt(config.gates, 0).cmd, null);
   });
 });
 
@@ -228,14 +252,15 @@ describe('loadConfig: приоритет явного значения', () => {
     const root = makeRoot(t);
     writeConfig(root, { evals: { prices: 'custom/prices.json' } });
 
+    /** @param {string} model @returns {Record<string, unknown>} */
     const priceDoc = (model) => ({
       _meta: { currency: 'RUB' },
       models: { [model]: { input: 1, output: 2, cache_read: 0, cache_write: 0, context: 1000 } },
     });
-    for (const [dir, model] of [
+    for (const [dir, model] of /** @type {[string, string][]} */ ([
       ['custom', 'acme/from-config'],
       ['override', 'acme/from-argument'],
-    ]) {
+    ])) {
       mkdirSync(join(root, dir), { recursive: true });
       writeFileSync(join(root, dir, 'prices.json'), JSON.stringify(priceDoc(model)));
     }
@@ -280,7 +305,7 @@ describe('config: qaWeb и dbGate', () => {
     const config = loadConfig(root);
 
     assert.deepEqual(config.qaWeb.pathPrefixes, []);
-    assert.equal(config.gates[0].dbGate, false);
+    assert.equal(gateAt(config.gates, 0).dbGate, false);
   });
 
   test('конфиг задаёт префиксы web и помечает БД-гейт', (t) => {
@@ -294,8 +319,8 @@ describe('config: qaWeb и dbGate', () => {
     const config = loadConfig(root);
 
     assert.deepEqual(config.qaWeb.pathPrefixes, ['apps/client/', 'apps/admin']);
-    assert.equal(config.gates.find((gate) => gate.id === 'test_int').dbGate, true);
-    assert.equal(config.gates.find((gate) => gate.id === 'test').dbGate, false);
+    assert.equal(gateById(config.gates, 'test_int').dbGate, true);
+    assert.equal(gateById(config.gates, 'test').dbGate, false);
   });
 
   for (const [name, doc] of [

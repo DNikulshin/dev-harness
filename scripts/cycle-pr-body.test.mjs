@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { describe, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+import { loadConfig } from './lib/cycle/config.mjs';
 import {
   dedupeUnverified,
   listItems,
@@ -152,16 +153,22 @@ describe('секции шаблона', () => {
   test('строки «Проверок» идут в порядке конфига проекта, а не файла', () => {
     const text = body('proceed');
     // В фикстуре gates.1.json порядок другой: secrets_scan, test_scripts, contracts_build…
-    // Конфиг dev-harness не содержит этих гейтов, поэтому неизвестные идут по алфавиту.
-    const order = [
-      'contracts_build',
-      'lint_workflows',
-      'secrets_scan',
-      'test_scripts',
-      'typecheck',
-    ];
-    const positions = order.map((id) => text.indexOf(`\`${id}\` —`));
+    // Ожидание считается по конфигу самого репозитория: гейты из него идут в его порядке,
+    // остальные — по алфавиту. Так тест не ломается при добавлении гейта в конфиг.
+    const configIds = loadConfig(REPO_ROOT).gates.map((gate) => gate.id);
+    const index = new Map(configIds.map((id, position) => [id, position]));
+    /** @type {{ id: string }[]} */
+    const gateEntries = fixtureJson('proceed', 'gates.1.json').gates;
+    const ids = gateEntries
+      .map((gate) => gate.id)
+      .sort((left, right) => {
+        const leftIndex = index.get(left) ?? Number.MAX_SAFE_INTEGER;
+        const rightIndex = index.get(right) ?? Number.MAX_SAFE_INTEGER;
+        if (leftIndex !== rightIndex) return leftIndex - rightIndex;
+        return left < right ? -1 : left > right ? 1 : 0;
+      });
 
+    const positions = ids.map((id) => text.indexOf(`\`${id}\` —`));
     for (const position of positions) assert.notEqual(position, -1);
     assert.deepEqual(
       positions,
@@ -274,7 +281,7 @@ describe('PROCEED_WITH_UNVERIFIED', () => {
 
     assert.equal(entry.length, 1, 'дубль из двух источников даёт один пункт');
     assert.ok(
-      entry[0].includes('— нет фикстуры с обрезанным файлом'),
+      (entry[0] ?? '').includes('— нет фикстуры с обрезанным файлом'),
       'остаётся более полная версия (what — why)',
     );
     assert.ok(
@@ -361,11 +368,11 @@ describe('ПДн: тело PR уходит в публичный GitHub', () => 
 
 describe('детерминизм', () => {
   test('два запуска CLI дают побайтно равный вывод', () => {
-    for (const [name, args] of [
+    for (const [name, args] of /** @type {[string, string[]][]} */ ([
       ['proceed', []],
       ['unverified', []],
       ['escalation', ['--draft-escalation']],
-    ]) {
+    ])) {
       const first = body(name, args);
       const second = body(name, args);
       assert.equal(first, second, `${name}: тело PR должно собираться одинаково`);

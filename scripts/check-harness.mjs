@@ -58,13 +58,22 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { isDirectRun } from './lib/cycle/cli.mjs';
 import { DEFAULTS, loadConfig } from './lib/cycle/config.mjs';
 
 /** Корень репозитория по умолчанию: родитель каталога `scripts/`. */
 const DEFAULT_ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 
+/**
+ * Имя роли в `.pi/agents/`. Один список — один тип: расширение ролей идёт правкой
+ * `AGENT_NAMES`, а не вторым перечислением.
+ * @typedef {'plan'|'code'|'review'|'evaluate'} AgentName
+ */
+
 /** Агенты проекта в порядке вывода H1 (§5.9). */
-export const AGENT_NAMES = Object.freeze(['plan', 'code', 'review', 'evaluate']);
+export const AGENT_NAMES = /** @type {readonly AgentName[]} */ (
+  Object.freeze(['plan', 'code', 'review', 'evaluate'])
+);
 
 /** Обязательные поля frontmatter агента (H1). */
 const AGENT_FIELDS = Object.freeze(['name', 'model', 'thinking', 'tools']);
@@ -87,6 +96,7 @@ export const STAGES = Object.freeze([
 ]);
 
 /** Запрещённые инструменты по агентам (H3). */
+/** @type {Readonly<Record<AgentName, readonly string[]>>} */
 const FORBIDDEN_TOOLS = Object.freeze({
   plan: Object.freeze(['bash', 'edit', 'write']),
   code: Object.freeze([]),
@@ -141,13 +151,13 @@ const FILE_ORDER = Object.freeze([
  */
 export function parseFrontmatter(text) {
   const lines = text.split(/\r?\n/);
-  if (lines.length === 0 || lines[0].trim() !== '---') {
+  if (lines.length === 0 || (lines[0] ?? '').trim() !== '---') {
     return { ok: false, error: 'нет открывающей строки ---' };
   }
 
   let end = -1;
   for (let index = 1; index < lines.length; index += 1) {
-    if (lines[index].trim() === '---') {
+    if ((lines[index] ?? '').trim() === '---') {
       end = index;
       break;
     }
@@ -160,6 +170,7 @@ export function parseFrontmatter(text) {
   const fields = {};
   for (let index = 1; index < end; index += 1) {
     const line = lines[index];
+    if (line === undefined) continue;
     if (line.trim() === '' || line.trimStart().startsWith('#')) {
       continue;
     }
@@ -167,7 +178,11 @@ export function parseFrontmatter(text) {
     if (match === null) {
       return { ok: false, error: `строка ${index + 1} не вида "key: value"` };
     }
-    const [, key, raw] = match;
+    const key = match[1];
+    const raw = match[2];
+    if (key === undefined || raw === undefined) {
+      return { ok: false, error: `строка ${index + 1} не вида "key: value"` };
+    }
     fields[key] = key === 'tools' ? splitList(raw) : unquote(raw.trim());
   }
 
@@ -266,7 +281,9 @@ function describeReadError(error) {
   if (typeof code !== 'string' || code === '') {
     return 'ошибка чтения';
   }
-  return Object.hasOwn(READ_ERROR_REASONS, code) ? READ_ERROR_REASONS[code] : code;
+  return Object.hasOwn(READ_ERROR_REASONS, code)
+    ? (READ_ERROR_REASONS[/** @type {keyof typeof READ_ERROR_REASONS} */ (code)] ?? code)
+    : code;
 }
 
 /**
@@ -280,8 +297,7 @@ function describeJsonError(error) {
   if (!(error instanceof Error)) {
     return 'ошибка разбора JSON';
   }
-  const reason = error.message
-    .split(/\r?\n/u)[0]
+  const reason = (error.message.split(/\r?\n/u)[0] ?? '')
     .replace(/,\s*".*$/u, '')
     .replace(/ in JSON at position.*$/u, '')
     .trim();
@@ -329,7 +345,8 @@ export function familyOf(model, provider = DEFAULTS.provider) {
     return null;
   }
   const segments = model.split('/');
-  return segments.length >= 3 && segments[1] !== '' ? segments[1] : null;
+  const family = segments[1];
+  return segments.length >= 3 && family !== undefined && family !== '' ? family : null;
 }
 
 /**
@@ -370,17 +387,19 @@ export function evaluateHarness(input) {
       add('H1', `.pi/agents/${name}.md`, 'агент отсутствует');
       continue;
     }
-    const missing = AGENT_FIELDS.filter((field) => !hasValue(agent.fields[field]));
+    const fields = agent.fields;
+    const missing = AGENT_FIELDS.filter((field) => !hasValue(fields[field]));
     if (missing.length > 0) {
       add('H1', agent.file, `не заданы поля: ${missing.join(', ')}`);
     }
-    const declared = agent.fields.name;
+    const declared = fields.name;
     if (typeof declared === 'string' && declared.trim() !== '' && declared !== name) {
       add('H1', agent.file, `name "${declared}" не совпадает с именем файла "${name}"`);
     }
   }
 
   // H2: независимость семейств. Ребро проверяется, только если семейства известны у обоих.
+  /** @type {readonly (readonly [AgentName, AgentName])[]} */
   const pairs = [
     ['code', 'review'],
     ['evaluate', 'code'],
@@ -415,7 +434,8 @@ export function evaluateHarness(input) {
     if (!Array.isArray(tools)) {
       continue;
     }
-    const forbidden = FORBIDDEN_TOOLS[name].filter((tool) => tools.includes(tool));
+    const declaredTools = /** @type {unknown[]} */ (tools);
+    const forbidden = FORBIDDEN_TOOLS[name].filter((tool) => declaredTools.includes(tool));
     if (forbidden.length > 0) {
       add('H3', agent.file, `запрещённые инструменты: ${forbidden.join(', ')}`);
     }
@@ -435,19 +455,20 @@ export function evaluateHarness(input) {
 
   // H5: лимит запусков субагентов за цикл.
   const spawns = readSpawns(input.settings);
+  const spawnsValue = spawns.value;
   if (spawns.missing) {
     add('H5', '.pi/settings.json', 'subagents.maxSubagentSpawnsPerRun не задан');
-  } else if (!Number.isInteger(spawns.value)) {
+  } else if (typeof spawnsValue !== 'number' || !Number.isInteger(spawnsValue)) {
     add(
       'H5',
       '.pi/settings.json',
-      `subagents.maxSubagentSpawnsPerRun должен быть целым: ${JSON.stringify(spawns.value)}`,
+      `subagents.maxSubagentSpawnsPerRun должен быть целым: ${JSON.stringify(spawnsValue)}`,
     );
-  } else if (spawns.value < MIN_SUBAGENT_SPAWNS) {
+  } else if (spawnsValue < MIN_SUBAGENT_SPAWNS) {
     add(
       'H5',
       '.pi/settings.json',
-      `subagents.maxSubagentSpawnsPerRun = ${spawns.value}, требуется ≥ ${MIN_SUBAGENT_SPAWNS}`,
+      `subagents.maxSubagentSpawnsPerRun = ${spawnsValue}, требуется ≥ ${MIN_SUBAGENT_SPAWNS}`,
     );
   }
 
@@ -597,7 +618,4 @@ function main() {
 }
 
 // Модуль импортируется тестами ради чистых функций; CLI запускается только напрямую.
-const invokedPath = process.argv[1] === undefined ? null : resolve(process.argv[1]);
-if (invokedPath !== null && invokedPath === fileURLToPath(import.meta.url)) {
-  main();
-}
+if (isDirectRun(import.meta.url)) main();

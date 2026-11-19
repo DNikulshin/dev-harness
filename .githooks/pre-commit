@@ -1,0 +1,6 @@
+#!/bin/sh
+# Pre-commit проверка: ветка, prettier по staged-файлам, check-harness при правках .pi/**.
+# Подключается через `git config core.hooksPath .githooks` (это делает `prepare` в package.json).
+# Логика — tooling/precommit.mjs. Обойти: `git commit --no-verify`.
+set -e
+exec node "$(git rev-parse --show-toplevel)/tooling/precommit.mjs"

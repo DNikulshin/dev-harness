@@ -3,6 +3,9 @@ name: CI
 on:
   push:
     branches: [main]
+    # Тег — контракт для потребителя: по нему ставится пакет (`#vX.Y.Z`). CI на теге
+    # должен быть зелёным, иначе ссылка на тег ведёт на непроверенный коммит.
+    tags: ['v*']
   pull_request:
 
 concurrency:
@@ -28,6 +31,13 @@ jobs:
 
       - name: Установка зависимостей
         run: pnpm install --frozen-lockfile
+
+      - name: Проверка типов
+        run: pnpm typecheck
+
+      # Типы для потребителя пакета коммитятся: генерируются из JSDoc и сверяются здесь.
+      - name: Типы пакета актуальны
+        run: pnpm typecheck:types:check
 
       - name: Тесты ядра
         run: pnpm test

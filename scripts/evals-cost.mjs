@@ -22,8 +22,8 @@
  */
 import { readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
+import { isDirectRun } from './lib/cycle/cli.mjs';
 import { readAgentModels } from './lib/evals/agents.mjs';
 import {
   STAGES,
@@ -124,7 +124,7 @@ export function parseArgs(argv) {
  * @returns {string}
  */
 function formatRow(row, baseline) {
-  const cells = STAGES.map((stage) => formatRub(row.stages[stage]).padStart(10));
+  const cells = STAGES.map((stage) => formatRub(row.stages[stage] ?? 0).padStart(10));
   const total = formatRub(row.total).padStart(10);
   const difference = baseline === null ? '' : formatDelta(row.total - baseline);
   return `${row.name.padEnd(24)}${cells.join('')}${total}${difference.padStart(10)}`;
@@ -156,7 +156,9 @@ function main() {
     rows.push({
       name: 'current (агенты)',
       models: current,
-      stages: Object.fromEntries(STAGES.map((stage) => [stage, baseCycle.stages[stage].total])),
+      stages: Object.fromEntries(
+        STAGES.map((stage) => [stage, baseCycle.stages[stage]?.total ?? 0]),
+      ),
       total: baseCycle.total,
     });
 
@@ -166,7 +168,7 @@ function main() {
       rows.push({
         name,
         models,
-        stages: Object.fromEntries(STAGES.map((stage) => [stage, cycle.stages[stage].total])),
+        stages: Object.fromEntries(STAGES.map((stage) => [stage, cycle.stages[stage]?.total ?? 0])),
         total: cycle.total,
       });
     }
@@ -177,7 +179,7 @@ function main() {
       rows.push({
         name: model,
         models,
-        stages: Object.fromEntries(STAGES.map((stage) => [stage, cycle.stages[stage].total])),
+        stages: Object.fromEntries(STAGES.map((stage) => [stage, cycle.stages[stage]?.total ?? 0])),
         total: cycle.total,
       });
     }
@@ -190,7 +192,7 @@ function main() {
             name: row.name,
             models: row.models,
             stages: Object.fromEntries(
-              STAGES.map((stage) => [stage, Number(row.stages[stage].toFixed(4))]),
+              STAGES.map((stage) => [stage, Number((row.stages[stage] ?? 0).toFixed(4))]),
             ),
             total: Number(row.total.toFixed(4)),
           })),
@@ -201,7 +203,7 @@ function main() {
 
     const header = `${'конфигурация'.padEnd(24)}${STAGES.map((stage) => stage.padStart(10)).join('')}${'цикл'.padStart(10)}${'Δ'.padStart(10)}`;
     process.stdout.write(`${header}\n`);
-    const baseline = rows[0].total;
+    const baseline = rows[0]?.total ?? 0;
     rows.forEach((row, index) => {
       process.stdout.write(`${formatRow(row, index === 0 ? null : baseline)}\n`);
     });
@@ -216,7 +218,4 @@ function main() {
 }
 
 // Модуль импортируется тестами ради чистых функций; CLI запускается только напрямую.
-const invokedPath = process.argv[1] === undefined ? null : resolve(process.argv[1]);
-if (invokedPath !== null && invokedPath === fileURLToPath(import.meta.url)) {
-  main();
-}
+if (isDirectRun(import.meta.url)) main();

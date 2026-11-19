@@ -67,6 +67,7 @@ describe('parseRef', () => {
         kind: sample.kind,
         value: sample.value,
         line: sample.line,
+        endLine: sample.endLine ?? null,
       });
     });
   }
@@ -76,6 +77,52 @@ describe('parseRef', () => {
       assert.throws(() => parseRef(ref), /ссылка: /);
     });
   }
+});
+
+describe('parseRef: диапазон строк', () => {
+  test('path:start-end разбирается в начало и конец', () => {
+    assert.deepEqual(parseRef('src/app.mjs:10-20'), {
+      kind: 'path',
+      value: 'src/app.mjs',
+      line: 10,
+      endLine: 20,
+    });
+  });
+
+  test('одиночная строка диапазоном не считается', () => {
+    assert.equal(parseRef('src/app.mjs:10').endLine, null);
+  });
+});
+
+describe('resolveRef: path:start-end', () => {
+  test('диапазон внутри файла разрешается, конец сохраняется', (t) => {
+    const root = makeRoot(t);
+
+    const result = resolveRef('src/app.mjs:1-3', { root });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.value, 'src/app.mjs');
+    assert.equal(result.line, 1);
+    assert.equal(result.endLine, 3);
+  });
+
+  test('конец меньше начала — отказ', (t) => {
+    const root = makeRoot(t);
+
+    const result = resolveRef('src/app.mjs:3-1', { root });
+
+    assert.equal(result.ok, false);
+    assert.match(result.error ?? '', /конец меньше начала/u);
+  });
+
+  test('конец за концом файла — отказ', (t) => {
+    const root = makeRoot(t);
+
+    const result = resolveRef('src/app.mjs:1-10', { root });
+
+    assert.equal(result.ok, false);
+    assert.match(result.error ?? '', /строк: 3/u);
+  });
 });
 
 describe('resolveRef: path:line', () => {
@@ -98,7 +145,7 @@ describe('resolveRef: path:line', () => {
     assert.equal(resolveRef('src/no-newline.mjs:2', { root }).ok, true);
     const result = resolveRef('src/no-newline.mjs:3', { root });
     assert.equal(result.ok, false);
-    assert.match(result.error, /строка 3 за концом файла src\/no-newline\.mjs \(строк: 2\)/);
+    assert.match(result.error ?? '', /строка 3 за концом файла src\/no-newline\.mjs \(строк: 2\)/);
   });
 
   test('файл с завершающим переводом строки не даёт ссылку на пустую строку N+1', (t) => {
@@ -107,7 +154,7 @@ describe('resolveRef: path:line', () => {
     assert.equal(resolveRef('src/app.mjs:3', { root }).ok, true);
     const result = resolveRef('src/app.mjs:4', { root });
     assert.equal(result.ok, false);
-    assert.match(result.error, /\(строк: 3\)/);
+    assert.match(result.error ?? '', /\(строк: 3\)/);
   });
 
   test('пустой файл не содержит строк', (t) => {
@@ -116,7 +163,7 @@ describe('resolveRef: path:line', () => {
     const result = resolveRef('src/empty.mjs:1', { root });
 
     assert.equal(result.ok, false);
-    assert.match(result.error, /\(строк: 0\)/);
+    assert.match(result.error ?? '', /\(строк: 0\)/);
   });
 
   test('нормализует `./` и повторные слэши', (t) => {
@@ -142,20 +189,20 @@ describe('resolveRef: path:line', () => {
   test('абсолютный путь запрещён с понятной причиной', (t) => {
     const root = makeRoot(t);
 
-    assert.match(resolveRef('/etc/passwd:1', { root }).error, /абсолютный путь запрещён/);
-    assert.match(resolveRef('C:\\repo\\file.mjs:1', { root }).error, /обратные слэши/);
+    assert.match(resolveRef('/etc/passwd:1', { root }).error ?? '', /абсолютный путь запрещён/);
+    assert.match(resolveRef('C:\\repo\\file.mjs:1', { root }).error ?? '', /обратные слэши/);
   });
 
   test('`..`, `.pi/artifacts/` и `node_modules/` запрещены по отдельности', (t) => {
     const root = makeRoot(t);
 
-    assert.match(resolveRef('../secret.mjs:1', { root }).error, /«\.\.» в пути запрещён/);
+    assert.match(resolveRef('../secret.mjs:1', { root }).error ?? '', /«\.\.» в пути запрещён/);
     assert.match(
-      resolveRef('.pi/artifacts/2026-11-16-1-slug/state.json:1', { root }).error,
+      resolveRef('.pi/artifacts/2026-11-16-1-slug/state.json:1', { root }).error ?? '',
       /путь в \.pi\/artifacts\/ запрещён/,
     );
     assert.match(
-      resolveRef('node_modules/left-pad/index.js:1', { root }).error,
+      resolveRef('node_modules/left-pad/index.js:1', { root }).error ?? '',
       /путь в node_modules\/ запрещён/,
     );
   });
@@ -163,7 +210,10 @@ describe('resolveRef: path:line', () => {
   test('без корня репозитория путь не разрешается', (t) => {
     const root = makeRoot(t);
 
-    assert.match(resolveRef('src/app.mjs:1', {}).error, /не задан корень репозитория/);
+    assert.match(
+      resolveRef('src/app.mjs:1', /** @type {any} */ ({})).error ?? '',
+      /не задан корень репозитория/,
+    );
     assert.equal(resolveRef('src/app.mjs:1', { root }).ok, true);
   });
 
@@ -173,7 +223,7 @@ describe('resolveRef: path:line', () => {
     const result = resolveRef('src:1', { root });
 
     assert.equal(result.ok, false);
-    assert.match(result.error, /не файл: src/);
+    assert.match(result.error ?? '', /не файл: src/);
   });
 
   test('`.env*` не читается ни в одном виде ссылки', (t) => {
@@ -181,14 +231,17 @@ describe('resolveRef: path:line', () => {
 
     // Прямой, вложенный и с `./`: любая форма не должна доходить до чтения файла.
     assert.match(
-      resolveRef('.env.local:1', { root }).error,
+      resolveRef('.env.local:1', { root }).error ?? '',
       /чтение \.env\.local запрещено \(разрешён только \.env\.example\)/,
     );
     assert.match(
-      resolveRef('apps/service/.env.production:1', { root }).error,
+      resolveRef('apps/service/.env.production:1', { root }).error ?? '',
       /чтение \.env\.production запрещено/,
     );
-    assert.match(resolveRef('./.env.local:1', { root }).error, /чтение \.env\.local запрещено/);
+    assert.match(
+      resolveRef('./.env.local:1', { root }).error ?? '',
+      /чтение \.env\.local запрещено/,
+    );
   });
 
   test('`.env.example` разрешён: номер строки проверяется по файлу', (t) => {
@@ -214,7 +267,7 @@ describe('resolveRef: символические ссылки', () => {
 
     assert.equal(result.ok, false);
     assert.equal(result.line, 1);
-    assert.match(result.error, /путь выходит за пределы репозитория: linked\.txt/);
+    assert.match(result.error ?? '', /путь выходит за пределы репозитория: linked\.txt/);
   });
 
   test('ссылка на файл внутри корня разрешается по каноническому пути', (t) => {
@@ -236,7 +289,7 @@ describe('resolveRef: символические ссылки', () => {
     const result = resolveRef('linked-state.json:1', { root });
 
     assert.equal(result.ok, false);
-    assert.match(result.error, /символическая ссылка ведёт в запрещённый путь/);
+    assert.match(result.error ?? '', /символическая ссылка ведёт в запрещённый путь/);
   });
 
   test('ссылка на каталог вне корня не разрешается', (t) => {
@@ -255,7 +308,7 @@ describe('resolveRef: символические ссылки', () => {
     const result = resolveRef('src/config.mjs:1', { root });
 
     assert.equal(result.ok, false);
-    assert.match(result.error, /символическая ссылка ведёт в запрещённый путь/);
+    assert.match(result.error ?? '', /символическая ссылка ведёт в запрещённый путь/);
   });
 });
 
@@ -273,27 +326,30 @@ describe('resolveRef: gate и qa', () => {
     const result = resolveRef('gate:not_a_gate', { root: '/', gates: GATES, qa: QA });
 
     assert.equal(result.ok, false);
-    assert.match(result.error, /гейт не найден/);
+    assert.match(result.error ?? '', /гейт не найден/);
   });
 
   test('`gates = null` — ссылка неразрешима', () => {
     const result = resolveRef('gate:typecheck', { root: '/', gates: null, qa: QA });
 
     assert.equal(result.ok, false);
-    assert.match(result.error, /gates\.<n>\.json не передан/);
+    assert.match(result.error ?? '', /gates\.<n>\.json не передан/);
   });
 
   test('gates без массива `gates` — ссылка неразрешима', () => {
     const result = resolveRef('gate:typecheck', { root: '/', gates: { iteration: 1 } });
 
     assert.equal(result.ok, false);
-    assert.match(result.error, /нет массива gates/);
+    assert.match(result.error ?? '', /нет массива gates/);
   });
 
   test('существующий шаг QA разрешается, отсутствующий — нет', () => {
     assert.equal(resolveRef('qa:s2', { root: '/', qa: QA }).ok, true);
-    assert.match(resolveRef('qa:s9', { root: '/', qa: QA }).error, /шаг не найден/);
-    assert.match(resolveRef('qa:s2', { root: '/', qa: null }).error, /qa-web\.json не передан/);
+    assert.match(resolveRef('qa:s9', { root: '/', qa: QA }).error ?? '', /шаг не найден/);
+    assert.match(
+      resolveRef('qa:s2', { root: '/', qa: null }).error ?? '',
+      /qa-web\.json не передан/,
+    );
   });
 
   test('нераспознанная ссылка возвращает отказ, а не исключение', () => {
@@ -301,7 +357,7 @@ describe('resolveRef: gate и qa', () => {
 
     assert.equal(result.ok, false);
     assert.equal(result.kind, null);
-    assert.match(result.error, /не распознана форма/);
+    assert.match(result.error ?? '', /не распознана форма/);
     assert.equal(result.ref, 'gates:typecheck');
   });
 });
