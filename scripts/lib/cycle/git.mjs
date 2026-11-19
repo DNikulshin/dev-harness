@@ -143,6 +143,49 @@ export function changedFiles(base, { cwd = repoRoot() } = {}) {
 }
 
 /**
+ * @typedef {'added'|'modified'|'deleted'} ChangeStatus
+ */
+
+/**
+ * @typedef {object} FileChange
+ * @property {string} path путь относительно корня репозитория
+ * @property {ChangeStatus} status что произошло с файлом относительно базы
+ */
+
+/** Буква статуса `git diff --name-status` → слово артефакта. */
+/** @type {Readonly<Record<string, ChangeStatus>>} */
+const STATUS_BY_LETTER = Object.freeze({ A: 'added', D: 'deleted', M: 'modified', T: 'modified' });
+
+/**
+ * Изменённые файлы от базы со статусом (`--name-status -z`): вход контроля целостности
+ * проверок (#27, §5.4). `-z` обязателен: без него git кавычит не-ASCII имена и путь с
+ * табуляцией/переводом строки ломает разбор. Переименования не разворачиваются
+ * (`--no-renames`, как у `changedFiles`): переименованный тест виден как удаление старого
+ * и добавление нового, иначе правка теста выглядела бы как будто нетронутый файл.
+ * @param {string} base sha или имя ветки
+ * @param {{ cwd?: string }} [options]
+ * @returns {FileChange[]}
+ */
+export function changedFilesWithStatus(base, { cwd = repoRoot() } = {}) {
+  const safe = assertSafeRev(base, 'base');
+  const parts = git(['diff', '--name-status', '--no-renames', '-z', safe, '--'], cwd).split('\0');
+
+  /** @type {FileChange[]} */
+  const changes = [];
+  // Запись `-z` — пара «статус, путь»; последний элемент после финального `\0` пустой.
+  for (let index = 0; index + 1 < parts.length; index += 2) {
+    const letter = parts[index];
+    const path = parts[index + 1];
+    if (letter === undefined || path === undefined || path === '') continue;
+    // Незнакомое состояние (например, `U` при неразрешённом конфликте) считаем изменением:
+    // терять файл из артефакта хуже, чем назвать его изменённым.
+    changes.push({ path, status: STATUS_BY_LETTER[letter] ?? 'modified' });
+  }
+
+  return changes;
+}
+
+/**
  * Добавленные строки диффа без префикса `+` — вход для `scanSecrets`.
  * Разбор структурный, а не по префиксам: заголовок файла (`diff --git`, `index`, `---`,
  * `+++`, `new file mode`, `deleted file mode`, `similarity index`, `rename from/to`,

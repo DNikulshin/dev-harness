@@ -68,6 +68,7 @@ export declare function readHarness(root: string, config?: Readonly<{
     qaWeb: {
         pathPrefixes: readonly string[];
     };
+    integrity: import("./lib/cycle/config.mjs").IntegrityRules;
     provider: string;
     gateTimeouts: Record<string, number>;
 }>): HarnessInput;

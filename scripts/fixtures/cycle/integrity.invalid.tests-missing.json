@@ -1,0 +1,5 @@
+{
+  "test_paths": ["tests"],
+  "protected_paths": [],
+  "protected": { "added": [], "modified": [], "deleted": [] }
+}

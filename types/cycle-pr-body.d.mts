@@ -40,6 +40,15 @@ export { parseCriteria };
  */
 export declare function orderGates(value: unknown, gateIds?: readonly string[]): Record<string, any>[];
 /**
+ * Факты целостности проверок для раздела «Проверки» (#27). Файла `evidence/integrity.json`
+ * нет — секция `integrity` в конфиге не задана, строк нет: ядро не выдумывает проверку,
+ * которой нет. Своих суждений о том, «ослаблены ли тесты», скрипт не добавляет — только
+ * факты из артефакта.
+ * @param {Record<string, any>|null} integrity проверенный документ или `null`
+ * @returns {string[]} строки markdown (пустой массив — секции нет)
+ */
+export declare function integrityFacts(integrity: Record<string, any> | null): string[];
+/**
  * Баннер эскалации (§5.7): причина, пояснение, `draft_pr_allowed` и открытые замечания.
  * @param {Record<string, any>} escalation проверенный `escalation.json`
  * @returns {string}
@@ -67,6 +76,7 @@ export declare function summaryItems(dir: string, names: ReturnType<typeof iterN
  *   followups: string[],
  *   escalation: Record<string, any>|null,
  *   risks: string[]|null,
+ *   integrity?: Record<string, any>|null,
  *   root: string,
  *   gateIds?: readonly string[],
  * }} inputs
@@ -83,6 +93,7 @@ export declare function renderPrBody(inputs: {
     followups: string[];
     escalation: Record<string, any> | null;
     risks: string[] | null;
+    integrity?: Record<string, any> | null;
     root: string;
     gateIds?: readonly string[];
 }): string;

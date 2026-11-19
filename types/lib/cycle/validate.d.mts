@@ -45,6 +45,13 @@ export declare function validateEvaluation(doc: unknown): ValidationResult;
  */
 export declare function validateQaWeb(doc: unknown): ValidationResult;
 /**
+ * `evidence/integrity.json` — что из изменённого диффом подпадает под правила проекта
+ * (`integrity.testPaths` / `integrity.protectedPaths`, #27).
+ * @param {unknown} doc
+ * @returns {ValidationResult}
+ */
+export declare function validateIntegrity(doc: unknown): ValidationResult;
+/**
  * `decision.<n>.json` (§5.6). Списки — массивы непустых строк: `reasons`, `acquire`,
  * `rework_items`, `unverified`, `downgraded`.
  * @param {unknown} doc

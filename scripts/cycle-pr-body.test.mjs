@@ -10,6 +10,7 @@ import { loadConfig } from './lib/cycle/config.mjs';
 import { criteriaDigest } from './lib/cycle/criteria.mjs';
 import {
   dedupeUnverified,
+  integrityFacts,
   listItems,
   orderGates,
   parseArgs,
@@ -292,6 +293,98 @@ describe('секции шаблона', () => {
   test('«Как проверять» перечисляет гейты, оставшиеся на человека', () => {
     assert.ok(body('unverified').includes('- `test_int` — not_run (no_database)'));
     assert.ok(body('proceed').includes('Все гейты пройдены или неприменимы: ручных шагов нет.'));
+  });
+});
+
+describe('целостность проверок в «Проверках» (#27)', () => {
+  /** Артефакт `evidence/integrity.json` в форме, которую пишет `cycle-evidence packet`. */
+  const INTEGRITY = Object.freeze({
+    test_paths: ['**/*.test.mjs'],
+    protected_paths: ['.pi/harness.config.json'],
+    tests: { added: [], modified: ['scripts/config.test.mjs'], deleted: ['scripts/old.test.mjs'] },
+    protected: { added: [], modified: ['.pi/harness.config.json'], deleted: [] },
+  });
+
+  test('правки тестов и защищённых файлов печатаются фактами', () => {
+    const checks = section(renderPrBody(inputs({ integrity: INTEGRITY })), 'Проверки');
+
+    assert.ok(checks.includes('`scripts/config.test.mjs`'));
+    assert.ok(checks.includes('`scripts/old.test.mjs`'));
+    assert.match(checks, /Тесты: изменено 1 \(`scripts\/config\.test\.mjs`\); удалено 1/);
+    assert.match(checks, /Защищённые файлы: изменено 1 \(`\.pi\/harness\.config\.json`\)/);
+  });
+
+  test('чистый дифф — явное «правок нет», а не пустое место', () => {
+    const clean = {
+      test_paths: ['**/*.test.mjs'],
+      protected_paths: [],
+      tests: { added: [], modified: [], deleted: [] },
+      protected: { added: [], modified: [], deleted: [] },
+    };
+
+    assert.deepEqual(integrityFacts(clean), ['- Тесты и защищённые файлы: правок нет.']);
+  });
+
+  test('артефакта нет — строк нет: проверка не выдумывается', () => {
+    assert.deepEqual(integrityFacts(null), []);
+    const checks = section(renderPrBody(inputs({ integrity: null })), 'Проверки');
+    assert.ok(!checks.includes('Тесты'), 'без артефакта строк о тестах быть не должно');
+    assert.ok(!checks.includes('Защищённые файлы'));
+  });
+
+  test('длинный список путей сворачивается в «и ещё N»', () => {
+    const many = {
+      test_paths: ['tests'],
+      protected_paths: [],
+      tests: {
+        added: [],
+        modified: Array.from({ length: 7 }, (_, index) => `tests/${index}.test.mjs`),
+        deleted: [],
+      },
+      protected: { added: [], modified: [], deleted: [] },
+    };
+
+    const [line] = integrityFacts(many);
+    assert.ok(line?.includes('и ещё 2'), `ожидалось сворачивание: ${line}`);
+    assert.equal(line?.includes('tests/5.test.mjs'), false, 'лишние пути не печатаются');
+  });
+
+  test('CLI читает evidence/integrity.json цикла', (t) => {
+    const copy = mkdtempSync(join(tmpdir(), 'harness-pr-integrity-'));
+    t.after(() => rmSync(copy, { recursive: true, force: true }));
+    cpSync(dir('proceed'), copy, { recursive: true });
+    writeFileSync(
+      join(copy, 'evidence', 'integrity.json'),
+      `${JSON.stringify(INTEGRITY, null, 2)}\n`,
+    );
+
+    const result = runCli(['--dir', copy]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /Тесты: изменено 1/);
+  });
+
+  test('битый evidence/integrity.json — код 2, а не пустая строка в PR', (t) => {
+    const copy = mkdtempSync(join(tmpdir(), 'harness-pr-integrity-broken-'));
+    t.after(() => rmSync(copy, { recursive: true, force: true }));
+    cpSync(dir('proceed'), copy, { recursive: true });
+    writeFileSync(join(copy, 'evidence', 'integrity.json'), '{"test_paths":[]}\n');
+
+    const result = runCli(['--dir', copy]);
+    assert.equal(result.status, 2);
+    assert.match(result.stderr, /integrity/);
+    assert.equal(result.stdout, '');
+  });
+
+  test('имя файла с `|` не ломает markdown', () => {
+    const weird = {
+      test_paths: ['tests'],
+      protected_paths: [],
+      tests: { added: [], modified: ['tests/a|b.test.mjs'], deleted: [] },
+      protected: { added: [], modified: [], deleted: [] },
+    };
+
+    const [line] = integrityFacts(weird);
+    assert.ok(line?.includes('a\\|b.test.mjs'), `ожидалось экранирование: ${line}`);
   });
 });
 

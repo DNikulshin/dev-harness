@@ -95,7 +95,7 @@ scripts/
   check-harness.mjs
   lib/cycle/
     paths.mjs  io.mjs  validate.mjs  refs.mjs  git.mjs  redact.mjs  config.mjs
-    limits.mjs  cli.mjs  cost.mjs  criteria.mjs
+    limits.mjs  cli.mjs  cost.mjs  criteria.mjs  integrity.mjs
     *.test.mjs                       # рядом с модулем
   fixtures/cycle/**                  # только .json и .md, отформатированные prettier
 ```
@@ -110,14 +110,15 @@ scripts/
 | -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `paths.mjs`    | корень репо; каталог артефактов; имена файлов с номером итерации (`plan.<n>.md` …); поиск активного цикла (единственный каталог со `stage` ≠ `DONE`/`ESCALATED`, иначе ошибка)                                                                           |
 | `io.mjs`       | `readJson`, `writeJsonAtomic`, `tail(file, lines)`, `extractLastJsonBlock(md)` (последний блок ```json, `JSON.parse`; нет блока — ошибка)                                                                                                                |
-| `validate.mjs` | валидаторы `state`, `gates`, `review`, `evaluation`, `qaWeb`, `decision`; возвращают `{ ok, errors[] }`; перечисления и обязательные поля — Приложение A                                                                                                 |
+| `validate.mjs` | валидаторы `state`, `gates`, `review`, `evaluation`, `qaWeb`, `integrity`, `decision`; возвращают `{ ok, errors[] }`; перечисления и обязательные поля — Приложение A |
 | `refs.mjs`     | `parseRef(str)` и `resolveRef(ref, ctx)`: `path:line`, `path:start-end` (обе границы включительно, начало не больше конца), `gate:<id>`, `qa:<id>`; запрещены абсолютные пути, `..`, `.pi/artifacts/`, `node_modules/`; файл существует, строка не больше числа строк; гейт есть в `gates.<n>.json`; шаг есть в `qa-web.json` |
-| `git.mjs`      | `baseSha()`, `intentToAddUntracked()`, `diffFromBase(base)`, `changedFiles(base)`, `addedLines(diff)`; все вызовы через `execFileSync('git', …)`                                                                                                         |
+| `git.mjs`      | `baseSha()`, `intentToAddUntracked()`, `diffFromBase(base)`, `changedFiles(base)`, `changedFilesWithStatus(base)` (пары `{ path, status }`: `added`/`modified`/`deleted`; `-z`, переименования не разворачиваются), `addedLines(diff)`; все вызовы через `execFileSync('git', …)` |
 | `redact.mjs`   | `redactLog(text)`, `redactQa(obj)`, `scanSecrets(addedLines)` (§5.4, §5.5)                                                                                                                                                                               |
-| `config.mjs`   | определения гейтов, пути-условия, лимиты (`maxDiffLines` 2000 / `maxDiffBytes` 400 КБ, `logMaxBytes` 5 МБ, `evidenceTailLines` 200, `defaultMaxIterations` 2, `maxCycleCostRub` 30 ₽), стартовые тайм-ауты                                               |
+| `config.mjs`   | определения гейтов, пути-условия, правила `integrity` (что считать тестами и защищёнными файлами), лимиты (`maxDiffLines` 2000 / `maxDiffBytes` 400 КБ, `logMaxBytes` 5 МБ, `evidenceTailLines` 200, `defaultMaxIterations` 2, `maxCycleCostRub` 30 ₽), стартовые тайм-ауты |
 | `limits.mjs`   | `resolveLimits({ config, configured, cli, env, defaults })` — приоритет CLI → env → конфиг → дефолт и источники значений; `checkLimitValue` (диапазоны), `describedLimits` (блок `applied_limits`), `LIMIT_FLAGS`, `envNameFor`. Файлов не читает: конфиг приходит загруженным |
 | `criteria.mjs` | `parseCriteria(md)` — разбор `evidence/criteria.md` (`- C1: …`); `criteriaDigest(criteria)` — `sha256` пар `[id, текст]` в порядке файла; `CRITERIA_FILE`, `CRITERIA_OWNER_APPROVED`. Один разбор на три скрипта: `cycle-evidence`, `cycle-state`, `cycle-decide` |
 | `cost.mjs`     | `normalizeUsage`, `priceUsage`, `priceKeyFor`, `readUsage`, `readPriceSnapshot`, `cycleCostRub`: расход и его стоимость по `usage.json` и `evals/prices.json` — одна формула и для `metrics.json`, и для бюджетного порога                               |
+| `integrity.mjs` | `matchesPath(pattern, path)` — правила путей: `*` внутри сегмента, `**` через сегменты, правило без wildcard задевает и всё вложенное; `classifyIntegrity({ changes, integrity })` — пути из `changedFilesWithStatus` раскладываются по `added`/`modified`/`deleted` раздельно для тестов и защищённых файлов; `integrityConfigured`. Чистые функции: ни файлов, ни git, ни времени |
 
 **Источники лимитов (#235).** Шесть лимитов — `maxCycleCostRub`, `defaultMaxIterations`,
 `maxDiffLines`, `maxDiffBytes`, `logMaxBytes`, `evidenceTailLines` — читаются из проектного
@@ -129,6 +130,16 @@ scripts/
 ошибка с кодом 2, а не молчаливый откат к дефолту. Применённые значения и их источник видны
 в `decision.<n>.json` (`applied_limits`) и `metrics.json` (`applied_limits`), а источник порога
 бюджета — в тексте причины `budget: … (правило 7 §5.6, лимит: …)`.
+
+**Правила целостности проверок (#27).** Секция `integrity` в `.pi/harness.config.json` отвечает
+на вопрос «что в этом проекте считается проверкой»: `testPaths` — файлы тестов, `protectedPaths` —
+файлы, которые агент не должен править молча (конфиг гейтов, `.pi/agents/*`, `AGENTS.md` — список
+задаёт проект). Каждое правило — относительный путь или glob: `*` — в пределах сегмента,
+`**` — через сегменты, `?` не поддерживается; правило без wildcard задевает и всё вложенное, как
+префиксы `qaWeb.pathPrefixes`. Запрещены абсолютные пути, `..`, `.` и пустые сегменты — ошибка
+с кодом 2, а не молчаливое правило, которое никуда не попадает. Пустая секция (и её отсутствие) —
+валидное состояние: контролю нечего проверять, артефакт не пишется. Умолчаний с готовым списком
+путей ядро не держит: тесты и защищённые файлы — свойство проекта, а не догадка ядра.
 
 **Ветка цикла (#274).** `init` фиксирует имя ветки только в `state.json` и git не трогает, поэтому
 перед записью состояния проверяется, что ветка существует и `HEAD` на ней: иначе коммиты и
@@ -267,6 +278,17 @@ packet   --dir D [--base SHA]                   собирает evidence/ дл�
 (рабочее дерево против базы). Превышение лимита → код 4, `diff_too_large`. Копируются
 `gates.<n>.json` и хвосты (до 200 строк) логов упавших гейтов; `qa-web.json`.
 
+**Целостность проверок (#27).** Если секция `integrity` задаёт хотя бы одно правило, пакет
+дополняется `evidence/integrity.json`: правила, с которыми считали (`test_paths`,
+`protected_paths`), и затронутые диффом файлы по трём статусам — `added`, `modified`,
+`deleted` — раздельно для `tests` и `protected`. Список берётся из `changedFilesWithStatus`
+от той же базы, что и `diff.patch`, и сортируется: повторный прогон даёт побайтно тот же
+файл. Тел файлов в артефакте нет — только пути. Правил нет — файла нет; чистый дифф при
+заданных правилах даёт пустые списки, то есть явное «правок нет». Переименование
+разворачивается в удаление и добавление (`--no-renames`), иначе переименованный тест выглядел
+бы нетронутым файлом. Артефакт — факт, а не приговор: ядро не решает, ослаблены ли проверки,
+оно делает правку видимой оценщику, ревью и владельцу.
+
 **Маскирование** (логи и сырые данные QA; в дифф вносятся только секреты, строки не
 удаляются, номера строк сохраняются):
 
@@ -400,7 +422,9 @@ node scripts/cycle-pr-body.mjs --dir D [--draft-escalation]
 ```
 
 Собирает тело PR по `.github/PULL_REQUEST_TEMPLATE.md` из фактов: «Проверки» — по
-`gates.<n>.json` (не чекбоксы от руки), раздел «Независимая оценка» — вердикт, таблица
+`gates.<n>.json` (не чекбоксы от руки) и, если в пакете есть `evidence/integrity.json`, строки
+о правках тестов и защищённых файлов (`Тесты: изменено 2 (…); удалено 1 (…)`; при чистых
+списках — «правок нет»; длинный список сворачивается в «и ещё N»), раздел «Независимая оценка» — вердикт, таблица
 критериев со статусами и ссылками, `unverified` и `partial`, число итераций, расхождения
 ревью и оценки; «Риски» — пункты раздела «Риски» из шаблона PR проекта (`paths.prTemplate`,
 чекбоксы переносятся как есть: их отмечает человек; своего списка рисков ядро не держит);
@@ -776,6 +800,11 @@ A1–A9 статически; запуск `node --test` и `gh` остаётс�
 `unverified[]`: `{ what, why, how_to_verify }`.
 
 **qa-web.json**: `status ∈ {done, not_run}`, `reason`, `steps[]`: `{ id, url, action, observed, console_errors[], failed_requests[], cache_headers }`.
+
+**evidence/integrity.json** (#27): `{ test_paths[], protected_paths[], tests, protected }`, где
+`tests` и `protected` — `{ added[], modified[], deleted[] }` с непустыми строками-путями;
+порядок путей — сортировка по строке, порядок ключей артефакта фиксирован. Пишет только
+`cycle-evidence packet` и только при заданных правилах `integrity`.
 
 **decision.\<n\>.json**: см. §5.6; `action ∈ {REWORK, ACQUIRE_EVIDENCE, RETRY_STAGE, PROCEED, PROCEED_WITH_UNVERIFIED, ESCALATE}`.
 

@@ -11,8 +11,9 @@
  * **Входы.** Обязательные: `state.json`, `gates.<n>.json`, `review.<n>.json`,
  * `evaluation.<n>.json`, `decision.<n>.json`, `evidence/criteria.md` — `n` берётся из
  * `state.iteration` (`iterNames`). Необязательные: `code-report.<n>.md` / `plan.<n>.md`
- * (источник пунктов «Что сделано»), `followups.md` (раздел «Вне скоупа») и `escalation.json`
- * (баннер при `--draft-escalation`). Отсутствие необязательного файла — не ошибка, раздел
+ * (источник пунктов «Что сделано»), `followups.md` (раздел «Вне скоупа»), `escalation.json`
+ * (баннер при `--draft-escalation`) и `evidence/integrity.json` (правки тестов и
+ * защищённых файлов, #27). Отсутствие необязательного файла — не ошибка, раздел
  * остаётся заглушкой; битый или отсутствующий обязательный — код 2: без него разделы PR
  * были бы выдуманными. Перед сборкой каждый документ проходит валидатор схемы из
  * `lib/cycle/validate.mjs` — своего разбора структуры здесь нет.
@@ -56,7 +57,8 @@
  * `unverified` оценщика и решения, пункты `followups.md` и «Что сделано») проходит через
  * `redactLog`: телефоны, e-mail и секреты становятся `[phone]`/`[email]`/`[secret]`.
  * Формулировки критериев берутся из issue дословно (issue публичен), сырые логи и QA не
- * копируются.
+ * копируются. Пути из `evidence/integrity.json` — это вывод git, а не свободный текст, но
+ * они тоже проходят через `cell()`: имя файла с `|` не должно ломать markdown.
  *
  * **Коды выхода.** `0` — тело собрано; `2` — ошибка использования или внутренняя (нет
  * каталога или обязательного артефакта, битый JSON, нарушена схема, критерий из
@@ -78,9 +80,13 @@ import {
   validateEscalation,
   validateEvaluation,
   validateGates,
+  validateIntegrity,
   validateReview,
   validateState,
 } from './lib/cycle/validate.mjs';
+
+/** Контроль целостности проверок: артефакт `packet`-а (#27). */
+const INTEGRITY_FILE = 'integrity.json';
 
 /** Сколько пунктов «Что сделано» брать из артефактов прохода (шаблон: 1–3). */
 const SUMMARY_LIMIT = 3;
@@ -96,6 +102,25 @@ const EVALUATION_POSITIVE = Object.freeze(['ACCEPT', 'ACCEPT_WITH_FOLLOWUPS']);
 
 /** Действие решения, добавляющее блок «не проверено» (§5.7). */
 const PROCEED_WITH_UNVERIFIED = 'PROCEED_WITH_UNVERIFIED';
+
+/**
+ * Сколько путей из одной группы `evidence/integrity.json` показывать в PR: остальные
+ * сворачиваются в «и ещё N». Длинный список в строке «Проверок» не читается.
+ */
+const INTEGRITY_LIMIT = 5;
+
+/** Группы `evidence/integrity.json` и их подписи в PR (#27). */
+const INTEGRITY_GROUPS = Object.freeze([
+  { key: 'tests', label: 'Тесты' },
+  { key: 'protected', label: 'Защищённые файлы' },
+]);
+
+/** Статусы изменения файла в `evidence/integrity.json` и их подписи. */
+const INTEGRITY_STATUSES = Object.freeze([
+  { key: 'added', label: 'добавлено' },
+  { key: 'modified', label: 'изменено' },
+  { key: 'deleted', label: 'удалено' },
+]);
 
 /**
  * Заголовок раздела «Риски» в шаблоне PR. Список рисков — свойство проекта: ядро берёт
@@ -388,6 +413,48 @@ export function orderGates(value, gateIds = []) {
 }
 
 /**
+ * Список путей в строке PR: `\`path\`` через запятую, не больше `INTEGRITY_LIMIT` штук
+ * (остальные — «и ещё N»). Путь экранируется через `cell()`: имя файла с `|` не ломает markdown.
+ * @param {string[]} paths отсортированные пути из артефакта
+ * @returns {string}
+ */
+function pathList(paths) {
+  const shown = paths.slice(0, INTEGRITY_LIMIT).map((path) => `\`${cell(path)}\``);
+  const rest = paths.length - shown.length;
+  if (rest > 0) shown.push(`и ещё ${rest}`);
+  return shown.join(', ');
+}
+
+/**
+ * Факты целостности проверок для раздела «Проверки» (#27). Файла `evidence/integrity.json`
+ * нет — секция `integrity` в конфиге не задана, строк нет: ядро не выдумывает проверку,
+ * которой нет. Своих суждений о том, «ослаблены ли тесты», скрипт не добавляет — только
+ * факты из артефакта.
+ * @param {Record<string, any>|null} integrity проверенный документ или `null`
+ * @returns {string[]} строки markdown (пустой массив — секции нет)
+ */
+export function integrityFacts(integrity) {
+  if (integrity === null) return [];
+
+  /** @type {string[]} */
+  const lines = [];
+  for (const { key, label } of INTEGRITY_GROUPS) {
+    const group = integrity[key];
+    /** @type {string[]} */
+    const parts = [];
+    for (const { key: status, label: wording } of INTEGRITY_STATUSES) {
+      const paths = Array.isArray(group[status]) ? group[status] : [];
+      if (paths.length === 0) continue;
+      parts.push(`${wording} ${paths.length} (${pathList(paths)})`);
+    }
+    if (parts.length > 0) lines.push(`- ${label}: ${parts.join('; ')}.`);
+  }
+
+  if (lines.length === 0) lines.push('- Тесты и защищённые файлы: правок нет.');
+  return lines;
+}
+
+/**
  * Баннер эскалации (§5.7): причина, пояснение, `draft_pr_allowed` и открытые замечания.
  * @param {Record<string, any>} escalation проверенный `escalation.json`
  * @returns {string}
@@ -442,6 +509,7 @@ export function summaryItems(dir, names) {
  *   followups: string[],
  *   escalation: Record<string, any>|null,
  *   risks: string[]|null,
+ *   integrity?: Record<string, any>|null,
  *   root: string,
  *   gateIds?: readonly string[],
  * }} inputs
@@ -459,6 +527,7 @@ export function renderPrBody(inputs) {
     followups,
     escalation,
     risks,
+    integrity = null,
     root,
     gateIds = [],
   } = inputs;
@@ -502,6 +571,8 @@ export function renderPrBody(inputs) {
       );
     }
   }
+  const integrityLines = integrityFacts(integrity);
+  if (integrityLines.length > 0) checkLines.push('', ...integrityLines);
   sections.push(checkLines.join('\n'));
 
   // Независимая оценка (§5.7).
@@ -771,6 +842,13 @@ function main() {
       ? listItems(readFileSync(followupsPath, 'utf8'))
       : [];
     const risks = templateRisks(root, config.paths.prTemplate);
+    // Файла нет — секция `integrity` не настроена или пакет собран до неё; строка в PR
+    // тогда не печатается. Битый файл — отказ (код 2), как у остальных артефактов.
+    const integrity = readOptionalJson(
+      join(dir, config.paths.evidenceDir, INTEGRITY_FILE),
+      validateIntegrity,
+      INTEGRITY_FILE,
+    );
 
     const body = renderPrBody({
       state,
@@ -783,6 +861,7 @@ function main() {
       followups,
       escalation,
       risks,
+      integrity,
       root,
       gateIds: config.gates.map((gate) => gate.id),
     });

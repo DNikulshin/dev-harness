@@ -59,6 +59,30 @@ export declare function diffFromBase(base: string, { cwd }?: {
 export declare function changedFiles(base: string, { cwd }?: {
     cwd?: string;
 }): string[];
+export type ChangeStatus = 'added' | 'modified' | 'deleted';
+export type FileChange = {
+    /**
+     * путь относительно корня репозитория
+     */
+    path: string;
+    /**
+     * что произошло с файлом относительно базы
+     */
+    status: ChangeStatus;
+};
+/**
+ * Изменённые файлы от базы со статусом (`--name-status -z`): вход контроля целостности
+ * проверок (#27, §5.4). `-z` обязателен: без него git кавычит не-ASCII имена и путь с
+ * табуляцией/переводом строки ломает разбор. Переименования не разворачиваются
+ * (`--no-renames`, как у `changedFiles`): переименованный тест виден как удаление старого
+ * и добавление нового, иначе правка теста выглядела бы как будто нетронутый файл.
+ * @param {string} base sha или имя ветки
+ * @param {{ cwd?: string }} [options]
+ * @returns {FileChange[]}
+ */
+export declare function changedFilesWithStatus(base: string, { cwd }?: {
+    cwd?: string;
+}): FileChange[];
 /**
  * Добавленные строки диффа без префикса `+` — вход для `scanSecrets`.
  * Разбор структурный, а не по префиксам: заголовок файла (`diff --git`, `index`, `---`,

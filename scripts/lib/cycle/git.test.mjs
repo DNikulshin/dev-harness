@@ -10,6 +10,7 @@ import {
   addedLinesByFile,
   baseSha,
   changedFiles,
+  changedFilesWithStatus,
   diffFromBase,
   intentToAddUntracked,
 } from './git.mjs';
@@ -182,6 +183,50 @@ describe('git', () => {
     intentToAddUntracked({ cwd: dir });
 
     assert.deepEqual(changedFiles(sha, { cwd: dir }), ['new.txt', 'tracked.txt']);
+  });
+
+  test('changedFilesWithStatus различает добавление, правку и удаление', (t) => {
+    const { dir } = makeRepo(t);
+    // Удаляемый файл должен быть в базе: иначе дифф от базы его просто не увидит.
+    writeFileSync(join(dir, 'gone.txt'), 'soon deleted\n');
+    git(['add', 'gone.txt'], dir);
+    git(['commit', '-m', 'файл под удаление'], dir);
+    const sha = baseSha({ branch: 'main', cwd: dir });
+
+    appendFileSync(join(dir, 'tracked.txt'), 'changed\n');
+    writeFileSync(join(dir, 'new.txt'), 'new content\n');
+    rmSync(join(dir, 'gone.txt'));
+    intentToAddUntracked({ cwd: dir });
+
+    assert.deepEqual(changedFilesWithStatus(sha, { cwd: dir }), [
+      { path: 'gone.txt', status: 'deleted' },
+      { path: 'new.txt', status: 'added' },
+      { path: 'tracked.txt', status: 'modified' },
+    ]);
+  });
+
+  test('changedFilesWithStatus не кавычит не-ASCII имена (`-z`)', (t) => {
+    const { dir, sha } = makeRepo(t);
+    writeFileSync(join(dir, 'тест.txt'), 'данные\n');
+    intentToAddUntracked({ cwd: dir });
+
+    assert.deepEqual(changedFilesWithStatus(sha, { cwd: dir }), [
+      { path: 'тест.txt', status: 'added' },
+    ]);
+  });
+
+  test('changedFilesWithStatus видит переименование как удаление и добавление', (t) => {
+    const { dir } = makeRepo(t);
+    writeFileSync(join(dir, 'before.txt'), 'content\n');
+    git(['add', 'before.txt'], dir);
+    git(['commit', '-m', 'файл до переименования'], dir);
+    const sha = baseSha({ branch: 'main', cwd: dir });
+    git(['mv', 'before.txt', 'after.txt'], dir);
+
+    assert.deepEqual(changedFilesWithStatus(sha, { cwd: dir }), [
+      { path: 'after.txt', status: 'added' },
+      { path: 'before.txt', status: 'deleted' },
+    ]);
   });
 
   test('baseSha возвращает sha коммита базовой ветки', (t) => {

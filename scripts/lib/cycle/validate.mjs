@@ -114,6 +114,12 @@ const LIMIT_SOURCES = Object.freeze(['cli', 'env', 'config', 'default']);
 /** Этапы, которые можно повторить через `RETRY_STAGE` (§5.6, правило 1). */
 const RETRY_STAGES = Object.freeze(['REVIEW', 'EVALUATE']);
 
+/** Группы `evidence/integrity.json`: тесты и защищённые файлы (#27). */
+const INTEGRITY_GROUPS = Object.freeze(['tests', 'protected']);
+
+/** Статусы изменения файла в `evidence/integrity.json`. */
+const INTEGRITY_STATUSES = Object.freeze(['added', 'modified', 'deleted']);
+
 /**
  * Допуск сравнения итоговых длительностей с суммой слагаемых. Писатель округляет
  * каждое слагаемое до 3 знаков и складывает уже округлённые значения, поэтому
@@ -903,6 +909,31 @@ export function validateQaWeb(doc) {
     str(value, valuePath, errs);
   });
   reqList(doc, 'steps', 'qa-web', errors, validateQaStep);
+
+  return { ok: errors.length === 0, errors };
+}
+
+/**
+ * `evidence/integrity.json` — что из изменённого диффом подпадает под правила проекта
+ * (`integrity.testPaths` / `integrity.protectedPaths`, #27).
+ * @param {unknown} doc
+ * @returns {ValidationResult}
+ */
+export function validateIntegrity(doc) {
+  /** @type {string[]} */
+  const errors = [];
+  if (!isRecord(doc)) {
+    return { ok: false, errors: [`integrity: ожидается объект, получено ${describe(doc)}`] };
+  }
+
+  reqList(doc, 'test_paths', 'integrity', errors, textItem);
+  reqList(doc, 'protected_paths', 'integrity', errors, textItem);
+
+  for (const name of INTEGRITY_GROUPS) {
+    reqRecord(doc, name, 'integrity', errors, (group, path, errs) => {
+      for (const status of INTEGRITY_STATUSES) reqList(group, status, path, errs, textItem);
+    });
+  }
 
   return { ok: errors.length === 0, errors };
 }
