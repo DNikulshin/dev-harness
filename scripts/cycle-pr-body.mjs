@@ -68,6 +68,7 @@ import { join, resolve } from 'node:path';
 
 import { isDirectRun } from './lib/cycle/cli.mjs';
 import { loadConfig } from './lib/cycle/config.mjs';
+import { CRITERIA_FILE, criteriaMismatch, parseCriteria } from './lib/cycle/criteria.mjs';
 import { readJson } from './lib/cycle/io.mjs';
 import { FIXED_NAMES, findActiveCycle, iterNames, repoRoot } from './lib/cycle/paths.mjs';
 import { redactLog } from './lib/cycle/redact.mjs';
@@ -80,9 +81,6 @@ import {
   validateReview,
   validateState,
 } from './lib/cycle/validate.mjs';
-
-/** Критерии приёмки оценщика: путь задан §5.1 (`evidence/criteria.md`). */
-const CRITERIA_FILE = 'criteria.md';
 
 /** Сколько пунктов «Что сделано» брать из артефактов прохода (шаблон: 1–3). */
 const SUMMARY_LIMIT = 3;
@@ -129,9 +127,6 @@ const HEADING_LEVEL = /^(#{1,6})[ \t]+/;
  * снимается при сравнении, иначе один пункт попадает в PR дважды (#204).
  */
 const SOURCE_PREFIX = /^(?:evaluation|review|decision)[ \t]+unverified:[ \t]*/iu;
-
-/** Строка `evidence/criteria.md`: строчный контракт `- C1: формулировка` (§5.4). */
-const CRITERION_LINE = /^-[ \t]+(C[1-9]\d*):[ \t]*(.*)$/;
 
 /**
  * Непустая строка после обрезки пробелов.
@@ -321,31 +316,11 @@ export function riskItems(markdown) {
 }
 
 /**
- * @typedef {object} Criterion
- * @property {string} id `C1`, `C2`, …
- * @property {string} text формулировка критерия
+ * @typedef {import('./lib/cycle/criteria.mjs').Criterion} Criterion
  */
 
-/**
- * Критерии из `evidence/criteria.md` в её порядке: по строке `- C1: формулировка` на
- * критерий (формат `renderCriteria` в `cycle-evidence.mjs`). Пустой результат — ошибка:
- * без критериев таблица PR была бы пустой подменой.
- * @param {string} markdown
- * @returns {Criterion[]}
- */
-export function parseCriteria(markdown) {
-  if (typeof markdown !== 'string') throw new TypeError('parseCriteria: ожидается строка');
-
-  /** @type {Criterion[]} */
-  const criteria = [];
-  for (const line of markdown.split(/\r?\n/)) {
-    const match = CRITERION_LINE.exec(line.trim());
-    const id = match?.[1];
-    const text = match?.[2];
-    if (id !== undefined && text !== undefined) criteria.push({ id, text: text.trim() });
-  }
-  return criteria;
-}
+// Критерии читаются и в PR-таблицу, и в дайджест заморозки одним разбором.
+export { parseCriteria };
 
 /**
  * Пустая ячейка таблицы: так помечается отсутствующее значение, а не выдуманное.
@@ -775,6 +750,13 @@ function main() {
     );
     if (criteria.length === 0) {
       throw new Error(`${CRITERIA_FILE}: нет строк вида «- C1: формулировка»`);
+    }
+    // Тело PR публикует цель: критерии, отличные от замороженных, показывать нельзя (#22).
+    if (criteriaMismatch(criteria, state) !== null) {
+      throw new Error(
+        `${CRITERIA_FILE}: критерии не совпадают с замороженными (criteria_drift): ` +
+          'тело PR собиралось бы по чужой цели',
+      );
     }
 
     const escalation = args.draftEscalation

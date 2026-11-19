@@ -47,7 +47,7 @@
 | D4  | `.json` ревью и оценки пишет `cycle-decide` (последний блок ```json из `review.<n>.md` и `evaluation.<n>.md`, валидация, нормализация); агент и супервизор JSON не пишут             | Исключает порчу JSON слабым супервизором                                                                              |
 | D5  | Дифф строится от `base_sha`, а новые (untracked) файлы добавляются через `git add --intent-to-add`                                                                                   | Сейчас `cycle.md`, этап 4, даёт ревьюеру `git diff` рабочего дерева, а он не содержит новых файлов: ревью слепо к ним |
 | D6  | Валидаторы схем пишутся вручную, без Zod и новых зависимостей; тесты на `node:test` (`pnpm test:scripts`)                                                                            | `AGENTS.md`: новая зависимость — только с обоснованием; `scripts/` вне `check:arch` и `turbo test`                    |
-| D7  | Перечень причин эскалации: `criteria_missing`, `plan_ambiguous`, `agent_output_invalid`, `iteration_limit`, `budget`, `scope_expansion_required`, `diff_too_large`, `internal_error` | Единый словарь для `escalation.json` и комментария в issue                                                            |
+| D7  | Перечень причин эскалации: `criteria_missing`, `plan_ambiguous`, `agent_output_invalid`, `iteration_limit`, `budget`, `scope_expansion_required`, `diff_too_large`, `criteria_drift` (критерии изменились после заморозки), `internal_error` | Единый словарь для `escalation.json` и комментария в issue                                                            |
 | D8  | Шаги `qa-web.json` получают `id` (`s1`, `s2`, …)                                                                                                                                     | Нужны для ссылок `qa:<id>`                                                                                            |
 | D9  | `check:harness` подключается в CI только после очистки `AGENTS.md` от названий моделей (T7)                                                                                          | Иначе `main` станет красным                                                                                           |
 | D10 | Порядок гейтов приводится к CI: `contracts_build` → `typecheck` → `lint` → `check_arch` → `lint_workflows` → `test` → `format_check`                                                 | `format:check` в CI идёт последним; явный `contracts_build` повторяет CI                                              |
@@ -95,7 +95,7 @@ scripts/
   check-harness.mjs
   lib/cycle/
     paths.mjs  io.mjs  validate.mjs  refs.mjs  git.mjs  redact.mjs  config.mjs
-    limits.mjs  cli.mjs  cost.mjs
+    limits.mjs  cli.mjs  cost.mjs  criteria.mjs
     *.test.mjs                       # рядом с модулем
   fixtures/cycle/**                  # только .json и .md, отформатированные prettier
 ```
@@ -116,6 +116,7 @@ scripts/
 | `redact.mjs`   | `redactLog(text)`, `redactQa(obj)`, `scanSecrets(addedLines)` (§5.4, §5.5)                                                                                                                                                                               |
 | `config.mjs`   | определения гейтов, пути-условия, лимиты (`maxDiffLines` 2000 / `maxDiffBytes` 400 КБ, `logMaxBytes` 5 МБ, `evidenceTailLines` 200, `defaultMaxIterations` 2, `maxCycleCostRub` 30 ₽), стартовые тайм-ауты                                               |
 | `limits.mjs`   | `resolveLimits({ config, configured, cli, env, defaults })` — приоритет CLI → env → конфиг → дефолт и источники значений; `checkLimitValue` (диапазоны), `describedLimits` (блок `applied_limits`), `LIMIT_FLAGS`, `envNameFor`. Файлов не читает: конфиг приходит загруженным |
+| `criteria.mjs` | `parseCriteria(md)` — разбор `evidence/criteria.md` (`- C1: …`); `criteriaDigest(criteria)` — `sha256` пар `[id, текст]` в порядке файла; `CRITERIA_FILE`, `CRITERIA_OWNER_APPROVED`. Один разбор на три скрипта: `cycle-evidence`, `cycle-state`, `cycle-decide` |
 | `cost.mjs`     | `normalizeUsage`, `priceUsage`, `priceKeyFor`, `readUsage`, `readPriceSnapshot`, `cycleCostRub`: расход и его стоимость по `usage.json` и `evals/prices.json` — одна формула и для `metrics.json`, и для бюджетного порога                               |
 
 **Источники лимитов (#235).** Шесть лимитов — `maxCycleCostRub`, `defaultMaxIterations`,
@@ -145,6 +146,7 @@ init     --issue N --slug S --branch B [--date YYYY-MM-DD] [--max-iterations 2] 
 get      [--dir D] [--field F]
 advance  --to STAGE [--dir D] [--owner-approved]   --to PR и выход из ESCALATED сверяют ветку
 finish   --stage STAGE --status done|error [--detail T] [--dir D]
+freeze-criteria [--dir D] [--owner-approved]  закрепляет дайджест критериев из issue.json
 apply-decision [--dir D]              применяет decision.<n>.json
 escalate --reason R [--detail T] [--dir D]   пишет escalation.json, ставит ESCALATED
 resume   [--dir D]                    печатает первый незавершённый этап
@@ -213,6 +215,14 @@ lock [--dir D] [--slug S] | unlock [--dir D]  блокировка дерева,
   содержимого решения), поэтому счётчики не растут дважды. Изменённое решение применяется по
   общим правилам, а когда переход уже невозможен (не `DECIDE`, терминальный этап) — код 3,
   а не молчаливый успех;
+- `freeze-criteria` закрепляет цель итерации: в `state.json` пишется `criteria_sha256` —
+  `sha256` пар `[id, формулировка]` критериев, **извлечённых из `issue.json`** тем же разбором,
+  что в `cycle-evidence` (`lib/cycle/criteria.mjs`). Источник — issue, а не `evidence/criteria.md`:
+  файл производный, и закреплять его значило бы разрешить подменить цель до первой заморозки.
+  Повторный прогон с теми же критериями — no-op (код 0, файл не перезаписывается), изменённые
+  критерии — код 3 `criteria_drift`, пока их не подтвердит владелец флагом `--owner-approved`
+  (подтверждение фиксируется в `state.owner_approved`). Нет `issue.json` или критериев в нём —
+  код 2: закреплять нечего. Терминальный этап — код 3, как у любой мутации;
 - `escalate` вычисляет `draft_pr_allowed` (§9): проход `code` завершён и обязательные гейты
   зелёные, то есть `gates.<n>.json` текущей итерации валиден, содержит ≥ 1 гейт
   `required: true`, и каждый обязательный гейт — `pass` или `not_run` с причиной
@@ -722,6 +732,7 @@ A1–A9 статически; запуск `node --test` и `gh` остаётс�
 | `stage`                       | INIT, PLAN, CODE, GATES, QA_WEB, REVIEW, EVALUATE, DECIDE, REWORK, ACQUIRE_EVIDENCE, PR, DONE, ESCALATED |
 | `stage_status`                | pending, running, done, error                                                                            |
 | `criteria_source`             | issue, plan_owner_approved                                                                               |
+| `criteria_sha256`             | `null` или 64 hex — дайджест замороженных критериев; отсутствие поля равнозначно `null`                 |
 | `retries`                     | `{ REVIEW, EVALUATE, evidence }`, целые ≥ 0                                                              |
 | `owner_approved`              | boolean                                                                                                  |
 | `models`                      | объект строк                                                                                             |
@@ -735,6 +746,14 @@ A1–A9 статически; запуск `node --test` и `gh` остаётс�
 зависит от порядка полей и артефакт остаётся побайтно воспроизводимым); совпадение всех
 четырёх полей — no-op. Валидатор `state` лишние поля игнорирует, поэтому старые `state.json`
 без этого поля остаются валидными.
+
+`criteria_sha256` — заморозка критериев приёмки (#22): `sha256` пар `[id, формулировка]`
+критериев из `issue.json`, пишется `cycle-state freeze-criteria`. Сверка идёт в четырёх местах:
+`cycle-evidence criteria` (критерии из issue против закреплённых — расхождение код 2, файлы не
+перезаписываются), `cycle-evidence packet` (пакет — вход судьи), `cycle-decide` (до применения
+правил) и `cycle-pr-body` (публикуемая цель) — расхождение везде код 2 `criteria_drift`.
+Поле необязательное: `null` и отсутствие равнозначны «не заморожено», старые `state.json`
+остаются валидными, мусор в поле — ошибка схемы.
 
 `history[].detail` — необязательное поле закрытой записи, пишется `cycle-state` в двух случаях:
 `finish --detail T` (человеческий текст, маскируется по §5.4, как свободный текст лога) и
@@ -794,6 +813,9 @@ INIT       gh issue view N --json title,body,labels > <dir>/issue.json
            node scripts/cycle-state.mjs init --issue N --slug S --branch B
            node scripts/cycle-evidence.mjs criteria --dir <dir> --issue-json <dir>/issue.json
              (код ≠ 0 → cycle-state escalate --reason criteria_missing; комментарий в issue; стоп)
+           node scripts/cycle-state.mjs freeze-criteria
+             (код 3 criteria_drift → escalate --reason criteria_drift, стоп: цель цикла
+              меняет владелец; подтверждение — freeze-criteria --owner-approved)
 PLAN       advance --to PLAN → субагент plan → plan.<n>.md → finish
              (план просит выбрать вариант → escalate --reason plan_ambiguous)
 CODE       advance --to CODE → субагент code → code-report.<n>.md → finish
