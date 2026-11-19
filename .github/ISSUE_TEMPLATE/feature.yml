@@ -1,0 +1,72 @@
+name: Задача / фича
+description: Новая функциональность или изменение поведения ядра, пакета, evals
+labels: ['type:feature', 'status:todo']
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Заполняйте коротко и по делу. Задача должна закрываться одним PR (или быть явно
+        разбита на подзадачи). Процесс — `docs/workflow.md`.
+  - type: textarea
+    id: why
+    attributes:
+      label: Зачем
+      description: Какую проблему решаем и для кого. Одно-два предложения.
+      placeholder: Потребитель не может подключить ядро как пакет — нечего импортировать.
+    validations:
+      required: true
+  - type: textarea
+    id: facts
+    attributes:
+      label: Факты
+      description: |
+        Что проверено и чем (команда, прогон, файл:строка). Без фактов задача — догадка:
+        «не работает» не считается описанием.
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Что делаем
+      description:
+        Список конкретных изменений. Если правки касаются ядра — помните правило «ядро не знает
+        проект».
+      placeholder: |
+        - package.json: exports, bin, files
+        - types/: .d.ts из JSDoc
+        - tests: тесты запускаются из установленного пакета
+    validations:
+      required: true
+  - type: textarea
+    id: out-of-scope
+    attributes:
+      label: Что не входит
+      description: Обязательно. Всё соблазнительное, но не нужное в этой задаче.
+    validations:
+      required: true
+  - type: textarea
+    id: done
+    attributes:
+      label: Готово, когда
+      description: Проверяемые условия, по которым владелец принимает работу.
+      placeholder: |
+        - `pnpm add -D github:…#vX.Y.Z` в чистом проекте ставит пакет
+        - `bin`-команды работают из node_modules
+        - CI на теге зелёный
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Область
+      multiple: true
+      options: [ядро цикла, конфиг проекта, пакет, evals, доска/CI, документация]
+    validations:
+      required: true
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Приоритет
+      options: ['p1 — блокирует потребителя', 'p2 — нужно к релизу', 'p3 — можно позже']
+    validations:
+      required: true

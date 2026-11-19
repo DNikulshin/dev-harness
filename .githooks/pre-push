@@ -1,0 +1,6 @@
+#!/bin/sh
+# Pre-push проверка: push в защищённые ветки (main, master) и push ветки со смерженным PR.
+# Подключается через `git config core.hooksPath .githooks` (это делает `prepare` в package.json).
+# Логика — tooling/pre-push.mjs. Обойти: `git push --no-verify` — осознанно, docs/workflow.md.
+set -e
+exec node "$(git rev-parse --show-toplevel)/tooling/pre-push.mjs"

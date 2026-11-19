@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Процесс разработки и правила веток
+    url: https://github.com/DNikulshin/dev-harness/blob/main/docs/workflow.md
+    about: Как заводится задача, из какой ветки работаем, что требуется от PR.
+  - name: Протокол цикла
+    url: https://github.com/DNikulshin/dev-harness/blob/main/docs/protocol.md
+    about: Точка входа в норматив — прежде чем сообщать о неверном поведении ядра.
