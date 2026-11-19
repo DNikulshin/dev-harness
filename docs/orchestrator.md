@@ -1,6 +1,6 @@
-> Норматив протокола. Источник: hair-lab (issue DNikulshin/hair-lab#233). Проектные значения — в `.pi/harness.config.json` проекта.
+> Норматив протокола. Проектные значения — в `.pi/harness.config.json` проекта; журнал переноса — локально у мейнтейнера.
 
-# Спецификация оркестратора цикла разработки hair-lab
+# Спецификация оркестратора цикла разработки
 
 Версия: 0.2 (принята владельцем) · Дата: 2026-11-14
 Реализация и декомпозиция: [docs/orchestrator-core.md](./docs/orchestrator-core.md) — дизайн ядра
@@ -174,12 +174,12 @@ evidence/                  пакет для оценщика (§7)
 
 Идентификаторы гейтов: `contracts_build`, `typecheck`, `lint`, `check_arch`,
 `lint_workflows`, `test`, `test_int`, `test_scripts`, `check_harness`, `format_check`, `secrets_scan`.
-Это набор из примера hair-lab: `id` гейтов задаются в `.pi/harness.config.json` проекта, список
+Это набор из примера проекта-источника: `id` гейтов задаются в `.pi/harness.config.json` проекта, список
 не закрыт — проект может объявить свои проверки.
 Статус `skipped` — условие запуска не выполнено (не считается непроверенным); файлы по
 итерациям: `gates.<n>.json`.
 `test_int` обязателен, если дифф затрагивает `apps/api/` или `packages/contracts/` (в примере
-hair-lab; префиксы путей задаются в `gates[].pathPrefixes`). Если у гейта `dbGate: true` и база
+проекта-источника; префиксы путей задаются в `gates[].pathPrefixes`). Если у гейта `dbGate: true` и база
 недоступна, статус `not_run`, причина `no_database` — классификация привязана к флагу, а не к id.
 
 ### `review.json`
