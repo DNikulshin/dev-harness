@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { criteriaDigest, parseCriteria } from './lib/cycle/criteria.mjs';
 import { describe, test } from 'node:test';
 
-import { decide, diffTouchesWeb, normalizeDoc } from './cycle-decide.mjs';
+import { decide, diffTouchesWeb, integritySignals, normalizeDoc } from './cycle-decide.mjs';
 import { validateDecision } from './lib/cycle/validate.mjs';
 
 /** Путь к CLI: тесты запускают его как отдельный процесс. */
@@ -756,6 +756,155 @@ describe('decide: правило 4 — unverified и acquire', () => {
   });
 });
 
+describe('decide: целостность проверок в правиле 4 (#36)', () => {
+  /**
+   * `evidence/integrity.json` в форме, которую пишет `cycle-evidence packet`.
+   * @param {Record<string, any>} [overrides]
+   * @returns {Record<string, any>}
+   */
+  function integrityDoc(overrides = {}) {
+    return {
+      test_paths: ['**/*.test.mjs'],
+      protected_paths: ['.pi/harness.config.json'],
+      tests: { added: [], modified: [], deleted: [] },
+      protected: { added: [], modified: [], deleted: [] },
+      ...overrides,
+    };
+  }
+
+  test('правка защищённого файла — unverified и добор integrity', (t) => {
+    const result = decide(
+      inputs(makeWorkspace(t), {
+        integrity: integrityDoc({
+          protected: { added: [], modified: ['.pi/harness.config.json'], deleted: [] },
+        }),
+      }),
+    );
+
+    assert.equal(result.action, 'ACQUIRE_EVIDENCE');
+    assert.deepEqual(result.unverified, [
+      'integrity: protected .pi/harness.config.json (modified)',
+    ]);
+    assert.deepEqual(result.acquire, ['integrity']);
+  });
+
+  test('удалённый тест — unverified и добор integrity', (t) => {
+    const result = decide(
+      inputs(makeWorkspace(t), {
+        integrity: integrityDoc({
+          tests: { added: [], modified: [], deleted: ['scripts/old.test.mjs'] },
+        }),
+      }),
+    );
+
+    assert.equal(result.action, 'ACQUIRE_EVIDENCE');
+    assert.deepEqual(result.unverified, ['integrity: tests deleted scripts/old.test.mjs']);
+    assert.deepEqual(result.acquire, ['integrity']);
+  });
+
+  test('правка теста под задачу — unverified без добора', (t) => {
+    const result = decide(
+      inputs(makeWorkspace(t), {
+        integrity: integrityDoc({
+          tests: {
+            added: ['scripts/new.test.mjs'],
+            modified: ['scripts/old.test.mjs'],
+            deleted: [],
+          },
+        }),
+      }),
+    );
+
+    assert.equal(result.action, 'PROCEED_WITH_UNVERIFIED');
+    assert.deepEqual(result.unverified, ['integrity: tests changed (2)']);
+    assert.deepEqual(result.acquire, []);
+  });
+
+  test('добор исчерпан (retries.evidence ≥ 1) — PROCEED_WITH_UNVERIFIED', (t) => {
+    const result = decide(
+      inputs(makeWorkspace(t), {
+        retries: retries({ evidence: 1 }),
+        integrity: integrityDoc({
+          protected: { added: [], modified: [], deleted: ['.pi/agents/code.md'] },
+        }),
+      }),
+    );
+
+    assert.equal(result.action, 'PROCEED_WITH_UNVERIFIED');
+    assert.deepEqual(result.acquire, ['integrity']);
+  });
+
+  test('чистый артефакт решения не меняет', (t) => {
+    const result = decide(inputs(makeWorkspace(t), { integrity: integrityDoc() }));
+
+    assert.equal(result.action, 'PROCEED');
+    assert.deepEqual(result.unverified, []);
+    assert.deepEqual(result.acquire, []);
+  });
+
+  test('артефакта нет — правило не срабатывает', (t) => {
+    const result = decide(inputs(makeWorkspace(t)));
+
+    assert.equal(result.action, 'PROCEED');
+    assert.deepEqual(result.unverified, []);
+  });
+
+  test('порядок строк фиксирован: защищённые, удалённые тесты, правки тестов', (t) => {
+    const result = decide(
+      inputs(makeWorkspace(t), {
+        integrity: integrityDoc({
+          tests: {
+            added: ['scripts/a.test.mjs'],
+            modified: ['scripts/b.test.mjs'],
+            deleted: ['scripts/c.test.mjs'],
+          },
+          protected: {
+            added: ['.pi/harness.config.json'],
+            modified: ['.pi/agents/code.md'],
+            deleted: ['AGENTS.md'],
+          },
+        }),
+      }),
+    );
+
+    assert.deepEqual(result.unverified, [
+      'integrity: protected .pi/harness.config.json (added)',
+      'integrity: protected .pi/agents/code.md (modified)',
+      'integrity: protected AGENTS.md (deleted)',
+      'integrity: tests deleted scripts/c.test.mjs',
+      'integrity: tests changed (2)',
+    ]);
+    assert.deepEqual(result.acquire, ['integrity']);
+  });
+
+  test('правило не блокирует: REWORK от Integrity не бывает', (t) => {
+    const result = decide(
+      inputs(makeWorkspace(t), {
+        integrity: integrityDoc({
+          tests: { added: [], modified: [], deleted: ['scripts/old.test.mjs'] },
+        }),
+      }),
+    );
+
+    assert.notEqual(result.action, 'REWORK');
+    assert.deepEqual(result.rework_items, []);
+    assert.deepEqual(result.counts, counts());
+  });
+
+  test('integritySignals терпит частичный документ и null', () => {
+    assert.deepEqual(integritySignals(null), { unverified: [], acquires: false });
+    assert.deepEqual(integritySignals({}), { unverified: [], acquires: false });
+    assert.deepEqual(integritySignals({ tests: { deleted: 'строка' } }), {
+      unverified: [],
+      acquires: false,
+    });
+    assert.deepEqual(integritySignals({ protected: { added: [''] } }), {
+      unverified: [],
+      acquires: false,
+    });
+  });
+});
+
 describe('decide: правило 5 — PROCEED', () => {
   test('всё проверено и блокеров нет', (t) => {
     const result = decide(
@@ -1079,7 +1228,7 @@ function stateDoc(baseSha, overrides = {}) {
 /**
  * Каталог цикла с артефактами; переданные параметры перекрывают умолчания.
  * @param {string} root корень тестового репозитория
- * @param {{ state?: unknown, gates?: unknown, reviewMd?: string, evaluationMd?: string, qaWeb?: unknown, iteration?: number }} [options]
+ * @param {{ state?: unknown, gates?: unknown, reviewMd?: string, evaluationMd?: string, qaWeb?: unknown, integrity?: unknown, iteration?: number }} [options]
  * @returns {string} каталог цикла
  */
 function makeCycleDir(root, options = {}) {
@@ -1103,6 +1252,14 @@ function makeCycleDir(root, options = {}) {
   }
   if (options.qaWeb !== undefined) {
     writeFileSync(join(dir, 'qa-web.json'), `${JSON.stringify(options.qaWeb, null, 2)}\n`);
+  }
+  if (options.integrity !== undefined) {
+    mkdirSync(join(dir, 'evidence'), { recursive: true });
+    const text =
+      typeof options.integrity === 'string'
+        ? options.integrity
+        : `${JSON.stringify(options.integrity, null, 2)}\n`;
+    writeFileSync(join(dir, 'evidence', 'integrity.json'), text);
   }
 
   return dir;
@@ -1515,6 +1672,67 @@ describe('CLI: ПДн в решении и запрет чтения .env*', () 
     assert.equal(decision.unresolved_refs, 1);
     assert.equal(result.stdout.includes('.env'), false);
     assert.equal(readFileSync(join(dir, 'decision.1.json'), 'utf8').includes('.env'), false);
+  });
+});
+
+describe('CLI: целостность проверок (#36)', () => {
+  /** Артефакт `evidence/integrity.json` с правкой защищённого файла. */
+  const INTEGRITY = Object.freeze({
+    test_paths: ['**/*.test.mjs'],
+    protected_paths: ['.pi/harness.config.json'],
+    tests: { added: [], modified: [], deleted: [] },
+    protected: { added: [], modified: ['.pi/harness.config.json'], deleted: [] },
+  });
+
+  test('evidence/integrity.json доводит факт до решения', (t) => {
+    const repo = makeRepo(t);
+    const dir = makeCycleDir(repo.root, {
+      reviewMd: mdBlock(reviewDoc()),
+      evaluationMd: mdBlock(evaluationDoc()),
+      integrity: INTEGRITY,
+    });
+
+    const result = runCli(repo.root, ['--dir', dir]);
+
+    assert.equal(result.status, 0, result.stderr);
+    const decision = JSON.parse(result.stdout);
+    assert.equal(decision.action, 'ACQUIRE_EVIDENCE');
+    assert.deepEqual(decision.unverified, [
+      'integrity: protected .pi/harness.config.json (modified)',
+    ]);
+    assert.deepEqual(decision.acquire, ['integrity']);
+    assert.deepEqual(validateDecision(decision), { ok: true, errors: [] });
+  });
+
+  test('битый evidence/integrity.json — код 2, решение не перезаписано', (t) => {
+    const repo = makeRepo(t);
+    const dir = makeCycleDir(repo.root, {
+      reviewMd: mdBlock(reviewDoc()),
+      evaluationMd: mdBlock(evaluationDoc()),
+      integrity: '{"test_paths": "нет массива"}\n',
+    });
+    writeFileSync(join(dir, 'decision.1.json'), 'прежнее решение\n');
+
+    const result = runCli(repo.root, ['--dir', dir]);
+
+    assert.equal(result.status, 2);
+    assert.match(result.stderr, /integrity/);
+    assert.equal(readFileSync(join(dir, 'decision.1.json'), 'utf8'), 'прежнее решение\n');
+  });
+
+  test('файла нет — решение считается без правила', (t) => {
+    const repo = makeRepo(t);
+    const dir = makeCycleDir(repo.root, {
+      reviewMd: mdBlock(reviewDoc()),
+      evaluationMd: mdBlock(evaluationDoc()),
+    });
+
+    const result = runCli(repo.root, ['--dir', dir]);
+
+    assert.equal(result.status, 0, result.stderr);
+    const decision = JSON.parse(result.stdout);
+    assert.equal(decision.action, 'PROCEED');
+    assert.deepEqual(decision.unverified, []);
   });
 });
 

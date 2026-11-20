@@ -2,7 +2,8 @@
 /**
  * Решение цикла по docs/orchestrator-core.md §5.6 (issue #156, задача T5).
  *
- * Вход: `state.json`, `gates.<n>.json`, `review.<n>.md`, `evaluation.<n>.md`, `qa-web.json`.
+ * Вход: `state.json`, `gates.<n>.json`, `review.<n>.md`, `evaluation.<n>.md`, `qa-web.json`,
+ * `evidence/integrity.json` (необязательный, #36).
  * Выход: `decision.<n>.json`; нормализованные `review.<n>.json` / `evaluation.<n>.json`
  * пишутся только при валидном блоке ```json из соответствующего md (D4). В stdout —
  * одна строка JSON решения.
@@ -18,7 +19,10 @@
  *    оценщика, критерий `unmet` со свидетельством; невалидные элементы → `downgraded`;
  * 3. есть блокеры → `REWORK`, на лимите итераций → `ESCALATE(iteration_limit)`;
  * 4. нет блокеров, но есть `unverified` → `ACQUIRE_EVIDENCE`, если есть что добрать и
- *    `retries.evidence < 1`, иначе `PROCEED_WITH_UNVERIFIED`;
+ *    `retries.evidence < 1`, иначе `PROCEED_WITH_UNVERIFIED`; сюда же попадают факты
+ *    контроля целостности проверок из `evidence/integrity.json` (#36): правка защищённого
+ *    файла и удаление теста дают `acquire: integrity`, правка тестов под задачу — только
+ *    отметку `unverified`;
  * 5. иначе `PROCEED`.
  *
  * `unverified` включает required-гейты `not_run` и в случае `reason = no_database`:
@@ -33,7 +37,10 @@
  * в решение не попадает.
  *
  * `acquire[]` — то, что имеет смысл добрать: `gate:<id>` для required-гейта `not_run`
- * не по `no_database` и литерал `qa-web` при web-диффе без выполненной QA. Зависимый гейт
+ * не по `no_database`, литерал `qa-web` при web-диффе без выполненной QA и литерал
+ * `integrity` при правке защищённых файлов или удалении теста (#36). У `integrity`
+ * исполнимого шага нет — добор означает повторный REVIEW с явным вопросом «не ослаблены
+ * ли проверки», поэтому супервизор исполняет его как повтор этапа (Приложение B). Зависимый гейт
  * с `blocked_by:<id>` тоже попадает в список: `cycle-gates` пересчитывает зависимости
  * и запустит его, если родитель пройдёт. Список
  * заполняется и при `PROCEED_WITH_UNVERIFIED`: `cycle-state apply-decision` читает его
@@ -56,7 +63,9 @@
  *   `<id> [unmet] — <note>; свидетельства: <…>` (критерий),
  *   `gate:<id> [fail] — обязательный гейт не прошёл; лог: gates/<id>.<n>.log` (гейт);
  * - `unverified[]`: `gate:<id> not_run (<reason>)`, `qa-web not_run (<reason>)`,
- *   `criteria:<id> unverified`, `evaluation unverified: <what>`;
+ *   `criteria:<id> unverified`, `evaluation unverified: <what>`,
+ *   `integrity: protected <путь> (<added|modified|deleted>)`,
+ *   `integrity: tests deleted <путь>`, `integrity: tests changed (<N>)`;
  * - `downgraded[]`: `<id> [<SEV>] <причина>` (у критерия вместо `SEV` — статус `unmet`);
  *   причины — фиксированный набор `DOWNGRADE_REASONS`.
  *
@@ -70,7 +79,8 @@
  * серьёзность/статус и id), поэтому маскирование к нему не применяется.
  *
  * Коды выхода: `0` — решение записано; `2` — ошибка использования или внутренняя
- * (нет/битый `state.json` или `gates.<n>.json`, битый `qa-web.json`, мусор в аргументах).
+ * (нет/битый `state.json` или `gates.<n>.json`, битый `qa-web.json` или
+ * `evidence/integrity.json`, мусор в аргументах).
  * Shebang нужен: файл запускается напрямую.
  */
 import { existsSync, readFileSync } from 'node:fs';
@@ -100,6 +110,7 @@ import { resolveRef } from './lib/cycle/refs.mjs';
 import {
   validateEvaluation,
   validateGates,
+  validateIntegrity,
   validateQaWeb,
   validateReview,
   validateState,
@@ -114,6 +125,9 @@ const INVALID_OUTPUT_LIMIT = 5;
 
 const REVIEW_STAGE = 'REVIEW';
 const EVALUATE_STAGE = 'EVALUATE';
+
+/** Контроль целостности проверок: артефакт `packet`-а (#36). */
+const INTEGRITY_FILE = 'integrity.json';
 
 /** Причина `not_run` гейта, при которой добор невозможен (нет БД). */
 const NO_DATABASE = 'no_database';
@@ -151,6 +165,8 @@ const DOWNGRADE_REASONS = Object.freeze({
  * @property {Record<string, any>|null} evaluation проверенный блок оценки или `null`
  * @property {{ status?: string, reason?: string|null, steps?: unknown[] }|null} qaWeb
  *   проверенный `qa-web.json` или `null`, если файла нет
+ * @property {Record<string, any>|null} [integrity] проверенный `evidence/integrity.json`
+ *   или `null` (по умолчанию): правил `integrity` в проекте нет или пакет собран без них
  * @property {boolean} webDiff дифф затрагивает `apps/frontend`
  * @property {string} root корень репозитория для разрешения ссылок
  * @property {number|null} [costRub] стоимость цикла по `usage.json` и `evals/prices.json`:
@@ -236,6 +252,56 @@ export function diffTouchesWeb(files, prefixes = DEFAULTS.qaWeb.pathPrefixes) {
       return file === base || file.startsWith(`${base}/`);
     }),
   );
+}
+
+/**
+ * Списки статусов в `evidence/integrity.json`; не-массив — пустой список. Документ приходит
+ * проверенным валидатором, но чистая функция допускает частичный: терять факт из-за формы
+ * объекта нельзя, а падать на нём — тем более.
+ * @param {unknown} value
+ * @returns {string[]}
+ */
+function stringList(value) {
+  return Array.isArray(value) ? value.filter((item) => isText(item)) : [];
+}
+
+/**
+ * Факты контроля целостности проверок (#36) → строки `unverified[]` и признак добора.
+ * Правило узкое и фактическое: ядро не судит, ослаблены ли тесты, оно фиксирует, что
+ * изменилось. Правка защищённого файла (любой статус) и удаление теста — повод добрать
+ * свидетельства (`acquire: integrity`); правка тестов под задачу — только отметка, иначе
+ * каждый цикл с новыми тестами терял бы `PROCEED` и владелец получал бы чекбоксы на
+ * нормальной работе.
+ * @param {Record<string, any>|null|undefined} integrity проверенный документ или `null`
+ * @returns {{ unverified: string[], acquires: boolean }}
+ */
+export function integritySignals(integrity) {
+  if (integrity === null || integrity === undefined) return { unverified: [], acquires: false };
+
+  /** @type {string[]} */
+  const unverified = [];
+  let acquires = false;
+
+  // Порядок статусов фиксирован: строки решения не должны зависеть от порядка ключей.
+  const protectedGroup = typeof integrity.protected === 'object' ? integrity.protected : {};
+  const testsGroup = typeof integrity.tests === 'object' ? integrity.tests : {};
+  for (const status of ['added', 'modified', 'deleted']) {
+    for (const path of stringList(protectedGroup?.[status])) {
+      unverified.push(`integrity: protected ${path} (${status})`);
+      acquires = true;
+    }
+  }
+
+  for (const path of stringList(testsGroup?.deleted)) {
+    unverified.push(`integrity: tests deleted ${path}`);
+    acquires = true;
+  }
+
+  const changedTests =
+    stringList(testsGroup?.added).length + stringList(testsGroup?.modified).length;
+  if (changedTests > 0) unverified.push(`integrity: tests changed (${changedTests})`);
+
+  return { unverified, acquires };
 }
 
 /**
@@ -395,6 +461,7 @@ export function decide(inputs) {
     review,
     evaluation,
     qaWeb,
+    integrity = null,
     webDiff,
     root,
     costRub = null,
@@ -632,6 +699,12 @@ export function decide(inputs) {
   for (const item of evalUnverified)
     unverified.push(`evaluation unverified: ${redacted(item.what)}`);
 
+  // Целостность проверок (#36): факты из `evidence/integrity.json`. Свойства файлов и путей
+  // не маскируются — это вывод git, а не свободный текст агента.
+  const integrityFacts = integritySignals(integrity);
+  unverified.push(...integrityFacts.unverified);
+  if (integrityFacts.acquires) acquire.push('integrity');
+
   if (unverified.length > 0) {
     if (acquire.length > 0 && retries.evidence < 1) {
       return finalize('ACQUIRE_EVIDENCE', { acquired: acquire });
@@ -833,6 +906,13 @@ function main() {
     const review = reviewBlock.doc;
     const evaluation = evaluationBlock.doc;
     const qaWeb = readOptionalJson(join(dir, FIXED_NAMES.qaWeb), validateQaWeb, FIXED_NAMES.qaWeb);
+    // Контроль целостности проверок (#36): артефакт `cycle-evidence packet`. Нет файла —
+    // правил `integrity` в проекте нет, правило решения не срабатывает.
+    const integrity = readOptionalJson(
+      join(dir, config.paths.evidenceDir, INTEGRITY_FILE),
+      validateIntegrity,
+      INTEGRITY_FILE,
+    );
 
     // Web-дифф читается от базы цикла; индекс не меняется (его готовит супервизор).
     const webDiff = diffTouchesWeb(
@@ -871,6 +951,7 @@ function main() {
       review,
       evaluation,
       qaWeb,
+      integrity,
       webDiff,
       root,
       costRub,

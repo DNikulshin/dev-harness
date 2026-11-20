@@ -366,7 +366,8 @@ typecheck 11 с, lint 9 с, test 12 с против миллисекунд из 
 node scripts/cycle-decide.mjs --dir D [--iteration N]
 ```
 
-Читает `state.json`, `gates.<n>.json`, `review.<n>.md`, `evaluation.<n>.md` (и `qa-web.json`).
+Читает `state.json`, `gates.<n>.json`, `review.<n>.md`, `evaluation.<n>.md`, `qa-web.json`
+и (необязательно) `evidence/integrity.json`.
 Из md извлекается последний блок ```json, валидируется и записывается нормализованным
 `review.<n>.json` / `evaluation.<n>.json`. Пишет `decision.<n>.json`.
 
@@ -392,12 +393,25 @@ node scripts/cycle-decide.mjs --dir D [--iteration N]
      иначе                       → ESCALATE(iteration_limit)
 4. Нет блокеров. unverified = required-гейты not_run (кроме no_database) ∪ web-дифф без qa-web done
                               ∪ критерии unverified ∪ evaluation.unverified
+                              ∪ факты integrity (§5.4, #36)
    unverified ≠ ∅:
-     есть исполнимое (required-гейт not_run не по no_database; QA не выполнен при web-диффе)
-       и retries.evidence < 1 → ACQUIRE_EVIDENCE(acquire: [...])
+     есть исполнимое (required-гейт not_run не по no_database; QA не выполнен при web-диффе;
+     правка защищённых файлов или удаление теста) и retries.evidence < 1
+       → ACQUIRE_EVIDENCE(acquire: [...])
      иначе                    → PROCEED_WITH_UNVERIFIED
 5. Иначе → PROCEED
 ```
+
+**Целостность проверок (#36).** Если в пакете есть `evidence/integrity.json` (§5.4), его
+факты входят в правило 4 и никогда — в правило 2: правка проверок не блокер, но и не
+«проверено». Строки `unverified[]`: `integrity: protected <путь> (<added|modified|deleted>)` для
+каждого затронутого защищённого файла, `integrity: tests deleted <путь>` для каждого удалённого
+теста и одна сводка `integrity: tests changed (<N>)` на добавленные и изменённые тесты. Первые
+две группы добавляют `acquire: integrity`; сводка по обычной правке тестов — нет. У `integrity`
+в `acquire[]` нет исполнимого шага (это не гейт и не QA): добор означает повторный `REVIEW`
+с явным вопросом «не ослаблены ли проверки», поэтому `cycle-state` исполняет его как повтор
+этапа по Приложению B. Файла нет (правил `integrity` в проекте нет) — правило не срабатывает;
+битый файл — код 2, как у `qa-web.json`.
 
 `partial` у критерия блоком не является: попадает в `notes`. Вердикт модели
 `REWORK` без валидного блокера записывается как `verdict_without_evidence` и не блокирует.
