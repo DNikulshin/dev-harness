@@ -140,8 +140,15 @@ describe('package: внешний потребитель', () => {
       probe,
       [
         "import { canTransition } from '@dnikulshin/harness/scripts/cycle-state';",
+        "import { loadConfig } from '@dnikulshin/harness/scripts/lib/cycle/config';",
         "const templates = import.meta.resolve('@dnikulshin/harness/templates/.pi/agents/plan.md');",
-        'console.log(JSON.stringify({ allowed: canTransition("INIT", "PLAN"), templates }));',
+        'console.log(',
+        '  JSON.stringify({',
+        '    allowed: canTransition("INIT", "PLAN"),',
+        '    config: typeof loadConfig,',
+        '    templates,',
+        '  }),',
+        ');',
         '',
       ].join('\n'),
     );
@@ -150,15 +157,29 @@ describe('package: внешний потребитель', () => {
     assert.equal(result.status, 0, `ESM-импорт по exports: ${result.stderr}`);
     const parsed = JSON.parse(result.stdout);
     assert.equal(parsed.allowed, true);
+    assert.equal(parsed.config, 'function', 'шов библиотеки loadConfig доступен');
     assert.match(parsed.templates, /node_modules.+templates\/\.pi\/agents\/plan\.md$/u);
 
-    // Обратная сторона контракта: путь вне `exports` не резолвится. Если это перестанет быть
-    // правдой, карта `exports` перестала ограничивать потребителя.
-    const closed = join(state.proj, 'closed.mjs');
-    writeFileSync(closed, "await import('@dnikulshin/harness/docs/protocol.md');\n");
-    const denied = run(process.execPath, [closed], { cwd: state.proj });
-    assert.notEqual(denied.status, 0, 'неэкспортированный путь не должен резолвиться');
-    assert.match(denied.stderr, /ERR_PACKAGE_PATH_NOT_EXPORTED/u);
+    // Обратная сторона контракта: путь вне `exports` не резолвится. Список — то, что раньше
+    // открывалось шаблоном `./scripts/*` и потому было доступно каждому адаптеру.
+    const denied = [
+      '@dnikulshin/harness/docs/protocol.md',
+      '@dnikulshin/harness/scripts/lib/cycle/git',
+      '@dnikulshin/harness/scripts/lib/cycle/io',
+      '@dnikulshin/harness/scripts/lib/evals/score',
+      '@dnikulshin/harness/scripts/cycle-state.test',
+    ];
+    for (const specifier of denied) {
+      const closed = join(state.proj, 'closed.mjs');
+      writeFileSync(closed, `await import('${specifier}');\n`);
+      const attempt = run(process.execPath, [closed], { cwd: state.proj });
+      assert.notEqual(attempt.status, 0, `${specifier} не должен резолвиться`);
+      assert.match(
+        attempt.stderr,
+        /ERR_PACKAGE_PATH_NOT_EXPORTED/u,
+        `${specifier}: ${attempt.stderr}`,
+      );
+    }
   });
 
   test('init, проверка раскладки и цикл работают из установленного пакета', () => {

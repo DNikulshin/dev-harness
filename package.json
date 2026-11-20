@@ -16,9 +16,73 @@
     "README.md"
   ],
   "exports": {
-    "./scripts/*": {
-      "types": "./types/*.d.mts",
-      "default": "./scripts/*.mjs"
+    "./scripts/check-harness": {
+      "types": "./types/check-harness.d.mts",
+      "default": "./scripts/check-harness.mjs"
+    },
+    "./scripts/cycle-decide": {
+      "types": "./types/cycle-decide.d.mts",
+      "default": "./scripts/cycle-decide.mjs"
+    },
+    "./scripts/cycle-driver": {
+      "types": "./types/cycle-driver.d.mts",
+      "default": "./scripts/cycle-driver.mjs"
+    },
+    "./scripts/cycle-evidence": {
+      "types": "./types/cycle-evidence.d.mts",
+      "default": "./scripts/cycle-evidence.mjs"
+    },
+    "./scripts/cycle-gates": {
+      "types": "./types/cycle-gates.d.mts",
+      "default": "./scripts/cycle-gates.mjs"
+    },
+    "./scripts/cycle-metrics": {
+      "types": "./types/cycle-metrics.d.mts",
+      "default": "./scripts/cycle-metrics.mjs"
+    },
+    "./scripts/cycle-pr-body": {
+      "types": "./types/cycle-pr-body.d.mts",
+      "default": "./scripts/cycle-pr-body.mjs"
+    },
+    "./scripts/cycle-report": {
+      "types": "./types/cycle-report.d.mts",
+      "default": "./scripts/cycle-report.mjs"
+    },
+    "./scripts/cycle-state": {
+      "types": "./types/cycle-state.d.mts",
+      "default": "./scripts/cycle-state.mjs"
+    },
+    "./scripts/cycle-usage": {
+      "types": "./types/cycle-usage.d.mts",
+      "default": "./scripts/cycle-usage.mjs"
+    },
+    "./scripts/lib/cycle/config": {
+      "types": "./types/lib/cycle/config.d.mts",
+      "default": "./scripts/lib/cycle/config.mjs"
+    },
+    "./scripts/evals-collect": {
+      "types": "./types/evals-collect.d.mts",
+      "default": "./scripts/evals-collect.mjs"
+    },
+    "./scripts/evals-cost": {
+      "types": "./types/evals-cost.d.mts",
+      "default": "./scripts/evals-cost.mjs"
+    },
+    "./scripts/evals-pack": {
+      "types": "./types/evals-pack.d.mts",
+      "default": "./scripts/evals-pack.mjs"
+    },
+    "./scripts/evals-score": {
+      "types": "./types/evals-score.d.mts",
+      "default": "./scripts/evals-score.mjs"
+    },
+    "./scripts/harness-init": {
+      "types": "./types/harness-init.d.mts",
+      "default": "./scripts/harness-init.mjs"
+    },
+    "./scripts/selftest": {
+      "types": "./types/selftest.d.mts",
+      "default": "./scripts/selftest.mjs"
     },
     "./templates/*": "./templates/*",
     "./package.json": "./package.json"

@@ -68,12 +68,23 @@ git-URL потребует настроенного доступа `git`/`gh` н
 
 ### Импорт модулей ядра
 
-Скрипты одновременно CLI и библиотеки, поэтому из проекта доступны прямые импорты:
+Скрипты одновременно CLI и библиотеки: у каждого `bin` есть одноимённая точка входа без
+`bin`-префикса, например `harness-cycle-gates` → `@dnikulshin/harness/scripts/cycle-gates`.
+Поверхность объявлена в `exports` явно, а не шаблоном `./scripts/*`:
 
 ```js
 import { runGates } from '@dnikulshin/harness/scripts/cycle-gates';
 import { loadConfig } from '@dnikulshin/harness/scripts/lib/cycle/config';
 ```
+
+`scripts/lib/cycle/config` — единственный внутренний модуль, оставленный публичным: это шов для тех,
+кто читает конфиг проекта из своего кода, а не через CLI. Всё остальное внутри `scripts/lib/**`,
+тесты и фикстуры закрыты: импорт такого пути даёт `ERR_PACKAGE_PATH_NOT_EXPORTED`. Правило
+проверяется тестом по `package.json` (каждый `bin` обязан иметь ключ `exports`) и тестом на
+установленном пакете (`scripts/package-consumer.test.mjs`).
+
+`scripts/**/*.test.mjs` и `scripts/fixtures/` в архив попадают намеренно: их прогоняет
+`harness-selftest` из `node_modules`. Это данные самотеста, а не публичное API.
 
 ### Установка шаблонов в проект (`harness init`)
 
