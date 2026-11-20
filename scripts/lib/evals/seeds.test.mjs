@@ -132,7 +132,7 @@ describe('loadSeeds', () => {
     );
     assert.deepEqual(
       seeds.map((seed) => seed.id),
-      ['E1', 'E2', 'E3', 'E4', 'E5', 'E6', 'E9', 'E10'],
+      ['E1', 'E2', 'E3', 'E4', 'E5', 'E6', 'E8', 'E9', 'E10'],
     );
     for (const seed of seeds) {
       assert.ok(seed.criteria.length > 0, `${seed.id}: критерии`);

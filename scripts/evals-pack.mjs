@@ -145,6 +145,18 @@ export function datePart(iso) {
 }
 
 /**
+ * Ожидание сида одной строкой: набор `severities` печатается набором, а не одним значением,
+ * иначе сид с `MAJOR|FOLLOW-UP` выглядел бы как требование `BLOCKER`.
+ * @param {import('./lib/evals/seeds.mjs').SeedExpectation} expect
+ * @returns {string}
+ */
+export function describeExpectation(expect) {
+  if (expect.kind === 'clean') return 'чистый дифф, блокеров нет';
+  const severity = expect.severities?.join('|') ?? expect.severity ?? 'BLOCKER';
+  return `${severity} в ${expect.file ?? '?'}:${expect.line ?? '?'}`;
+}
+
+/**
  * Точка входа CLI.
  * @returns {void}
  */
@@ -252,7 +264,7 @@ function main() {
       [
         `прогон: ${runDir}`,
         `  сид: ${seed.id} — ${seed.title}`,
-        `  ожидание: ${seed.expect.kind === 'clean' ? 'чистый дифф, блокеров нет' : `${seed.expect.severity ?? 'BLOCKER'} в ${seed.expect.file ?? '?'}:${seed.expect.line ?? '?'}`}`,
+        `  ожидание: ${describeExpectation(seed.expect)}`,
         `  модели: ${SCORED_STAGES.map((stage) => `${stage}=${models[stage]}`).join(', ')}`,
         `  повторов: ${args.repeat} (каждый — отдельный --out)`,
         `  дифф: ${diffLines} строк`,

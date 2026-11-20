@@ -5,6 +5,8 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { describe, test } from 'node:test';
 
+import { describeExpectation } from './evals-pack.mjs';
+
 /** Путь к CLI относительно теста: тест не зависит от текущего каталога запуска. */
 const SCRIPT = resolve(import.meta.dirname, 'evals-pack.mjs');
 
@@ -218,5 +220,24 @@ describe('evals-pack', () => {
       assert.equal(result.status, 2, value);
       assert.match(result.stderr, /целое ≥ 1/u);
     }
+  });
+});
+
+describe('describeExpectation: ожидание сида одной строкой', () => {
+  test('набор severities печатается набором, а не одним BLOCKER', () => {
+    assert.equal(
+      describeExpectation({
+        kind: 'defect',
+        severities: ['MAJOR', 'FOLLOW-UP'],
+        file: 'a/b.ts',
+        line: 3,
+      }),
+      'MAJOR|FOLLOW-UP в a/b.ts:3',
+    );
+    assert.equal(
+      describeExpectation({ kind: 'defect', severity: 'BLOCKER', file: 'a/b.ts', line: 11 }),
+      'BLOCKER в a/b.ts:11',
+    );
+    assert.equal(describeExpectation({ kind: 'clean' }), 'чистый дифф, блокеров нет');
   });
 });
