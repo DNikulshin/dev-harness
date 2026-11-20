@@ -41,5 +41,9 @@
     "test": 600000,
     "format_check": 120000,
     "typecheck": 180000
+  },
+  "integrity": {
+    "testPaths": ["**/*.test.mjs"],
+    "protectedPaths": [".pi/harness.config.json", ".pi/agents", "AGENTS.md"]
   }
 }

@@ -347,3 +347,70 @@ describe('config: qaWeb и dbGate', () => {
     });
   }
 });
+
+describe('config: integrity (#27)', () => {
+  /**
+   * Конфиг проекта с переданным JSON.
+   * @param {import('node:test').TestContext} t
+   * @param {unknown} doc
+   * @returns {string}
+   */
+  function project(t, doc) {
+    const root = mkdtempSync(join(tmpdir(), 'harness-config-integrity-'));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    mkdirSync(join(root, '.pi'), { recursive: true });
+    writeFileSync(join(root, '.pi', 'harness.config.json'), JSON.stringify(doc));
+    return root;
+  }
+
+  test('секции нет — правил нет, это валидное состояние', (t) => {
+    const contract = loadConfig(project(t, {}));
+    assert.deepEqual(contract.integrity.testPaths, []);
+    assert.deepEqual(contract.integrity.protectedPaths, []);
+
+    const partial = loadConfig(project(t, { integrity: { testPaths: ['tests'] } }));
+    assert.deepEqual(partial.integrity.testPaths, ['tests']);
+    assert.deepEqual(partial.integrity.protectedPaths, [], 'недостающая половина — пустая');
+  });
+
+  test('пустая секция — тоже валидное состояние', (t) => {
+    const config = loadConfig(project(t, { integrity: {} }));
+    assert.deepEqual(config.integrity, { testPaths: [], protectedPaths: [] });
+  });
+
+  test('правила читаются как есть, завершающий слэш срезается', (t) => {
+    const config = loadConfig(
+      project(t, {
+        integrity: {
+          testPaths: ['**/*.test.mjs', 'tests/'],
+          protectedPaths: ['.pi/harness.config.json', '.pi/agents'],
+        },
+      }),
+    );
+
+    assert.deepEqual(config.integrity.testPaths, ['**/*.test.mjs', 'tests']);
+    assert.deepEqual(config.integrity.protectedPaths, ['.pi/harness.config.json', '.pi/agents']);
+    assert.ok(Object.isFrozen(config.integrity), 'правила заморожены, как и остальной конфиг');
+  });
+
+  for (const [name, doc] of [
+    ['integrity не объект', { integrity: [] }],
+    ['integrity с неизвестным полем', { integrity: { testPaths: [], extra: [] } }],
+    ['testPaths не массив', { integrity: { testPaths: 'tests' } }],
+    ['protectedPaths содержит пустую строку', { integrity: { protectedPaths: [''] } }],
+    ['правило с «..»', { integrity: { testPaths: ['../outside/**'] } }],
+    ['правило абсолютное', { integrity: { protectedPaths: ['/etc/passwd'] } }],
+    ['правило с пустым сегментом', { integrity: { testPaths: ['tests//unit'] } }],
+    ['правило с «.»', { integrity: { testPaths: ['./tests'] } }],
+    ['правило с обратным слэшем', { integrity: { testPaths: ['tests\\unit'] } }],
+    ['правило из одного слэша', { integrity: { testPaths: ['/'] } }],
+  ]) {
+    test(`${name} — ошибка конфига с кодом 2`, (t) => {
+      const root = project(t, doc);
+      assert.throws(
+        () => loadConfig(root),
+        (error) => error instanceof ConfigError && error.code === 2,
+      );
+    });
+  }
+});

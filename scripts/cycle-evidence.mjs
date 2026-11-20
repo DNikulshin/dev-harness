@@ -44,6 +44,14 @@
  * не попадают. Пакет собирается в памяти и пишется только при успехе: при ошибке файлы
  * не создаются и не перезаписываются.
  *
+ * **Целостность проверок (#27).** Если в конфиге проекта заданы правила `integrity`
+ * (`testPaths`/`protectedPaths`), в пакет попадает `integrity.json`: правила, с которыми
+ * считали, и затронутые диффом файлы по трём статусам (`added`/`modified`/`deleted`)
+ * раздельно для тестов и защищённых путей. Список берётся из `changedFilesWithStatus`
+ * от той же базы, что и `diff.patch`, сортируется, поэтому повторный прогон даёт тот же
+ * файл. Тел файлов в артефакте нет — только пути. Правил нет — файла нет; чистый дифф
+ * при заданных правилах даёт пустые списки, то есть явное «правок нет».
+ *
  * **Маскирование (§5.4).** В логи гейтов, сырые данные QA и `diff.patch` применяется
  * `redactLog`/`redactQa`: e-mail → `[email]`, телефоны → `[phone]`, `authorization`/
  * `cookie`/JWT/`postgres://<user>:<pass>@`/`key|token|secret|password…` → `[secret]`.
@@ -79,7 +87,7 @@ import {
   parseCriteria,
 } from './lib/cycle/criteria.mjs';
 import { resolveLimits } from './lib/cycle/limits.mjs';
-import { diffFromBase, intentToAddUntracked } from './lib/cycle/git.mjs';
+import { diffFromBase, changedFilesWithStatus, intentToAddUntracked } from './lib/cycle/git.mjs';
 import { readJson, tail, writeTextAtomic } from './lib/cycle/io.mjs';
 import {
   FIXED_NAMES,
@@ -88,6 +96,7 @@ import {
   iterNames,
   repoRoot,
 } from './lib/cycle/paths.mjs';
+import { classifyIntegrity, integrityConfigured } from './lib/cycle/integrity.mjs';
 import { redactLog, redactQa } from './lib/cycle/redact.mjs';
 import { validateGates, validateQaWeb, validateState } from './lib/cycle/validate.mjs';
 
@@ -133,6 +142,7 @@ const EVIDENCE_FILES = Object.freeze({
   criteria: 'criteria.md',
   diff: 'diff.patch',
   gates: 'gates.json',
+  integrity: 'integrity.json',
   qaWeb: 'qa-web.json',
 });
 
@@ -732,6 +742,16 @@ function buildPacket({ dir, root, base = null, config = loadConfig(root) }) {
     // `gates.json` — байт-в-байт копия документа гейтов: оценщик сверяет статусы.
     { path: `${config.paths.evidenceDir}/${EVIDENCE_FILES.gates}`, text: gatesText },
   ];
+
+  // Контроль целостности (#27): правила путей — свойство проекта, а список файлов — факт
+  // диффа. Без заданных правил файла нет: пустой артефакт выглядел бы как проверка.
+  if (integrityConfigured(config.integrity)) {
+    const changes = changedFilesWithStatus(baseShaValue, { cwd: root });
+    files.push({
+      path: `${config.paths.evidenceDir}/${EVIDENCE_FILES.integrity}`,
+      text: serializeArtifact(classifyIntegrity({ changes, integrity: config.integrity })),
+    });
+  }
 
   for (const entry of gates.gates) {
     if (entry.status !== 'fail' || entry.log === null) continue;

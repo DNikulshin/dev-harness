@@ -1281,6 +1281,119 @@ describe('packet: пакет evidence/', () => {
   });
 });
 
+describe('packet: контроль целостности проверок (#27)', () => {
+  /**
+   * Пишет `.pi/harness.config.json` тестового проекта: секции `integrity` в дефолтах нет,
+   * поэтому правила приходят только из файла.
+   * @param {string} root
+   * @param {Record<string, unknown>} doc
+   * @returns {void}
+   */
+  function writeConfig(root, doc) {
+    mkdirSync(join(root, '.pi'), { recursive: true });
+    writeFileSync(join(root, '.pi', 'harness.config.json'), `${JSON.stringify(doc, null, 2)}\n`);
+  }
+
+  /**
+   * Добавляет файл в тестовый репозиторий и коммитит: без этого правка теста не попадёт
+   * в дифф от базы (файла в базе нет — он был бы добавлением, а не изменением).
+   * @param {string} root
+   * @param {string} relative
+   * @param {string} text
+   * @returns {string} sha нового коммита
+   */
+  function commitFile(root, relative, text) {
+    const file = join(root, relative);
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, text);
+    gitRun(root, ['add', relative]);
+    gitRun(root, ['commit', '--quiet', '-m', `добавлен ${relative}`]);
+    return gitRun(root, ['rev-parse', 'HEAD']);
+  }
+
+  const RULES = Object.freeze({
+    integrity: {
+      testPaths: ['**/*.test.mjs'],
+      protectedPaths: ['.pi/harness.config.json'],
+    },
+  });
+
+  test('правка теста, удаление теста и правка конфига гейтов видны в артефакте', (t) => {
+    const repo = makeRepo(t);
+    let baseSha = commitFile(repo.root, 'tests/unit/keep.test.mjs', 'тест\n');
+    baseSha = commitFile(repo.root, 'tests/unit/gone.test.mjs', 'другой тест\n');
+
+    writeConfig(repo.root, RULES);
+    writeFileSync(join(repo.root, 'tests/unit/keep.test.mjs'), 'тест с правкой\n');
+    rmSync(join(repo.root, 'tests/unit/gone.test.mjs'));
+
+    const dir = makeCycleDir(repo.root, { baseSha });
+    const result = runCli(repo.root, ['packet', '--dir', dir]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.ok(stdoutJson(result).files.includes('evidence/integrity.json'));
+
+    const doc = JSON.parse(evidence(dir, 'integrity.json'));
+    assert.deepEqual(doc.test_paths, ['**/*.test.mjs']);
+    assert.deepEqual(doc.protected_paths, ['.pi/harness.config.json']);
+    assert.deepEqual(doc.tests, {
+      added: [],
+      modified: ['tests/unit/keep.test.mjs'],
+      deleted: ['tests/unit/gone.test.mjs'],
+    });
+    assert.deepEqual(doc.protected, {
+      added: ['.pi/harness.config.json'],
+      modified: [],
+      deleted: [],
+    });
+    assert.equal(
+      evidence(dir, 'integrity.json').includes('тест с правкой'),
+      false,
+      'тел файлов нет',
+    );
+  });
+
+  test('чистый дифф при заданных правилах — пустые списки, а не отсутствие файла', (t) => {
+    const { root, baseSha } = makeRepo(t);
+    writeConfig(root, RULES);
+    // Правка вне правил: файл не тест и не защищён.
+    writeFileSync(join(root, 'tracked.txt'), 'base\nchanged\n');
+
+    const dir = makeCycleDir(root, { baseSha });
+    assert.equal(runCli(root, ['packet', '--dir', dir]).status, 0);
+
+    const doc = JSON.parse(evidence(dir, 'integrity.json'));
+    assert.deepEqual(doc.tests, { added: [], modified: [], deleted: [] });
+    // Сам конфиг с правилами — добавленный файл диффа, поэтому в защищённой группе он есть.
+    assert.deepEqual(doc.protected.added, ['.pi/harness.config.json']);
+    assert.deepEqual(doc.protected.modified, []);
+  });
+
+  test('правил нет — файла нет: лишний пустой артефакт выглядел бы как проверка', (t) => {
+    const { root, baseSha } = makeRepo(t);
+    writeConfig(root, { limits: { maxDiffLines: 100 } });
+    writeFileSync(join(root, 'tracked.txt'), 'base\nchanged\n');
+
+    const dir = makeCycleDir(root, { baseSha });
+    const result = runCli(root, ['packet', '--dir', dir]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(stdoutJson(result).files.includes('evidence/integrity.json'), false);
+    assert.equal(existsSync(join(dir, 'evidence', 'integrity.json')), false);
+  });
+
+  test('два прогона дают побайтно одинаковый integrity.json', (t) => {
+    const repo = makeRepo(t);
+    const baseSha = commitFile(repo.root, 'tests/a.test.mjs', 'тест\n');
+    writeConfig(repo.root, RULES);
+    writeFileSync(join(repo.root, 'tests/a.test.mjs'), 'тест с правкой\n');
+
+    const dir = makeCycleDir(repo.root, { baseSha });
+    assert.equal(runCli(repo.root, ['packet', '--dir', dir]).status, 0);
+    const first = evidence(dir, 'integrity.json');
+    assert.equal(runCli(repo.root, ['packet', '--dir', dir]).status, 0);
+    assert.equal(evidence(dir, 'integrity.json'), first);
+  });
+});
+
 describe('рендеринг артефактов', () => {
   test('renderIssue сохраняет тело дословно и завершает файл переводом строки', () => {
     assert.equal(renderIssue('Заголовок', 'тело\n'), '# Заголовок\n\nтело\n');

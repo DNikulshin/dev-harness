@@ -82,6 +82,10 @@
     "candidates": "evals/candidates.json",
     "seedsDir": "evals/orchestrator/seeds"
   },
+  "integrity": {
+    "testPaths": ["**/*.test.ts", "tests"],
+    "protectedPaths": [".pi/harness.config.json", ".pi/agents", ".github/workflows"]
+  },
   "gateTimeouts": {
     "build": 120000,
     "typecheck": 300000,

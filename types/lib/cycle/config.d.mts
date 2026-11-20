@@ -38,6 +38,10 @@ export declare const DEFAULTS: {
         candidates: string;
         seedsDir: string;
     };
+    integrity: {
+        testPaths: never[];
+        protectedPaths: never[];
+    };
     provider: string;
     gateTimeouts: {};
 };
@@ -94,6 +98,16 @@ export type EvalsPaths = {
     candidates: string;
     seedsDir: string;
 };
+export type IntegrityRules = {
+    /**
+     * правила путей тестов
+     */
+    testPaths: readonly string[];
+    /**
+     * правила защищённых файлов
+     */
+    protectedPaths: readonly string[];
+};
 /**
  * Ошибка конфигурации. Код 2 совпадает с кодом выхода CLI: ошибка использования, а не
  * падение инструмента.
@@ -116,6 +130,7 @@ export declare class ConfigError extends Error {
  *   paths: Paths,
  *   evals: EvalsPaths,
  *   qaWeb: { pathPrefixes: readonly string[] },
+ *   integrity: IntegrityRules,
  *   provider: string,
  *   gateTimeouts: Record<string, number>,
  * }>}
@@ -129,6 +144,7 @@ export declare function loadConfig(root: string): Readonly<{
     qaWeb: {
         pathPrefixes: readonly string[];
     };
+    integrity: IntegrityRules;
     provider: string;
     gateTimeouts: Record<string, number>;
 }>;

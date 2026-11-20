@@ -11,6 +11,11 @@
  * в молчаливый дефолт. Тексты ошибок не содержат содержимого файлов, поэтому `.env*` и
  * другие секреты в диагностику не попадают.
  *
+ * Секция `integrity` (#27) — правила путей для контроля целостности проверок: `testPaths`
+ * (файлы тестов) и `protectedPaths` (файлы, которые агент не должен править молча). Правило —
+ * относительный путь или glob с `*` (внутри сегмента) и `**` (через сегменты); правило без
+ * wildcard задевает и всё внутри каталога. Пустая секция — валидное состояние: контроля нет.
+ *
  * Обратная совместимость: гейт со строковым `cmd` (старый формат) разбирается по пробелам,
  * о чём печатается предупреждение в stderr. Новый формат — `executable` + `args`, без
  * оболочки: аргументы не интерполируются.
@@ -61,6 +66,10 @@ export const DEFAULTS = deepFreeze({
     profiles: 'evals/profiles.json',
     candidates: 'evals/candidates.json',
     seedsDir: 'evals/orchestrator/seeds',
+  },
+  integrity: {
+    testPaths: [],
+    protectedPaths: [],
   },
   provider: DEFAULT_PROVIDER,
   gateTimeouts: {},
@@ -113,6 +122,13 @@ export const DEFAULTS = deepFreeze({
  * @property {string} seedsDir
  */
 
+/**
+ * Правила путей контроля целостности: что считать тестами и что — защищённым файлом.
+ * @typedef {object} IntegrityRules
+ * @property {readonly string[]} testPaths правила путей тестов
+ * @property {readonly string[]} protectedPaths правила защищённых файлов
+ */
+
 /** Допустимые секции конфига: всё остальное — ошибка, а не игнор. */
 const SECTIONS = Object.freeze([
   'gates',
@@ -120,6 +136,7 @@ const SECTIONS = Object.freeze([
   'paths',
   'evals',
   'qaWeb',
+  'integrity',
   'provider',
   'gateTimeouts',
 ]);
@@ -146,6 +163,7 @@ const SECTION_FIELDS = Object.freeze({
   ]),
   evals: Object.freeze(['prices', 'profiles', 'candidates', 'seedsDir']),
   qaWeb: Object.freeze(['pathPrefixes']),
+  integrity: Object.freeze(['testPaths', 'protectedPaths']),
 });
 
 /** Поля гейта; `cmd` допускается только для старого формата. */
@@ -342,6 +360,64 @@ function parseQaWeb(value) {
       : stringList(value.pathPrefixes, 'qaWeb.pathPrefixes');
 
   return { pathPrefixes };
+}
+
+/**
+ * Секция `integrity`: правила путей для контроля целостности проверок (#27).
+ * @param {unknown} value
+ * @returns {IntegrityRules}
+ */
+function parseIntegrity(value) {
+  if (!isRecord(value)) {
+    throw new ConfigError('.pi/harness.config.json: integrity — ожидается объект');
+  }
+  assertKnownFields(value, 'integrity', SECTION_FIELDS.integrity);
+
+  return {
+    testPaths:
+      value.testPaths === undefined
+        ? [...DEFAULTS.integrity.testPaths]
+        : pathPatterns(value.testPaths, 'integrity.testPaths'),
+    protectedPaths:
+      value.protectedPaths === undefined
+        ? [...DEFAULTS.integrity.protectedPaths]
+        : pathPatterns(value.protectedPaths, 'integrity.protectedPaths'),
+  };
+}
+
+/**
+ * Список правил путей: массив относительных путей без `..` и пустых сегментов.
+ * @param {unknown} value
+ * @param {string} path
+ * @returns {string[]}
+ */
+function pathPatterns(value, path) {
+  if (!Array.isArray(value)) {
+    throw new ConfigError(`.pi/harness.config.json: ${path} — ожидается массив строк`);
+  }
+  return value.map((item, index) => patternField(item, `${path}[${index}]`));
+}
+
+/**
+ * Правило пути: непустая относительная строка. Завершающий `/` срезается (каталог и
+ * `каталог/` — одно правило), `..`, `.` и пустые сегменты запрещены: правило не должно
+ * уводить сопоставление за пределы репозитория и не должно зависеть от формы записи.
+ * @param {unknown} value
+ * @param {string} path
+ * @returns {string}
+ */
+function patternField(value, path) {
+  const raw = stringField(value, path);
+  const rule = raw.endsWith('/') ? raw.slice(0, -1) : raw;
+  const segments = rule.split('/');
+  const relative = !rule.startsWith('/') && !rule.includes('\\');
+  const clean = segments.every((segment) => segment !== '' && segment !== '.' && segment !== '..');
+  if (!relative || !clean) {
+    throw new ConfigError(
+      `.pi/harness.config.json: ${path} — ожидается относительный путь без «..» и пустых сегментов`,
+    );
+  }
+  return rule;
 }
 
 /**
@@ -559,6 +635,7 @@ function parseGateTimeouts(value, gateIds) {
  *   paths: Paths,
  *   evals: EvalsPaths,
  *   qaWeb: { pathPrefixes: readonly string[] },
+ *   integrity: IntegrityRules,
  *   provider: string,
  *   gateTimeouts: Record<string, number>,
  * }>}
@@ -598,6 +675,7 @@ export function loadConfig(root) {
     paths: doc.paths === undefined ? DEFAULTS.paths : parsePaths(doc.paths),
     evals: doc.evals === undefined ? DEFAULTS.evals : parseEvals(doc.evals),
     qaWeb: doc.qaWeb === undefined ? DEFAULTS.qaWeb : parseQaWeb(doc.qaWeb),
+    integrity: doc.integrity === undefined ? DEFAULTS.integrity : parseIntegrity(doc.integrity),
     provider,
     gateTimeouts:
       doc.gateTimeouts === undefined

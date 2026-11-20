@@ -1,0 +1,14 @@
+{
+  "test_paths": ["**/*.test.mjs", "tests"],
+  "protected_paths": [".pi/harness.config.json", ".pi/agents"],
+  "tests": {
+    "added": [],
+    "modified": ["scripts/lib/cycle/config.test.mjs"],
+    "deleted": ["scripts/lib/cycle/legacy.test.mjs"]
+  },
+  "protected": {
+    "added": [],
+    "modified": [".pi/harness.config.json"],
+    "deleted": []
+  }
+}

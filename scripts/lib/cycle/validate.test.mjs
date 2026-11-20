@@ -7,6 +7,7 @@ import {
   validateEscalation,
   validateEvaluation,
   validateGates,
+  validateIntegrity,
   validateMetrics,
   validateQaWeb,
   validateReview,
@@ -154,6 +155,13 @@ const QA_WEB_INVALID = {
   'qa-web.invalid.step-cache-headers.json': /qa-web\.steps\[0\]\.cache_headers: ожидается строка/,
   'qa-web.invalid.step-cache-headers-missing.json':
     /qa-web\.steps\[1\]\.cache_headers: обязательное поле/,
+};
+
+/** Нарушения `evidence/integrity.json` (#27): по одному на файл. */
+const INTEGRITY_INVALID = {
+  'integrity.invalid.test-paths.json': /integrity\.test_paths: ожидается массив/,
+  'integrity.invalid.tests-missing.json': /integrity\.tests: обязательное поле отсутствует/,
+  'integrity.invalid.path-item.json': /integrity\.tests\.modified\[0\]: ожидается строка/,
 };
 
 /** Нарушения `decision.<n>.json`: по одному на файл. */
@@ -380,6 +388,26 @@ describe('validateQaWeb', () => {
     const doc = { status: 'not_run', reason: 'MCP playwright недоступен', steps: [] };
 
     assert.deepEqual(validateQaWeb(doc), { ok: true, errors: [] });
+  });
+});
+
+describe('validateIntegrity', () => {
+  test('валидный артефакт проходит схему', () => {
+    assert.deepEqual(validateIntegrity(fixture('integrity.valid.json')), { ok: true, errors: [] });
+  });
+
+  test('нарушения схемы ловятся по одному', () => {
+    checkInvalidFixtures(validateIntegrity, INTEGRITY_INVALID);
+  });
+
+  test('пустые списки — валидный артефакт: правок нет', () => {
+    const doc = {
+      test_paths: [],
+      protected_paths: [],
+      tests: { added: [], modified: [], deleted: [] },
+      protected: { added: [], modified: [], deleted: [] },
+    };
+    assert.deepEqual(validateIntegrity(doc), { ok: true, errors: [] });
   });
 });
 
