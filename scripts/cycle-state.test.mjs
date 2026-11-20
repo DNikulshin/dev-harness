@@ -18,7 +18,14 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, test } from 'node:test';
 
-import { claimStaleFile, mandatoryGatesGreen, TRANSITIONS } from './cycle-state.mjs';
+import {
+  ConflictError,
+  TRANSITIONS,
+  claimStaleFile,
+  mandatoryGatesGreen,
+  readStateSnapshot,
+  writeState as writeStateChecked,
+} from './cycle-state.mjs';
 import { validateEscalation, validateState } from './lib/cycle/validate.mjs';
 
 /** Путь к CLI: тесты запускают его как отдельный процесс. */
@@ -2231,6 +2238,101 @@ describe('cycle-state: resume', () => {
       });
       assert.equal(runCli(root, ['resume', '--dir', dir]).status, 3);
     }
+  });
+});
+
+describe('cycle-state: конфликт записи state.json (#33)', () => {
+  /**
+   * Файл цикла во временном репозитории.
+   * @param {import('node:test').TestContext} t
+   * @returns {{ repo: any, dir: string, file: string }}
+   */
+  function cycleFile(t) {
+    const repo = makeRepo(t);
+    const dir = makeCycle(repo.root, { state: stateDoc(repo.baseSha) });
+    return { repo, dir, file: join(dir, 'state.json') };
+  }
+
+  test('снимок в порядке — запись проходит', (t) => {
+    const { repo, dir, file } = cycleFile(t);
+    const snapshot = readStateSnapshot(file);
+
+    writeStateChecked(file, { ...snapshot.state, stage: 'PLAN', stage_status: 'done' }, snapshot);
+
+    assert.equal(stateJson(dir).stage, 'PLAN');
+    assert.equal(stateJson(dir).base_sha, repo.baseSha);
+  });
+
+  test('файл изменился после чтения — код 3 `state_conflict`, файл не тронут', (t) => {
+    const { repo, dir, file } = cycleFile(t);
+    const snapshot = readStateSnapshot(file);
+
+    // «Другая сессия» успела записать переход.
+    const rival = writeState(dir, stateDoc(repo.baseSha, { stage: 'PLAN' }));
+
+    assert.throws(
+      () =>
+        writeStateChecked(
+          file,
+          { ...snapshot.state, stage: 'ESCALATED', stage_status: 'done' },
+          snapshot,
+        ),
+      (error) => error instanceof ConflictError && /state_conflict/.test(error.message),
+    );
+    assert.equal(stateText(dir), rival, 'чужая запись не затёрта');
+    assert.equal(stateJson(dir).stage, 'PLAN');
+  });
+
+  test('файл меняется и в форматировании — это тот же конфликт', (t) => {
+    const { dir, file } = cycleFile(t);
+    const snapshot = readStateSnapshot(file);
+    writeFileSync(file, stateText(dir).replace('"iteration": 1', '"iteration": 1, "note": "x"'));
+
+    assert.throws(
+      () => writeStateChecked(file, { ...snapshot.state, stage: 'PLAN' }, snapshot),
+      (error) => error instanceof ConflictError && /state_conflict/.test(error.message),
+    );
+    assert.match(stateText(dir), /"note"/, 'правка человека сохранена');
+  });
+
+  test('файл исчез после чтения — тоже `state_conflict`', (t) => {
+    const { file } = cycleFile(t);
+    const snapshot = readStateSnapshot(file);
+    rmSync(file);
+
+    assert.throws(
+      () => writeStateChecked(file, { ...snapshot.state, stage: 'PLAN' }, snapshot),
+      (error) => error instanceof ConflictError && /исчез после чтения/.test(error.message),
+    );
+    assert.equal(existsSync(file), false, 'отказ не воскрешает файл');
+  });
+
+  test('снимок `null` создаёт файл, а при существующем — отказ (гонка двух init)', (t) => {
+    const { repo, dir, file } = cycleFile(t);
+    assert.throws(
+      () => writeStateChecked(file, stateDoc(repo.baseSha, { stage: 'PLAN' }), null),
+      (error) => error instanceof ConflictError && /state_conflict/.test(error.message),
+    );
+
+    const fresh = join(repo.root, '.pi', 'artifacts', '2026-11-16-157-fresh');
+    mkdirSync(fresh, { recursive: true });
+    const freshFile = join(fresh, 'state.json');
+    writeStateChecked(freshFile, stateDoc(repo.baseSha), null);
+    assert.equal(JSON.parse(readFileSync(freshFile, 'utf8')).issue, 157);
+    assert.equal(stateJson(dir).stage, 'INIT');
+  });
+
+  test('последовательные мутации CLI работают как раньше', (t) => {
+    const { root, baseSha } = makeRepo(t);
+    const dir = makeCycle(root, { state: stateDoc(baseSha) });
+
+    assert.equal(runCli(root, ['advance', '--dir', dir, '--to', 'PLAN', '--now', LATER]).status, 0);
+    assert.equal(
+      runCli(root, ['finish', '--dir', dir, '--stage', 'PLAN', '--status', 'done']).status,
+      0,
+    );
+    assert.equal(runCli(root, ['advance', '--dir', dir, '--to', 'CODE', '--now', LATER]).status, 0);
+    assert.equal(stateJson(dir).stage, 'CODE');
   });
 });
 

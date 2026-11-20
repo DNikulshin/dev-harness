@@ -278,6 +278,43 @@ export declare function parseArgs(argv: string[]): {
     now: string | null;
 };
 /**
+ * Снимок `state.json`: состояние и текст, из которого оно прочитано (#33).
+ *
+ * Текст нужен писателям: по нему `writeState` видит, что файл изменился между чтением
+ * и записью, и отказывается затирать чужую запись. Сравнение побайтное: любое
+ * изменение файла — основание для отказа, а не только `updated_at` (его скрытое
+ * изменение форматированием было бы незаметно).
+ * @param {string} file
+ * @returns {{ state: Record<string, any>, raw: string }}
+ */
+export declare function readStateSnapshot(file: string): {
+    state: Record<string, any>;
+    raw: string;
+};
+/**
+ * Сверяет файл со снимком (#33). `null` — команда ожидает, что файла ещё нет (`init`).
+ * Экспортируется для команд, которые пишут другие артефакты до `state.json`
+ * (`escalation.json`): сверить до побочной записи значит не оставить документ, который
+ * противоречит состоянию.
+ * @param {string} file
+ * @param {{ raw: string } | null} snapshot
+ * @returns {void}
+ */
+export declare function assertStateUnchanged(file: string, snapshot: {
+    raw: string;
+} | null): void;
+/**
+ * Записывает состояние: сверка со снимком (#33), проверка схемы до записи (мутация не должна
+ * уронить файл) и атомарная запись с сортировкой ключей.
+ * @param {string} file
+ * @param {Record<string, any>} state
+ * @param {{ raw: string } | null} snapshot снимок, прочитанный командой; `null` — файла ещё нет
+ * @returns {void}
+ */
+export declare function writeState(file: string, state: Record<string, any>, snapshot: {
+    raw: string;
+} | null): void;
+/**
  * Забирает устаревший файл у пути, не удаляя его «вслепую». Между осмотром (`statSync`) и
  * снятием файл может быть заменён конкурентным процессом, поэтому удаления по пути нет:
 
