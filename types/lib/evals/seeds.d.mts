@@ -79,6 +79,10 @@ export declare function seedOrder(id: string): number;
 export declare function seedIssueMarkdown(seed: Seed): string;
 /**
  * Текст `evidence/criteria.md`: единственный источник критериев приёмки (§7).
+ *
+ * Формат строки — контракт ядра `CRITERION_LINE` (`lib/cycle/criteria.mjs`): `- C1: текст`,
+ * двоеточие обязательно. Сид, записанный иначе, ядро не разберёт: критериев не найдётся ни
+ * одного, и цикл увидит пустой набор вместо прогона сида (#34).
  * @param {Seed} seed
  * @returns {string}
  */

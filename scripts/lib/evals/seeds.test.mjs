@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { describe, test } from 'node:test';
 
 import { REPO_ONLY } from '../testsupport.mjs';
+import { parseCriteria } from '../cycle/criteria.mjs';
 import {
   loadSeeds,
   readSeed,
@@ -162,6 +163,32 @@ describe('порядок и тексты', () => {
     const result = readSeed(defectSeed());
     assert.ok(result.seed !== null);
     assert.equal(seedIssueMarkdown(result.seed), '# issue\n\nтело\n');
-    assert.equal(seedCriteriaMarkdown(result.seed), '# Критерии приёмки\n\n- C1 критерий\n');
+    assert.equal(seedCriteriaMarkdown(result.seed), '# Критерии приёмки\n\n- C1: критерий\n');
+  });
+
+  test('критерии сида разбираются парсером ядра без потерь', () => {
+    const seed = { ...defectSeed(), criteria: ['первый', 'вто:рой', 'третий'] };
+    const parsed = parseCriteria(seedCriteriaMarkdown(/** @type {any} */ (seed)));
+
+    assert.deepEqual(parsed, [
+      { id: 'C1', text: 'первый' },
+      { id: 'C2', text: 'вто:рой' },
+      { id: 'C3', text: 'третий' },
+    ]);
+  });
+
+  test('формат генератора — контракт ядра, а не литерал: каждый пункт найден', () => {
+    const criteria = Array.from({ length: 12 }, (_, index) => `критерий ${index + 1}`);
+    const parsed = parseCriteria(seedCriteriaMarkdown(/** @type {any} */ ({ criteria })));
+
+    assert.equal(parsed.length, criteria.length, 'ни один критерий не потерян');
+    assert.deepEqual(
+      parsed.map((criterion) => criterion.text),
+      criteria,
+    );
+    assert.deepEqual(
+      parsed.map((criterion) => criterion.id),
+      criteria.map((_, index) => `C${index + 1}`),
+    );
   });
 });

@@ -116,8 +116,8 @@ describe('evals-pack', () => {
 
     // Критерии пронумерованы: на них ссылается оценка.
     const criteria = readFileSync(join(runDir, 'evidence', 'criteria.md'), 'utf8');
-    assert.match(criteria, /- C1 первый критерий/u);
-    assert.match(criteria, /- C2 второй критерий/u);
+    assert.match(criteria, /- C1: первый критерий/u);
+    assert.match(criteria, /- C2: второй критерий/u);
   });
 
   test('кандидат подменяет модель стадии в meta', () => {
