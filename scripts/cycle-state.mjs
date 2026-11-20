@@ -29,10 +29,20 @@
  * лежать в `.pi/artifacts/` (`assertWritableDir`, §4); каталог вне репозитория разрешён —
  * так работают тесты на временных git-репозиториях.
  *
+ * **Обнаружение конфликта записи (#33).** `writeState` получает снимок, который команда
+ * прочитала (`readStateSnapshot`: разобранное состояние плюс текст файла), и перед записью
+ * сверяет текст на диске с этим снимком. Не совпало (другая сессия успела записать), файл
+ * исчез или, наоборот, уже создан при `init` — код 3 с причиной `state_conflict`, файл
+ * остаётся как есть. Это обнаружение, а не предотвращение: блокировки нет, между сверкой
+ * и `rename` окно остаётся. Смысл в том, что last-write-wins больше не молчит — потерянная
+ * заморозка критериев или откат `history` становятся видимыми, а повтор команды перечитывает
+ * состояние и либо применится, либо честно откажет по переходу.
+ *
  * Коды выхода §4: `0` — успех; `2` — ошибка использования или внутренняя (нет/битый
  * `state.json` или `decision.<n>.json`, мусор в аргументах, опечатка в стадии, неизвестная
  * причина эскалации); `3` — конфликт состояния (недопустимый переход, открытый этап,
- * терминальная стадия, живой lock, повторный `init`). Коды `1` (отрицательный результат
+ * терминальная стадия, живой lock, повторный `init`, `state_conflict` — файл изменился между
+ * чтением и записью). Коды `1` (отрицательный результат
  * гейта) и `4` (`diff_too_large`) этим скриптом не используются: он не запускает проверок.
  *
  * Ключевые решения реализации:
@@ -1078,10 +1088,35 @@ function cycleDir(args) {
  * @returns {Record<string, any>}
  */
 function readState(file) {
+  return readStateSnapshot(file).state;
+}
+
+/**
+ * Снимок `state.json`: состояние и текст, из которого оно прочитано (#33).
+ *
+ * Текст нужен писателям: по нему `writeState` видит, что файл изменился между чтением
+ * и записью, и отказывается затирать чужую запись. Сравнение побайтное: любое
+ * изменение файла — основание для отказа, а не только `updated_at` (его скрытое
+ * изменение форматированием было бы незаметно).
+ * @param {string} file
+ * @returns {{ state: Record<string, any>, raw: string }}
+ */
+export function readStateSnapshot(file) {
+  /** @type {string} */
+  let raw;
+  try {
+    raw = readFileSync(file, 'utf8');
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new UsageError(`${FIXED_NAMES.state}: не читается (${file}): ${reason}`, {
+      cause: error,
+    });
+  }
+
   /** @type {unknown} */
   let doc;
   try {
-    doc = readJson(file);
+    doc = JSON.parse(raw);
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     throw new UsageError(`${FIXED_NAMES.state}: не читается (${file}): ${reason}`, {
@@ -1095,17 +1130,59 @@ function readState(file) {
       `${FIXED_NAMES.state}: схема нарушена (${file}):\n${result.errors.join('\n')}`,
     );
   }
-  return /** @type {Record<string, any>} */ (doc);
+  return { state: /** @type {Record<string, any>} */ (doc), raw };
 }
 
 /**
- * Записывает состояние: проверка схемы до записи (мутация не должна уронить файл) и
- * атомарная запись с сортировкой ключей.
+ * Отказ `state_conflict`: снимок, с которым команда пришла, больше не соответствует файлу.
  * @param {string} file
- * @param {Record<string, any>} state
+ * @param {string} detail
+ * @returns {never}
+ */
+function stateConflict(file, detail) {
+  throw new ConflictError(
+    `state_conflict: ${FIXED_NAMES.state} ${detail} (${file}); команда не применена — ` +
+      'повторите её: состояние будет перечитано',
+  );
+}
+
+/**
+ * Сверяет файл со снимком (#33). `null` — команда ожидает, что файла ещё нет (`init`).
+ * Экспортируется для команд, которые пишут другие артефакты до `state.json`
+ * (`escalation.json`): сверить до побочной записи значит не оставить документ, который
+ * противоречит состоянию.
+ * @param {string} file
+ * @param {{ raw: string } | null} snapshot
  * @returns {void}
  */
-function writeState(file, state) {
+export function assertStateUnchanged(file, snapshot) {
+  if (snapshot === null) {
+    if (existsSync(file)) stateConflict(file, 'уже создан другим процессом');
+    return;
+  }
+
+  /** @type {string} */
+  let current;
+  try {
+    current = readFileSync(file, 'utf8');
+  } catch {
+    stateConflict(file, 'исчез после чтения');
+  }
+
+  if (current !== snapshot.raw) stateConflict(file, 'изменён другим процессом после чтения');
+}
+
+/**
+ * Записывает состояние: сверка со снимком (#33), проверка схемы до записи (мутация не должна
+ * уронить файл) и атомарная запись с сортировкой ключей.
+ * @param {string} file
+ * @param {Record<string, any>} state
+ * @param {{ raw: string } | null} snapshot снимок, прочитанный командой; `null` — файла ещё нет
+ * @returns {void}
+ */
+export function writeState(file, state, snapshot) {
+  assertStateUnchanged(file, snapshot);
+
   const result = validateState(state);
   if (!result.ok) {
     throw new UsageError(
@@ -1349,7 +1426,7 @@ function runInit(args, root, config) {
   });
 
   mkdirSync(dir, { recursive: true });
-  writeState(file, state);
+  writeState(file, state, null);
   printJson(state);
   return 0;
 }
@@ -1385,7 +1462,8 @@ function runAdvance(args, root) {
   const dir = cycleDir(args);
   assertWritableDir(dir, root);
   const file = join(dir, FIXED_NAMES.state);
-  const state = readState(file);
+  const snapshot = readStateSnapshot(file);
+  const state = snapshot.state;
   const now = resolveNow(args);
   const names = iterNames(state.iteration);
 
@@ -1403,7 +1481,7 @@ function runAdvance(args, root) {
     },
   });
 
-  writeState(file, next);
+  writeState(file, next, snapshot);
   printJson(next);
   return 0;
 }
@@ -1422,7 +1500,8 @@ function runFinish(args, root) {
   const dir = cycleDir(args);
   assertWritableDir(dir, root);
   const file = join(dir, FIXED_NAMES.state);
-  const state = readState(file);
+  const snapshot = readStateSnapshot(file);
+  const state = snapshot.state;
 
   const next = finishStage(state, {
     stage: args.stage,
@@ -1431,7 +1510,7 @@ function runFinish(args, root) {
     now: resolveNow(args),
   });
 
-  writeState(file, next);
+  writeState(file, next, snapshot);
   printJson(next);
   return 0;
 }
@@ -1449,7 +1528,8 @@ function runApplyDecision(args, root) {
   const dir = cycleDir(args);
   assertWritableDir(dir, root);
   const file = join(dir, FIXED_NAMES.state);
-  const state = readState(file);
+  const snapshot = readStateSnapshot(file);
+  const state = snapshot.state;
   const now = resolveNow(args);
   const names = iterNames(state.iteration);
 
@@ -1488,13 +1568,15 @@ function runApplyDecision(args, root) {
   }
 
   // escalation.json пишется до состояния: state остаётся источником истины, а лишний
-  // документ будет перезаписан следующим запуском.
+  // документ будет перезаписан следующим запуском. Поэтому конфликт сверяется до этой
+  // записи (#33): иначе `escalation.json` от устаревшего снимка переживёт отказ.
+  assertStateUnchanged(file, snapshot);
   if (escalation !== null) {
     writeJsonAtomic(join(dir, FIXED_NAMES.escalation), normalizeDoc(escalation), {
       serialize: serializeArtifact,
     });
   }
-  writeState(file, next);
+  writeState(file, next, snapshot);
   printJson(next);
   return 0;
 }
@@ -1520,7 +1602,8 @@ function runFreezeCriteria(args, root) {
   assertWritableDir(dir, root);
 
   const file = join(dir, FIXED_NAMES.state);
-  const state = readState(file);
+  const snapshot = readStateSnapshot(file);
+  const state = snapshot.state;
   assertNotTerminal(state);
 
   const issuePath = join(dir, 'issue.json');
@@ -1564,7 +1647,7 @@ function runFreezeCriteria(args, root) {
     owner_approved: frozen === null ? state.owner_approved : true,
     updated_at: resolveNow(args),
   };
-  writeState(file, next);
+  writeState(file, next, snapshot);
   printJson(summary);
   return 0;
 }
@@ -1587,7 +1670,8 @@ function runEscalate(args, root) {
   const dir = cycleDir(args);
   assertWritableDir(dir, root);
   const file = join(dir, FIXED_NAMES.state);
-  const state = readState(file);
+  const snapshot = readStateSnapshot(file);
+  const state = snapshot.state;
   const now = resolveNow(args);
 
   const escalation = buildEscalation({
@@ -1599,10 +1683,12 @@ function runEscalate(args, root) {
 
   const next = escalateToState(state, { escalation, now });
 
+  // Сверка до побочной записи (#33): `escalation.json` не должен остаться от устаревшего снимка.
+  assertStateUnchanged(file, snapshot);
   writeJsonAtomic(join(dir, FIXED_NAMES.escalation), normalizeDoc(escalation), {
     serialize: serializeArtifact,
   });
-  writeState(file, next);
+  writeState(file, next, snapshot);
   printJson(next);
   return 0;
 }
