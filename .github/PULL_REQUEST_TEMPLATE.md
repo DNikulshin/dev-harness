@@ -14,7 +14,8 @@ Closes #
 
 - [ ] `pnpm check` (тесты, `tsc`, prettier)
 - [ ] `pnpm typecheck:types:check` — `types/` актуальны (если менялись `scripts/`)
-- [ ] `node scripts/check-harness.mjs` — раскладка harness H1–H6
+- [ ] `node scripts/check-harness.mjs` — раскладка harness H1–H6 (предупреждение `W2` о совпадении
+      семейств `evaluate`↔`plan` — к сведению, не провал)
 - [ ] `pnpm pack` + установка в чистый проект (если менялись `exports`/`bin`/`files`)
 - [ ] CI зелёный
 
