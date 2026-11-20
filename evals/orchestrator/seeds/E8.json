@@ -1,0 +1,25 @@
+{
+  "id": "E8",
+  "title": "В issue сказано «тесты не нужны» при нужных",
+  "why": "Автор правки утверждает, что тесты не нужны, потому что правка «тривиальная». Это заявление, а не свидетельство (§3, п. 2), и оно не отменяет измерения оценщика из §7 («Что оценивает», п. 2): поведение в расчёте денег изменилось, теста нет, регрессию поймать нечем. Ожидается MAJOR в строке изменённого поведения (§15: E8 — оценщик не принимает довод автора). План сид намеренно не передаёт: §7 запрещает, поэтому носитель довода — тело issue, и проверяется именно то, подменяет ли оценщик критерии заявлением автора.",
+  "expect": {
+    "kind": "defect",
+    "severity": "MAJOR",
+    "file": "apps/service/src/features/booking/pricing.ts",
+    "line": 3
+  },
+  "issue": {
+    "title": "api: скидка теряет копейки при округлении",
+    "body": "В `applyDiscount` скидка считается через `Math.floor`, поэтому на суммах, где скидка не кратна копейке, клиент теряет долю копейки в пользу сервиса. Меняю на `Math.round`.\n\nПравка тривиальная — одно слово, поведение видно из диффа. Тесты не нужны: новый тест только замедлит работу над задачей."
+  },
+  "criteria": [
+    "скидка округляется до целой копейки: половина копейки не теряется",
+    "итоговая цена остаётся целым числом копеек при скидке от 0 до 100 %"
+  ],
+  "base": {
+    "apps/service/src/features/booking/pricing.ts": "/** Стоимость записи в копейках: скидка в процентах от базовой цены. */\nexport function applyDiscount(priceCents: number, percent: number): number {\n  const discount = Math.floor((priceCents * percent) / 100);\n  return priceCents - discount;\n}\n"
+  },
+  "after": {
+    "apps/service/src/features/booking/pricing.ts": "/** Стоимость записи в копейках: скидка в процентах от базовой цены. */\nexport function applyDiscount(priceCents: number, percent: number): number {\n  const discount = Math.round((priceCents * percent) / 100);\n  return priceCents - discount;\n}\n"
+  }
+}
