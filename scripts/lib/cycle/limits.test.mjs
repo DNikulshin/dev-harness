@@ -140,7 +140,22 @@ describe('describedLimits / sourceLabel', () => {
   });
 
   test('источники читаются по-русски', () => {
-    assert.match(sourceLabel('config'), /harness\.config\.json/u);
+    assert.match(sourceLabel('config'), /конфиг/u);
     assert.match(sourceLabel('cli'), /CLI/u);
+  });
+
+  test('ошибка лимита из конфига называет фактический путь, а не литерал', () => {
+    assert.throws(
+      () =>
+        resolveLimits({
+          config: { maxDiffLines: 2 },
+          configured: ['maxDiffLines'],
+          env: {},
+          defaults: DEFAULTS.limits,
+          configLabel: 'harness/harness.config.json',
+        }),
+      /harness\/harness\.config\.json/u,
+    );
+    assert.match(sourceLabel('config'), /конфиг/u, 'без пути — нейтральная подпись');
   });
 });

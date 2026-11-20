@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { describe, test } from 'node:test';
 
-import { ConfigError, DEFAULTS, loadConfig } from './config.mjs';
+import { ConfigError, DEFAULTS, loadConfig, takeConfigOption } from './config.mjs';
 import { readPriceSnapshot } from './cost.mjs';
 
 /**
@@ -409,6 +409,151 @@ describe('config: integrity (#27)', () => {
       const root = project(t, doc);
       assert.throws(
         () => loadConfig(root),
+        (error) => error instanceof ConfigError && error.code === 2,
+      );
+    });
+  }
+});
+
+describe('config: путь конфига — граница CLI (ADR 0005, б)', () => {
+  /**
+   * Пишет конфиг по относительному пути внутри корня, создавая каталоги.
+   * @param {string} root
+   * @param {string} target путь от корня
+   * @param {unknown} doc
+   * @returns {void}
+   */
+  function writeAt(root, target, doc) {
+    const file = join(root, ...target.split('/'));
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, `${JSON.stringify(doc, null, 2)}\n`);
+  }
+
+  test('умолчание: путь и метка совпадают с прежним поведением', (t) => {
+    const root = makeRoot(t);
+    writeConfig(root, { provider: 'example-ai/' });
+
+    const config = loadConfig(root);
+
+    assert.equal(config.configFile, '.pi/harness.config.json');
+    assert.equal(config.configPath, join(root, '.pi', 'harness.config.json'));
+    assert.equal(config.provider, 'example-ai/');
+  });
+
+  test('конфиг вне .pi находится по пути, остальные пути берутся из него', (t) => {
+    const root = makeRoot(t);
+    writeAt(root, 'harness/harness.config.json', {
+      provider: 'example-ai/',
+      paths: { agentsDir: 'harness/agents', artifactsDir: 'harness/artifacts' },
+      gates: [GATE],
+    });
+
+    const config = loadConfig(root, { file: 'harness/harness.config.json' });
+
+    assert.equal(config.configFile, 'harness/harness.config.json');
+    assert.equal(config.paths.agentsDir, 'harness/agents');
+    assert.equal(config.paths.artifactsDir, 'harness/artifacts');
+    assert.deepEqual(
+      config.gates.map((gate) => gate.id),
+      ['test'],
+    );
+  });
+
+  test('ошибка в конфиге вне .pi называет этот путь, а не литерал', (t) => {
+    const root = makeRoot(t);
+    writeAt(root, 'harness/harness.config.json', { limits: { maxDiffLine: 10 } });
+
+    assert.throws(
+      () => loadConfig(root, { file: 'harness/harness.config.json' }),
+      (error) => {
+        assert.ok(error instanceof ConfigError);
+        assert.match(error.message, /^harness\/harness\.config\.json: неизвестное поле/u);
+        assert.ok(!error.message.includes('.pi/'), 'литерал умолчания в сообщении не остаётся');
+        return true;
+      },
+    );
+  });
+
+  test('конфиг снаружи корня называется абсолютным путём', (t) => {
+    const root = makeRoot(t);
+    const shared = makeRoot(t);
+    const file = join(shared, 'harness.config.json');
+    writeFileSync(file, '{ "provider": "example-ai/" }\n');
+
+    const config = loadConfig(root, { file });
+
+    assert.equal(config.configPath, file);
+    assert.equal(config.configFile, file, 'путь наружу читателя не спасает: он абсолютный');
+  });
+
+  test('явный путь без файла — ошибка, а не молчаливые дефолты', (t) => {
+    const root = makeRoot(t);
+
+    assert.throws(
+      () => loadConfig(root, { file: 'harness/harness.config.json' }),
+      (error) => {
+        assert.ok(error instanceof ConfigError);
+        assert.equal(error.code, 2);
+        assert.match(error.message, /harness\/harness\.config\.json: файл конфига не найден/u);
+        return true;
+      },
+    );
+    assert.deepEqual(loadConfig(root).gates, [], 'без флага отсутствие файла — валидные дефолты');
+  });
+
+  test('результат заморожен вместе с путём', (t) => {
+    const root = makeRoot(t);
+    const config = loadConfig(root);
+    assert.ok(Object.isFrozen(config));
+  });
+});
+
+describe('takeConfigOption: флаг и переменная окружения', () => {
+  test('--config <file> забирается из argv, остальные аргументы не меняются', () => {
+    const taken = takeConfigOption(
+      ['--dir', 'cycles/1', '--config', 'harness/harness.config.json', '--only', 'test'],
+      {},
+    );
+
+    assert.equal(taken.file, 'harness/harness.config.json');
+    assert.deepEqual(taken.argv, ['--dir', 'cycles/1', '--only', 'test']);
+  });
+
+  test('форма --config=<file> равнозначна', () => {
+    assert.deepEqual(takeConfigOption(['--config=harness.json'], {}), {
+      file: 'harness.json',
+      argv: [],
+    });
+  });
+
+  test('без флага берётся HARNESS_CONFIG, пустая переменная — незаданная', () => {
+    assert.equal(
+      takeConfigOption([], { HARNESS_CONFIG: 'shared/harness.json' }).file,
+      'shared/harness.json',
+    );
+    assert.equal(takeConfigOption([], { HARNESS_CONFIG: '  ' }).file, null);
+    assert.equal(takeConfigOption([], {}).file, null);
+  });
+
+  test('флаг важнее переменной окружения', () => {
+    assert.equal(
+      takeConfigOption(['--config', 'from-flag.json'], { HARNESS_CONFIG: 'from-env.json' }).file,
+      'from-flag.json',
+    );
+  });
+
+  /** @type {[string, string[]][]} */
+  const invalid = [
+    ['флаг без значения', ['--config']],
+    ['пустое значение в форме --config=', ['--config=']],
+    ['значение похоже на флаг', ['--config', '--dir']],
+    ['флаг задан дважды', ['--config', 'a.json', '--config', 'b.json']],
+  ];
+
+  for (const [name, argv] of invalid) {
+    test(`${name} — ошибка с кодом 2`, () => {
+      assert.throws(
+        () => takeConfigOption(argv, {}),
         (error) => error instanceof ConfigError && error.code === 2,
       );
     });

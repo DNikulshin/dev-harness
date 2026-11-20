@@ -79,7 +79,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'nod
 import { normalizeDoc } from './cycle-decide.mjs';
 import { resolveBaseSha } from './cycle-gates.mjs';
 import { isDirectRun } from './lib/cycle/cli.mjs';
-import { DEFAULTS, loadConfig } from './lib/cycle/config.mjs';
+import { DEFAULTS, loadConfig, takeConfigOption } from './lib/cycle/config.mjs';
 import {
   criteriaDigest,
   criteriaMismatch,
@@ -1010,9 +1010,10 @@ export function parseArgs(argv) {
  */
 function main() {
   try {
-    const args = parseArgs(process.argv.slice(2));
+    const cli = takeConfigOption(process.argv.slice(2));
+    const args = parseArgs(cli.argv);
     const root = repoRoot();
-    const config = loadConfig(root);
+    const config = loadConfig(root, { file: cli.file });
     const dir = args.dir === null ? findActiveCycle() : resolve(args.dir);
     assertWritableDir(dir, root);
 
@@ -1029,6 +1030,7 @@ function main() {
       configured: config.limitsExplicit,
       env: process.env,
       defaults: DEFAULTS.limits,
+      configLabel: config.configFile,
     });
     const limitsConfig = /** @type {typeof config} */ ({
       ...config,

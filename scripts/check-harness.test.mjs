@@ -843,6 +843,60 @@ describe('check-harness: профиль раскладки (#80)', () => {
     ]);
   });
 
+  /**
+   * Профиль `harness/**` вместе с конфигом: найти его можно только явным путём.
+   * @param {import('node:test').TestContext} t
+   * @returns {string}
+   */
+  function configOutsideDotPi(t) {
+    const root = customProfile(t);
+    writeFileSync(
+      join(root, 'harness/harness.config.json'),
+      readFileSync(join(root, '.pi/harness.config.json'), 'utf8'),
+    );
+    rmSync(join(root, '.pi/harness.config.json'));
+    return root;
+  }
+
+  test('конфиг вне .pi находится по --config (ADR 0005, б)', (t) => {
+    const root = configOutsideDotPi(t);
+
+    const found = runCli(['--root', root, '--config', 'harness/harness.config.json']);
+    assert.equal(found.code, 0, `профиль из конфига вне .pi: ${found.stdout}${found.stderr}`);
+
+    const ignored = runCli(['--root', root]);
+    assert.equal(ignored.code, 2, 'без флага конфиг не читается: работают умолчания ядра');
+    assert.match(ignored.stderr, /\.pi\/settings\.json — файл не найден/, 'пути умолчаний');
+  });
+
+  test('ошибка в конфиге вне .pi называет фактический путь, а не литерал', (t) => {
+    const root = configOutsideDotPi(t);
+    writeFileSync(
+      join(root, 'harness/harness.config.json'),
+      '{ "limits": { "maxDiffLine": 10 } }\n',
+    );
+
+    const result = runCli(['--root', root, '--config', 'harness/harness.config.json']);
+    assert.equal(result.code, 2);
+    assert.match(
+      result.stderr,
+      /harness\/harness\.config\.json: неизвестное поле limits\.maxDiffLine/,
+    );
+    assert.ok(!result.stderr.includes('.pi/'), 'литерал умолчания в сообщении не остаётся');
+  });
+
+  test('--config без пути и с несуществующим файлом — код 2', (t) => {
+    const root = customProfile(t);
+
+    const noValue = runCli(['--root', root, '--config']);
+    assert.equal(noValue.code, 2);
+    assert.match(noValue.stderr, /--config: ожидается путь к файлу конфига/);
+
+    const missing = runCli(['--root', root, '--config', 'harness/missing.json']);
+    assert.equal(missing.code, 2);
+    assert.match(missing.stderr, /harness\/missing\.json: файл конфига не найден/);
+  });
+
   test('analyzeHarness без профиля работает по умолчаниям ядра', () => {
     const { violations } = analyzeHarness({
       agents: AGENT_NAMES.map((name) => ({ name, file: `.pi/agents/${name}.md`, fields: null })),

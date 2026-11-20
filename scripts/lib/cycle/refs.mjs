@@ -163,7 +163,7 @@ function safeSegments(value) {
 
   const dotPi = segments.indexOf('.pi');
   if (dotPi !== -1 && segments[dotPi + 1] === 'artifacts') {
-    return { problem: `путь в .pi/artifacts/ запрещён: ${value}` };
+    return { problem: `путь в каталог артефактов запрещён: ${value}` };
   }
   if (segments.includes('node_modules')) {
     return { problem: `путь в node_modules/ запрещён: ${value}` };

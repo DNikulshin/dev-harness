@@ -8,7 +8,8 @@
  *
  * Список исключений — это **долг с номерами issue**, а не разрешение. Он обязан только
  * сокращаться: файл, в котором литералов больше нет, краснит тест, пока его не уберут из
- * списка. Так «потом починим» не превращается в «забыли».
+ * списка. Так «потом починим» не превращается в «забыли». Отдельно — `BY_DESIGN`: константы
+ * умолчаний, которые ADR 0005 (г) оставляет литералами намеренно.
  */
 import assert from 'node:assert/strict';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
@@ -23,15 +24,20 @@ const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const SCRIPTS = join(ROOT, 'scripts');
 
 /**
+ * Файлы, где литерал `.pi/` остаётся по решению ADR 0005 (г), а не по долгу: это константы
+ * умолчаний раскладки. Список полон: другой причины держать литерал в коде нет.
+ * @type {Record<string, string>}
+ */
+const BY_DESIGN = Object.freeze({
+  'scripts/lib/cycle/config.mjs': 'значения по умолчанию `DEFAULTS.paths` — ADR 0005, г',
+});
+
+/**
  * Файлы, где литерал `.pi/` пока остаётся, с причиной и номером issue. Список сокращается:
  * записи уходят вместе с задачами, которые эти литералы убирают.
  * @type {Record<string, string>}
  */
 const DEBT = Object.freeze({
-  'scripts/lib/cycle/config.mjs': 'умолчания путей и префикс сообщений об ошибках — #79',
-  'scripts/lib/cycle/limits.mjs': 'сообщение о лимите из конфига — #79',
-  'scripts/lib/cycle/refs.mjs': 'сообщение о пути в артефактах — #79',
-  'scripts/cycle-gates.mjs': 'подсказка «нет секции gates» в конфиге — #79',
   'scripts/harness-init.mjs': 'префикс установки шаблонов и пример конфига — #81',
 });
 
@@ -79,7 +85,7 @@ describe('раскладка: литералы .pi/ в коде', () => {
     for (const file of sources(SCRIPTS)) {
       const literals = codeLiterals(join(ROOT, file));
       if (literals.length === 0) continue;
-      if (DEBT[file] !== undefined) continue;
+      if (DEBT[file] !== undefined || BY_DESIGN[file] !== undefined) continue;
       unexpected.push(`${file}:${literals.join(',')}`);
     }
 
@@ -93,6 +99,13 @@ describe('раскладка: литералы .pi/ в коде', () => {
   test('список долга не гниёт: записи с погашенным литералом убраны', () => {
     const stale = Object.keys(DEBT).filter((file) => codeLiterals(join(ROOT, file)).length === 0);
     assert.deepEqual(stale, [], 'литералов больше нет — уберите файл из списка долга');
+  });
+
+  test('умолчания раскладки остаются литералами: иначе запись протухла', () => {
+    const stale = Object.keys(BY_DESIGN).filter(
+      (file) => codeLiterals(join(ROOT, file)).length === 0,
+    );
+    assert.deepEqual(stale, [], 'литералов умолчаний нет — уберите файл из BY_DESIGN');
   });
 
   test('у каждой записи долга есть номер issue', () => {

@@ -114,12 +114,22 @@ scripts/
 | `refs.mjs`     | `parseRef(str)` и `resolveRef(ref, ctx)`: `path:line`, `path:start-end` (обе границы включительно, начало не больше конца), `gate:<id>`, `qa:<id>`; запрещены абсолютные пути, `..`, `.pi/artifacts/`, `node_modules/`; файл существует, строка не больше числа строк; гейт есть в `gates.<n>.json`; шаг есть в `qa-web.json` со `status = done` |
 | `git.mjs`      | `baseSha()`, `intentToAddUntracked()`, `diffFromBase(base)`, `changedFiles(base)`, `changedFilesWithStatus(base)` (пары `{ path, status }`: `added`/`modified`/`deleted`; `-z`, переименования не разворачиваются), `addedLines(diff)`; все вызовы через `execFileSync('git', …)` |
 | `redact.mjs`   | `redactLog(text)`, `redactQa(obj)`, `scanSecrets(addedLines)` (§5.4, §5.5)                                                                                                                                                                               |
-| `config.mjs`   | определения гейтов, пути-условия, правила `integrity` (что считать тестами и защищёнными файлами), лимиты (`maxDiffLines` 2000 / `maxDiffBytes` 400 КБ, `logMaxBytes` 5 МБ, `evidenceTailLines` 200, `defaultMaxIterations` 2, `maxCycleCostRub` 30 ₽), стартовые тайм-ауты |
-| `limits.mjs`   | `resolveLimits({ config, configured, cli, env, defaults })` — приоритет CLI → env → конфиг → дефолт и источники значений; `checkLimitValue` (диапазоны), `describedLimits` (блок `applied_limits`), `LIMIT_FLAGS`, `envNameFor`. Файлов не читает: конфиг приходит загруженным |
+| `config.mjs`   | определения гейтов, пути-условия, правила `integrity` (что считать тестами и защищёнными файлами), лимиты (`maxDiffLines` 2000 / `maxDiffBytes` 400 КБ, `logMaxBytes` 5 МБ, `evidenceTailLines` 200, `defaultMaxIterations` 2, `maxCycleCostRub` 30 ₽), стартовые тайм-ауты; `loadConfig(root, { file })` — загрузчик со строгой схемой и меткой фактического пути (`configFile`), `takeConfigOption(argv, env)` — граница CLI: `--config`/`HARNESS_CONFIG`, `resolveConfigPath` |
+| `limits.mjs`   | `resolveLimits({ config, configured, cli, env, defaults, configLabel })` — приоритет CLI → env → конфиг → дефолт и источники значений; `checkLimitValue` (диапазоны), `describedLimits` (блок `applied_limits`), `LIMIT_FLAGS`, `envNameFor`. Файлов не читает: конфиг приходит загруженным |
 | `criteria.mjs` | `parseCriteria(md)` — разбор `evidence/criteria.md` (`- C1: …`); `criteriaDigest(criteria)` — `sha256` пар `[id, текст]` в порядке файла; `CRITERIA_FILE`, `CRITERIA_OWNER_APPROVED`. Один разбор на три скрипта: `cycle-evidence`, `cycle-state`, `cycle-decide` |
 | `cost.mjs`     | `normalizeUsage`, `priceUsage`, `priceKeyFor`, `readUsage`, `readPriceSnapshot`, `cycleCostRub`: расход и его стоимость по `usage.json` и `evals/prices.json` — одна формула и для `metrics.json`, и для бюджетного порога                               |
 | `driver.mjs`   | `planStep({ state, artifacts })` — чистая маршрутизация: какой шаг следующий (`run`/`advance`/`finish`/`spawn`/`handoff`/`stop`/`blocked`), какая стадия и почему; `isExecutable`, `describeStep`; журнал решений: `buildJournalEntry`, `mismatchAfter`, `expectedAfter`, `sameAnswer`, `parseJournal`, `summarizeJournal` (§5.3a). Ни файлов, ни процессов, ни моделей: наличие артефактов приходит готовым |
 | `integrity.mjs` | `matchesPath(pattern, path)` — правила путей: `*` внутри сегмента, `**` через сегменты, правило без wildcard задевает и всё вложенное; `classifyIntegrity({ changes, integrity })` — пути из `changedFilesWithStatus` раскладываются по `added`/`modified`/`deleted` раздельно для тестов и защищённых файлов; `integrityConfigured`. Чистые функции: ни файлов, ни git, ни времени |
+
+**Где искать конфиг (ADR 0005, б).** Единственная фиксированная точка раскладки — путь к конфигу.
+По умолчанию это `<root>/.pi/harness.config.json`; другой путь задаётся флагом `--config <file>` или
+переменной окружения `HARNESS_CONFIG`, флаг важнее переменной. Флаг забирает из `argv` граница CLI —
+`takeConfigOption` в `config.mjs`, поэтому остальные парсеры аргументов о нём не знают, а `--config`
+означает одно и то же у всех `bin`, читающих конфиг. Относительный путь считается от корня проекта,
+как и все остальные пути ядра. Явно заданный путь, которого нет на диске, — ошибка с кодом 2, а не
+молчаливые дефолты: иначе опечатка выглядит как «настройки применились». Всё остальное берётся из
+секций конфига, а сообщения об ошибках называют фактический путь (`config.configFile`): ошибка в
+`harness/harness.config.json` не должна отправлять читателя в `.pi/`.
 
 **Источники лимитов (#235).** Шесть лимитов — `maxCycleCostRub`, `defaultMaxIterations`,
 `maxDiffLines`, `maxDiffBytes`, `logMaxBytes`, `evidenceTailLines` — читаются из проектного

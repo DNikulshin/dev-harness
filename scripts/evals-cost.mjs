@@ -35,7 +35,7 @@ import {
   readPrices,
   readProfiles,
 } from './lib/evals/cost.mjs';
-import { loadConfig } from './lib/cycle/config.mjs';
+import { loadConfig, takeConfigOption } from './lib/cycle/config.mjs';
 import { repoRoot } from './lib/cycle/paths.mjs';
 
 /**
@@ -136,9 +136,10 @@ function formatRow(row, baseline) {
  */
 function main() {
   try {
-    const args = parseArgs(process.argv.slice(2));
+    const cli = takeConfigOption(process.argv.slice(2));
+    const args = parseArgs(cli.argv);
     const root = args.root === null ? repoRoot() : resolve(args.root);
-    const config = loadConfig(root);
+    const config = loadConfig(root, { file: cli.file });
 
     const pricesPath = args.prices ?? join(root, config.evals.prices);
     const profilesPath = args.profiles ?? join(root, config.evals.profiles);

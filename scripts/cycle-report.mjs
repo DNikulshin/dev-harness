@@ -38,7 +38,7 @@ import { existsSync, readdirSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
 import { isDirectRun } from './lib/cycle/cli.mjs';
-import { loadConfig } from './lib/cycle/config.mjs';
+import { loadConfig, takeConfigOption } from './lib/cycle/config.mjs';
 import { readJson } from './lib/cycle/io.mjs';
 import { FIXED_NAMES, artifactsDir, repoRoot } from './lib/cycle/paths.mjs';
 import { validateMetrics } from './lib/cycle/validate.mjs';
@@ -590,9 +590,10 @@ export function parseArgs(argv) {
  */
 function main() {
   try {
-    const args = parseArgs(process.argv.slice(2));
+    const cli = takeConfigOption(process.argv.slice(2));
+    const args = parseArgs(cli.argv);
     const root = repoRoot();
-    const config = loadConfig(root);
+    const config = loadConfig(root, { file: cli.file });
     const dir = args.dir === null ? artifactsDir(root, config) : resolve(args.dir);
 
     const names = listCycleDirs(dir);

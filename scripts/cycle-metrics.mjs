@@ -76,7 +76,7 @@ import {
 } from './lib/cycle/cost.mjs';
 import { isDirectRun } from './lib/cycle/cli.mjs';
 import { parseJournal, summarizeJournal } from './lib/cycle/driver.mjs';
-import { DEFAULTS, loadConfig } from './lib/cycle/config.mjs';
+import { DEFAULTS, loadConfig, takeConfigOption } from './lib/cycle/config.mjs';
 import { readJson, writeJsonAtomic } from './lib/cycle/io.mjs';
 import { describedLimits, resolveLimits } from './lib/cycle/limits.mjs';
 import {
@@ -643,9 +643,10 @@ export function resolveCycleDir(root, config = loadConfig(root)) {
  */
 function main() {
   try {
-    const args = parseArgs(process.argv.slice(2));
+    const cli = takeConfigOption(process.argv.slice(2));
+    const args = parseArgs(cli.argv);
     const root = repoRoot();
-    const config = loadConfig(root);
+    const config = loadConfig(root, { file: cli.file });
     const dir = args.dir === null ? resolveCycleDir(root, config) : resolve(args.dir);
 
     const state = readRequiredJson(join(dir, FIXED_NAMES.state), validateState, FIXED_NAMES.state);
@@ -655,6 +656,7 @@ function main() {
       configured: config.limitsExplicit,
       env: process.env,
       defaults: DEFAULTS.limits,
+      configLabel: config.configFile,
     });
 
     const metrics = buildMetrics({

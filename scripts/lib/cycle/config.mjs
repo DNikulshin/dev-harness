@@ -6,6 +6,12 @@
  * умолчанию. Гейтов в дефолтах нет: проект без секции `gates` — валидное состояние,
  * `cycle-gates` сообщает «гейты не заданы» и завершается кодом 2.
  *
+ * «Где конфиг» — единственная фиксированная точка раскладки (ADR 0005, б): по умолчанию
+ * `<root>/<dir>/<name>` из `CONFIG_FILE`, иначе путь из `--config`/`HARNESS_CONFIG`
+ * (граница CLI — `takeConfigOption`). Всё остальное приходит из секций конфига. Сообщения
+ * называют фактический путь (`configFile`), а не литерал: ошибка в
+ * `harness/harness.config.json` не должна отправлять читателя в несуществующий `.pi/`.
+ *
  * Ошибки конфига — `ConfigError` с `code = 2`: неизвестная секция или поле, неверный тип,
  * отрицательное число, пустой `id`, дубли `id`, отсутствующий `executable` не превращаются
  * в молчаливый дефолт. Тексты ошибок не содержат содержимого файлов, поэтому `.env*` и
@@ -23,10 +29,53 @@
  * Shebang не нужен: модуль подключается из CLI-скриптов `cycle-*.mjs` и `evals-*.mjs`.
  */
 import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 /** Имя файла конфигурации относительно корня проекта. */
 export const CONFIG_FILE = Object.freeze({ dir: '.pi', name: 'harness.config.json' });
+
+/** Флаг границы CLI: путь к файлу конфига (ADR 0005, б). */
+export const CONFIG_FLAG = '--config';
+
+/** Переменная окружения для случаев, где флаг передать некуда; флаг важнее её. */
+export const CONFIG_ENV = 'HARNESS_CONFIG';
+
+/**
+ * Метка конфига по умолчанию: путь по умолчанию, собранный из `CONFIG_FILE`, а не литерал.
+ * Она же — стартовое значение `label()`, пока загрузчик не знает фактический путь.
+ * @returns {string}
+ */
+function defaultLabel() {
+  return `${CONFIG_FILE.dir}/${CONFIG_FILE.name}`;
+}
+
+/** Ошибка конфигурации: код 2 у скриптов цикла — ошибка использования, а не падение. */
+export class ConfigError extends Error {
+  /**
+   * @param {string} message
+   */
+  constructor(message) {
+    super(message);
+    this.name = 'ConfigError';
+    this.code = 2;
+  }
+}
+
+/**
+ * Метка файла, который разбирается прямо сейчас: фактический путь конфига в сообщениях.
+ *
+ * Состояние модуля, а не параметр каждой функции разбора: сообщений около тридцати, а
+ * `loadConfig` — единственная точка входа и вызывает разбор синхронно, без реентерабельности
+ * (внутри нет ни `await`, ни повторного `loadConfig`). Прежнее значение возвращается в
+ * `finally`, поэтому вложенный вызов не оставит за собой чужую метку.
+ * @returns {string}
+ */
+function label() {
+  return activeLabel;
+}
+
+/** @type {string} */
+let activeLabel = defaultLabel();
 
 /** Встроенные гейты ядра: единственное значение `builtin`, известное `cycle-gates`. */
 export const BUILTIN_GATES = Object.freeze(['secrets_scan']);
@@ -183,21 +232,6 @@ const GATE_FIELDS = Object.freeze([
 const warned = new Set();
 
 /**
- * Ошибка конфигурации. Код 2 совпадает с кодом выхода CLI: ошибка использования, а не
- * падение инструмента.
- */
-export class ConfigError extends Error {
-  /**
-   * @param {string} message
-   */
-  constructor(message) {
-    super(message);
-    this.name = 'ConfigError';
-    this.code = 2;
-  }
-}
-
-/**
  * Плоский объект: массивы и `null` объектами не считаются.
  * @param {unknown} value
  * @returns {value is Record<string, unknown>} сужает тип вызывающего кода
@@ -228,12 +262,19 @@ function deepFreeze(value) {
 }
 
 /**
- * Читает JSON конфига. Отсутствие файла — не ошибка: работают дефолты.
- * @param {string} file
+ * Читает JSON конфига. Отсутствие файла — не ошибка, пока путь не задан явно: работают
+ * дефолты. Явный путь (`--config`/`HARNESS_CONFIG`) — обещание пользователя, поэтому
+ * отсутствующий файл — ошибка, а не молчаливые дефолты: опечатка в пути иначе выглядит
+ * как «настройки применились».
+ * @param {string} file абсолютный путь к конфигу
+ * @param {boolean} explicit путь задан снаружи (флаг или окружение)
  * @returns {unknown}
  */
-function readConfigFile(file) {
-  if (!existsSync(file)) return null;
+function readConfigFile(file, explicit) {
+  if (!existsSync(file)) {
+    if (!explicit) return null;
+    throw new ConfigError(evalLabel('файл конфига не найден'));
+  }
   const text = readFileSync(file, 'utf8');
   try {
     return JSON.parse(text);
@@ -243,13 +284,85 @@ function readConfigFile(file) {
 }
 
 /**
- * Метка файла для диагностики: относительный путь `.pi/harness.config.json`, без
- * содержимого и без абсолютного пути дерева.
+ * Абсолютный путь конфига и его метка для диагностики.
+ * @param {string} root корень проекта
+ * @param {string|null} file путь из `--config`/окружения (`null` — умолчание)
+ * @returns {{ file: string, label: string }}
+ */
+export function resolveConfigPath(root, file = null) {
+  const absolute =
+    file === null ? join(root, CONFIG_FILE.dir, CONFIG_FILE.name) : resolve(root, file);
+  return { file: absolute, label: displayPath(root, absolute) };
+}
+
+/**
+ * Метка пути для диагностики: путь от корня проекта, если он внутри него, иначе абсолютный.
+ * Умолчание даёт `CONFIG_FILE.dir/CONFIG_FILE.name`, а конфиг снаружи дерева
+ * (`--config ../shared/harness.json`) называется своим абсолютным путём — префикс
+ * `../../` в сообщении читателя не спасает.
+ * @param {string} root корень проекта
+ * @param {string} absolute абсолютный путь
+ * @returns {string}
+ */
+function displayPath(root, absolute) {
+  const rel = relative(root, absolute);
+  const inside = rel !== '' && !rel.startsWith('..') && !isAbsolute(rel);
+  return inside ? rel.split(sep).join('/') : absolute;
+}
+
+/**
+ * Забирает из аргументов CLI флаг `--config <file>` (и его форму `--config=<file>`), а из
+ * окружения — `HARNESS_CONFIG`. Один резолвер на все `bin` (ADR 0005, б): остальные
+ * парсеры аргументов флага не знают и увидят аргументы уже без него.
+ *
+ * Приоритет: флаг важнее окружения — явное действие сильнее настроенной среды. Флаг без
+ * значения, заданный дважды, `--config=` с пустым значением — ошибка с кодом 2, а не
+ * молчаливый откат к умолчанию. Пустой `HARNESS_CONFIG` считается незаданным: пустую
+ * переменную легко получить из окружения, где её выключили.
+ * @param {readonly string[]} [argv] аргументы CLI
+ * @param {Record<string, string|undefined>} [env] окружение
+ * @returns {{ file: string|null, argv: string[] }} путь конфига и аргументы без флага
+ */
+export function takeConfigOption(argv = process.argv.slice(2), env = process.env) {
+  /** @type {string|null} */
+  let file = null;
+  /** @type {string[]} */
+  const rest = [];
+
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index] ?? '';
+    const inline = arg.startsWith(`${CONFIG_FLAG}=`) ? arg.slice(CONFIG_FLAG.length + 1) : null;
+    if (arg !== CONFIG_FLAG && inline === null) {
+      rest.push(arg);
+      continue;
+    }
+    if (file !== null) {
+      throw new ConfigError(`${CONFIG_FLAG}: флаг задан больше одного раза`);
+    }
+    const value = inline ?? argv[index + 1];
+    if (typeof value !== 'string' || value.trim() === '' || value.startsWith('--')) {
+      throw new ConfigError(`${CONFIG_FLAG}: ожидается путь к файлу конфига`);
+    }
+    file = value.trim();
+    if (inline === null) index += 1;
+  }
+
+  if (file !== null) return { file, argv: rest };
+
+  const fromEnv = env[CONFIG_ENV];
+  const envFile = typeof fromEnv === 'string' && fromEnv.trim() !== '' ? fromEnv.trim() : null;
+  return { file: envFile, argv: rest };
+}
+
+/**
+ * Метка файла для диагностики: фактический путь конфига (метка `label()`), без
+ * содержимого файла. Дефолтный конфиг называется относительным путём от корня проекта,
+ * конфиг вне дерева — абсолютным (`displayPath`).
  * @param {string} reason
  * @returns {string}
  */
 function evalLabel(reason) {
-  return `.pi/harness.config.json: ${reason}`;
+  return `${label()}: ${reason}`;
 }
 
 /**
@@ -262,7 +375,7 @@ function evalLabel(reason) {
 function assertKnownFields(section, name, allowed) {
   for (const key of Object.keys(section)) {
     if (!allowed.includes(key)) {
-      throw new ConfigError(`.pi/harness.config.json: неизвестное поле ${name}.${key}`);
+      throw new ConfigError(`${label()}: неизвестное поле ${name}.${key}`);
     }
   }
 }
@@ -276,10 +389,10 @@ function assertKnownFields(section, name, allowed) {
  */
 function numberField(value, path, { positive = true } = {}) {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
-    throw new ConfigError(`.pi/harness.config.json: ${path} — ожидается число`);
+    throw new ConfigError(`${label()}: ${path} — ожидается число`);
   }
   if (value < 0 || (positive && value === 0)) {
-    throw new ConfigError(`.pi/harness.config.json: ${path} — ожидается положительное число`);
+    throw new ConfigError(`${label()}: ${path} — ожидается положительное число`);
   }
   return value;
 }
@@ -293,7 +406,7 @@ function numberField(value, path, { positive = true } = {}) {
  */
 function stringField(value, path, { allowEmpty = false } = {}) {
   if (typeof value !== 'string' || (!allowEmpty && !isText(value))) {
-    throw new ConfigError(`.pi/harness.config.json: ${path} — ожидается непустая строка`);
+    throw new ConfigError(`${label()}: ${path} — ожидается непустая строка`);
   }
   return value;
 }
@@ -307,7 +420,7 @@ function stringField(value, path, { allowEmpty = false } = {}) {
  */
 function parseLimits(value) {
   if (!isRecord(value)) {
-    throw new ConfigError('.pi/harness.config.json: limits — ожидается объект');
+    throw new ConfigError(`${label()}: limits — ожидается объект`);
   }
   assertKnownFields(value, 'limits', SECTION_FIELDS.limits);
 
@@ -327,7 +440,7 @@ function parseLimits(value) {
  */
 function parsePaths(value) {
   if (!isRecord(value)) {
-    throw new ConfigError('.pi/harness.config.json: paths — ожидается объект');
+    throw new ConfigError(`${label()}: paths — ожидается объект`);
   }
   assertKnownFields(value, 'paths', SECTION_FIELDS.paths);
 
@@ -350,7 +463,7 @@ function parsePaths(value) {
  */
 function parseQaWeb(value) {
   if (!isRecord(value)) {
-    throw new ConfigError('.pi/harness.config.json: qaWeb — ожидается объект');
+    throw new ConfigError(`${label()}: qaWeb — ожидается объект`);
   }
   assertKnownFields(value, 'qaWeb', SECTION_FIELDS.qaWeb);
 
@@ -369,7 +482,7 @@ function parseQaWeb(value) {
  */
 function parseIntegrity(value) {
   if (!isRecord(value)) {
-    throw new ConfigError('.pi/harness.config.json: integrity — ожидается объект');
+    throw new ConfigError(`${label()}: integrity — ожидается объект`);
   }
   assertKnownFields(value, 'integrity', SECTION_FIELDS.integrity);
 
@@ -393,7 +506,7 @@ function parseIntegrity(value) {
  */
 function pathPatterns(value, path) {
   if (!Array.isArray(value)) {
-    throw new ConfigError(`.pi/harness.config.json: ${path} — ожидается массив строк`);
+    throw new ConfigError(`${label()}: ${path} — ожидается массив строк`);
   }
   return value.map((item, index) => patternField(item, `${path}[${index}]`));
 }
@@ -414,7 +527,7 @@ function patternField(value, path) {
   const clean = segments.every((segment) => segment !== '' && segment !== '.' && segment !== '..');
   if (!relative || !clean) {
     throw new ConfigError(
-      `.pi/harness.config.json: ${path} — ожидается относительный путь без «..» и пустых сегментов`,
+      `${label()}: ${path} — ожидается относительный путь без «..» и пустых сегментов`,
     );
   }
   return rule;
@@ -427,7 +540,7 @@ function patternField(value, path) {
  */
 function parseEvals(value) {
   if (!isRecord(value)) {
-    throw new ConfigError('.pi/harness.config.json: evals — ожидается объект');
+    throw new ConfigError(`${label()}: evals — ожидается объект`);
   }
   assertKnownFields(value, 'evals', SECTION_FIELDS.evals);
 
@@ -462,23 +575,23 @@ function parseEvals(value) {
 function parseGate(value, index, ids) {
   const path = `gates[${index}]`;
   if (!isRecord(value)) {
-    throw new ConfigError(`.pi/harness.config.json: ${path} — ожидается объект`);
+    throw new ConfigError(`${label()}: ${path} — ожидается объект`);
   }
   assertKnownFields(value, path, GATE_FIELDS);
 
   const id = value.id;
   if (!isText(id)) {
-    throw new ConfigError(`.pi/harness.config.json: ${path}.id — пустой идентификатор`);
+    throw new ConfigError(`${label()}: ${path}.id — пустой идентификатор`);
   }
   if (ids.has(id)) {
-    throw new ConfigError(`.pi/harness.config.json: ${path}.id — дубль ${JSON.stringify(id)}`);
+    throw new ConfigError(`${label()}: ${path}.id — дубль ${JSON.stringify(id)}`);
   }
   ids.add(id);
 
   const builtin = value.builtin ?? null;
   if (builtin !== null && (typeof builtin !== 'string' || !BUILTIN_GATES.includes(builtin))) {
     throw new ConfigError(
-      `.pi/harness.config.json: ${path}.builtin — неизвестная встроенная проверка ${JSON.stringify(builtin)}`,
+      `${label()}: ${path}.builtin — неизвестная встроенная проверка ${JSON.stringify(builtin)}`,
     );
   }
 
@@ -491,24 +604,20 @@ function parseGate(value, index, ids) {
 
   if (builtin !== null) {
     if (value.executable !== undefined || value.args !== undefined || value.cmd !== undefined) {
-      throw new ConfigError(
-        `.pi/harness.config.json: ${path} — builtin не сочетается с executable/args/cmd`,
-      );
+      throw new ConfigError(`${label()}: ${path} — builtin не сочетается с executable/args/cmd`);
     }
   } else if (value.cmd !== undefined) {
     if (value.executable !== undefined || value.args !== undefined) {
-      throw new ConfigError(
-        `.pi/harness.config.json: ${path} — задайте либо cmd, либо executable+args`,
-      );
+      throw new ConfigError(`${label()}: ${path} — задайте либо cmd, либо executable+args`);
     }
     const legacy = stringField(value.cmd, `${path}.cmd`);
     const parts = legacy.split(/\s+/u).filter((part) => part !== '');
     if (parts.length === 0) {
-      throw new ConfigError(`.pi/harness.config.json: ${path}.cmd — пустая команда`);
+      throw new ConfigError(`${label()}: ${path}.cmd — пустая команда`);
     }
     const [head, ...tail] = parts;
     if (head === undefined) {
-      throw new ConfigError(`.pi/harness.config.json: ${path}.cmd — пустая команда`);
+      throw new ConfigError(`${label()}: ${path}.cmd — пустая команда`);
     }
     executable = head;
     args = tail;
@@ -518,7 +627,7 @@ function parseGate(value, index, ids) {
     executable = stringField(value.executable, `${path}.executable`);
     if (value.args !== undefined) {
       if (!Array.isArray(value.args) || value.args.some((arg) => typeof arg !== 'string')) {
-        throw new ConfigError(`.pi/harness.config.json: ${path}.args — ожидается массив строк`);
+        throw new ConfigError(`${label()}: ${path}.args — ожидается массив строк`);
       }
       args = [...value.args];
     }
@@ -528,7 +637,7 @@ function parseGate(value, index, ids) {
   // Явный `null` — ошибка типа, а не повод подставить дефолт: `??` пропустил бы его молча.
   const required = value.required === undefined ? true : value.required;
   if (typeof required !== 'boolean') {
-    throw new ConfigError(`.pi/harness.config.json: ${path}.required — ожидается boolean`);
+    throw new ConfigError(`${label()}: ${path}.required — ожидается boolean`);
   }
 
   const dependsOn = stringList(value.dependsOn, `${path}.dependsOn`);
@@ -536,7 +645,7 @@ function parseGate(value, index, ids) {
 
   const dbGate = value.dbGate === undefined ? false : value.dbGate;
   if (typeof dbGate !== 'boolean') {
-    throw new ConfigError(`.pi/harness.config.json: ${path}.dbGate — ожидается boolean`);
+    throw new ConfigError(`${label()}: ${path}.dbGate — ожидается boolean`);
   }
 
   return { id, executable, args, cmd, builtin, required, dependsOn, pathPrefixes, dbGate };
@@ -551,7 +660,7 @@ function parseGate(value, index, ids) {
 function stringList(value, path) {
   if (value === undefined) return [];
   if (!Array.isArray(value) || value.some((item) => typeof item !== 'string' || item === '')) {
-    throw new ConfigError(`.pi/harness.config.json: ${path} — ожидается массив непустых строк`);
+    throw new ConfigError(`${label()}: ${path} — ожидается массив непустых строк`);
   }
   return [...value];
 }
@@ -579,7 +688,7 @@ function warnLegacy(path, id) {
  */
 function parseGates(value) {
   if (!Array.isArray(value)) {
-    throw new ConfigError('.pi/harness.config.json: gates — ожидается массив');
+    throw new ConfigError(`${label()}: gates — ожидается массив`);
   }
   const ids = new Set();
   const gates = value.map((gate, index) => parseGate(gate, index, ids));
@@ -588,7 +697,7 @@ function parseGates(value) {
     for (const parent of gate.dependsOn) {
       if (!ids.has(parent)) {
         throw new ConfigError(
-          `.pi/harness.config.json: gates (${gate.id}).dependsOn — неизвестный гейт ${parent}`,
+          `${label()}: gates (${gate.id}).dependsOn — неизвестный гейт ${parent}`,
         );
       }
     }
@@ -604,20 +713,18 @@ function parseGates(value) {
  */
 function parseGateTimeouts(value, gateIds) {
   if (!isRecord(value)) {
-    throw new ConfigError('.pi/harness.config.json: gateTimeouts — ожидается объект');
+    throw new ConfigError(`${label()}: gateTimeouts — ожидается объект`);
   }
   /** @type {Record<string, number>} */
   const timeouts = {};
   for (const [id, raw] of Object.entries(value)) {
     if (!gateIds.has(id)) {
       throw new ConfigError(
-        `.pi/harness.config.json: gateTimeouts.${id} — неизвестный гейт (сначала объявите его в gates)`,
+        `${label()}: gateTimeouts.${id} — неизвестный гейт (сначала объявите его в gates)`,
       );
     }
     if (typeof raw !== 'number' || !Number.isInteger(raw) || raw <= 0) {
-      throw new ConfigError(
-        `.pi/harness.config.json: gateTimeouts.${id} — ожидается целое число мс > 0`,
-      );
+      throw new ConfigError(`${label()}: gateTimeouts.${id} — ожидается целое число мс > 0`);
     }
     timeouts[id] = raw;
   }
@@ -628,6 +735,9 @@ function parseGateTimeouts(value, gateIds) {
  * Загружает конфигурацию проекта. Отсутствующий файл даёт `DEFAULTS`; частичные секции
  * дополняются дефолтами. Результат заморожен.
  * @param {string} root корень проекта
+ * @param {{ file?: string|null }} [options] `file` — путь конфига из `--config`/
+ *   `HARNESS_CONFIG` (`null` — умолчание); относительный путь считается от `root`, как и
+ *   все остальные пути ядра
  * @returns {Readonly<{
  *   gates: ReadonlyArray<LoadedGate>,
  *   limits: Limits,
@@ -638,48 +748,60 @@ function parseGateTimeouts(value, gateIds) {
  *   integrity: IntegrityRules,
  *   provider: string,
  *   gateTimeouts: Record<string, number>,
+ *   configFile: string,
+ *   configPath: string,
  * }>}
+ *   `configFile` — метка фактического пути конфига для сообщений (относительно корня или
+ *   абсолютная, если конфиг вне дерева), `configPath` — абсолютный путь.
  */
-export function loadConfig(root) {
-  const file = join(root, CONFIG_FILE.dir, CONFIG_FILE.name);
-  const doc = readConfigFile(file);
-  // Файла нет: все лимиты — дефолты ядра, явно заданных ключей нет.
-  if (doc === null) return deepFreeze({ ...DEFAULTS, limitsExplicit: [] });
-  if (!isRecord(doc)) {
-    throw new ConfigError('.pi/harness.config.json: ожидается объект');
-  }
-
-  for (const key of Object.keys(doc)) {
-    if (!SECTIONS.includes(key)) {
-      throw new ConfigError(`.pi/harness.config.json: неизвестная секция ${key}`);
+export function loadConfig(root, { file = null } = {}) {
+  const resolved = resolveConfigPath(root, file);
+  const previous = activeLabel;
+  activeLabel = resolved.label;
+  try {
+    const doc = readConfigFile(resolved.file, file !== null);
+    const positions = { configFile: resolved.label, configPath: resolved.file };
+    // Файла нет: все лимиты — дефолты ядра, явно заданных ключей нет.
+    if (doc === null) return deepFreeze({ ...DEFAULTS, limitsExplicit: [], ...positions });
+    if (!isRecord(doc)) {
+      throw new ConfigError(`${label()}: ожидается объект`);
     }
+
+    for (const key of Object.keys(doc)) {
+      if (!SECTIONS.includes(key)) {
+        throw new ConfigError(`${label()}: неизвестная секция ${key}`);
+      }
+    }
+
+    const gates = doc.gates === undefined ? DEFAULTS.gates : parseGates(doc.gates);
+    const gateIds = new Set(gates.map((gate) => gate.id));
+    const provider =
+      doc.provider === undefined ? DEFAULTS.provider : stringField(doc.provider, 'provider');
+    if (!provider.endsWith('/')) {
+      throw new ConfigError(`${label()}: provider — ожидается префикс с «/» на конце`);
+    }
+
+    const parsedLimits =
+      doc.limits === undefined
+        ? { limits: DEFAULTS.limits, explicit: /** @type {readonly string[]} */ ([]) }
+        : parseLimits(doc.limits);
+
+    return deepFreeze({
+      gates,
+      limits: parsedLimits.limits,
+      limitsExplicit: parsedLimits.explicit,
+      paths: doc.paths === undefined ? DEFAULTS.paths : parsePaths(doc.paths),
+      evals: doc.evals === undefined ? DEFAULTS.evals : parseEvals(doc.evals),
+      qaWeb: doc.qaWeb === undefined ? DEFAULTS.qaWeb : parseQaWeb(doc.qaWeb),
+      integrity: doc.integrity === undefined ? DEFAULTS.integrity : parseIntegrity(doc.integrity),
+      provider,
+      gateTimeouts:
+        doc.gateTimeouts === undefined
+          ? DEFAULTS.gateTimeouts
+          : parseGateTimeouts(doc.gateTimeouts, gateIds),
+      ...positions,
+    });
+  } finally {
+    activeLabel = previous;
   }
-
-  const gates = doc.gates === undefined ? DEFAULTS.gates : parseGates(doc.gates);
-  const gateIds = new Set(gates.map((gate) => gate.id));
-  const provider =
-    doc.provider === undefined ? DEFAULTS.provider : stringField(doc.provider, 'provider');
-  if (!provider.endsWith('/')) {
-    throw new ConfigError('.pi/harness.config.json: provider — ожидается префикс с «/» на конце');
-  }
-
-  const parsedLimits =
-    doc.limits === undefined
-      ? { limits: DEFAULTS.limits, explicit: /** @type {readonly string[]} */ ([]) }
-      : parseLimits(doc.limits);
-
-  return deepFreeze({
-    gates,
-    limits: parsedLimits.limits,
-    limitsExplicit: parsedLimits.explicit,
-    paths: doc.paths === undefined ? DEFAULTS.paths : parsePaths(doc.paths),
-    evals: doc.evals === undefined ? DEFAULTS.evals : parseEvals(doc.evals),
-    qaWeb: doc.qaWeb === undefined ? DEFAULTS.qaWeb : parseQaWeb(doc.qaWeb),
-    integrity: doc.integrity === undefined ? DEFAULTS.integrity : parseIntegrity(doc.integrity),
-    provider,
-    gateTimeouts:
-      doc.gateTimeouts === undefined
-        ? DEFAULTS.gateTimeouts
-        : parseGateTimeouts(doc.gateTimeouts, gateIds),
-  });
 }
