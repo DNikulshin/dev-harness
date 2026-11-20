@@ -231,7 +231,13 @@ describe('evals-score', () => {
     const report = JSON.parse(readFileSync(join(runsDir, 'report.json'), 'utf8'));
     assert.equal(report.configs.current.counts.invalid, 1);
     assert.equal(report.configs.current.summary.completeness, null);
+    assert.equal(report.verdict, 'insufficient_data');
     assert.match(readFileSync(join(runsDir, 'report.md'), 'utf8'), /Не разобранные ответы/u);
+    assert.match(
+      readFileSync(join(runsDir, 'report.md'), 'utf8'),
+      /Данных для проверки порогов нет/u,
+    );
+    assert.match(result.stdout, /недостаточно данных/u);
   });
 
   test('без прогонов — ошибка данных, код 2', () => {

@@ -20,10 +20,13 @@
  * повторов против плана `--repeat` — в `warnings` (код выхода она не меняет).
  *
  * Пороги §15 — допущения, а не измеренная истина: вердикт `ok` значит «данные не
- * противоречат порогам», а `below_threshold` — повод посмотреть прогоны, а не приговор модели.
+ * противоречат порогам», `below_threshold` — повод посмотреть прогоны, а не приговор модели,
+ * а `insufficient_data` — «проверять было нечего» (правило пред-регистрации
+ * `evals/preregistration.md`: отсутствие данных не выдаётся за выдержанный порог).
  *
- * Коды выхода: `0` — отчёт записан и пороги не нарушены; `1` — отчёт записан, пороги
- * нарушены; `2` — ошибка использования или данных.
+ * Коды выхода: `0` — отчёт записан и пороги не нарушены (в том числе когда мерить нечего
+ * и вердикт — `insufficient_data`); `1` — отчёт записан, пороги нарушены; `2` — ошибка
+ * использования или данных.
  * Shebang нужен: файл запускается напрямую.
  */
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
@@ -288,11 +291,15 @@ function renderLines(report, skipped) {
   for (const warning of report.warnings) lines.push(`  не хватает повторов: ${warning}`);
 
   for (const item of skipped) lines.push(`  пропущено: ${item}`);
-  lines.push(
-    report.failures.length === 0
-      ? `пороги: ok (полнота ≥ ${report.thresholds.completeness}, ложные ≤ ${report.thresholds.false_positive_max})`
-      : `пороги: ниже порога — ${report.failures.join('; ')}`,
-  );
+  if (report.verdict === 'insufficient_data') {
+    lines.push(`пороги: недостаточно данных — ${report.insufficient.join('; ')}`);
+  } else {
+    lines.push(
+      report.failures.length === 0
+        ? `пороги: ok (полнота ≥ ${report.thresholds.completeness}, ложные ≤ ${report.thresholds.false_positive_max})`
+        : `пороги: ниже порога — ${report.failures.join('; ')}`,
+    );
+  }
   return lines;
 }
 
@@ -379,11 +386,16 @@ export function renderMarkdown(report, runs, skipped) {
   }
 
   lines.push('## Вердикт', '');
-  lines.push(
-    report.failures.length === 0
-      ? 'Пороги не нарушены.'
-      : `Ниже порога: ${report.failures.join('; ')}.`,
-  );
+  if (report.verdict === 'insufficient_data') {
+    lines.push('Данных для проверки порогов нет:', '');
+    for (const reason of report.insufficient) lines.push(`- ${reason}`);
+  } else {
+    lines.push(
+      report.failures.length === 0
+        ? 'Пороги не нарушены.'
+        : `Ниже порога: ${report.failures.join('; ')}.`,
+    );
+  }
   lines.push('');
   return lines.join('\n');
 }
