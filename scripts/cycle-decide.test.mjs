@@ -162,6 +162,22 @@ function finding(overrides = {}) {
 }
 
 /**
+ * Шаг `qa-web.json`: нужен тестам решения, где `done` без шагов — уже невалидный файл (#30).
+ * @returns {Record<string, unknown>}
+ */
+function qaStep() {
+  return {
+    id: 's1',
+    url: 'http://127.0.0.1:3003/booking',
+    action: 'Открыть форму',
+    observed: 'Форма отрисована',
+    console_errors: [],
+    failed_requests: [],
+    cache_headers: null,
+  };
+}
+
+/**
  * Критерий оценки.
  * @param {Record<string, unknown>} [overrides]
  * @returns {Record<string, unknown>}
@@ -536,6 +552,31 @@ describe('decide: правило 2c — критерии и дефекты оц�
     assert.deepEqual(unresolved.downgraded, ['C1 [unmet] нет свидетельства']);
     assert.equal(unresolved.unresolved_refs, 1);
   });
+
+  test('ссылка qa:<id> на шаг из not_run не разрешается (#30)', (t) => {
+    const qaDone = decide(
+      inputs(makeWorkspace(t), {
+        qaWeb: { status: 'done', reason: null, steps: [qaStep()] },
+        evaluation: evaluationDoc({
+          criteria: [criterion({ status: 'unmet', evidence: ['qa:s1'] })],
+        }),
+      }),
+    );
+    assert.equal(qaDone.unresolved_refs, 0);
+    assert.equal(qaDone.action, 'REWORK');
+
+    const qaNotRun = decide(
+      inputs(makeWorkspace(t), {
+        // Документ не проходит схему (#30), но resolver не должен давать свидетельств и сам по себе.
+        qaWeb: { status: 'not_run', reason: 'mcp_unavailable', steps: [qaStep()] },
+        evaluation: evaluationDoc({
+          criteria: [criterion({ status: 'unmet', evidence: ['qa:s1'] })],
+        }),
+      }),
+    );
+    assert.deepEqual(qaNotRun.downgraded, ['C1 [unmet] нет свидетельства']);
+    assert.equal(qaNotRun.unresolved_refs, 1);
+  });
 });
 
 describe('decide: partial и вердикт без свидетельств', () => {
@@ -676,8 +717,26 @@ describe('decide: правило 4 — unverified и acquire', () => {
       },
     },
     {
+      name: 'qa-web not_run без причины → reason_missing, а не web-diff',
+      setup: { webDiff: true, qaWeb: { status: 'not_run', reason: null, steps: [] } },
+      expected: {
+        action: 'ACQUIRE_EVIDENCE',
+        unverified: ['qa-web not_run (reason_missing)'],
+        acquire: ['qa-web'],
+      },
+    },
+    {
+      name: 'qa-web not_run с причиной из пробелов → тоже reason_missing',
+      setup: { webDiff: true, qaWeb: { status: 'not_run', reason: '   ', steps: [] } },
+      expected: {
+        action: 'ACQUIRE_EVIDENCE',
+        unverified: ['qa-web not_run (reason_missing)'],
+        acquire: ['qa-web'],
+      },
+    },
+    {
       name: 'qa-web done при web-диффе закрывает проверку',
-      setup: { webDiff: true, qaWeb: { status: 'done', reason: null, steps: [] } },
+      setup: { webDiff: true, qaWeb: { status: 'done', reason: null, steps: [qaStep()] } },
       expected: { action: 'PROCEED', unverified: [], acquire: [] },
     },
     {
@@ -1600,13 +1659,44 @@ describe('CLI: web-дифф и qa-web', () => {
     const dir = makeCycleDir(repo.root, {
       reviewMd: mdBlock(reviewDoc()),
       evaluationMd: mdBlock(evaluationDoc()),
-      qaWeb: { status: 'done', reason: null, steps: [] },
+      qaWeb: { status: 'done', reason: null, steps: [qaStep()] },
     });
 
     const result = runCli(repo.root, ['--dir', dir]);
 
     assert.equal(result.status, 0, result.stderr);
     assert.equal(JSON.parse(result.stdout).action, 'PROCEED');
+  });
+
+  test('qa-web done без шагов — отказ схемы (код 2), а не «проверено»', (t) => {
+    const repo = makeRepo(t);
+    writeRepoFile(repo.root, 'apps/frontend/app/page.tsx', 3);
+    const dir = makeCycleDir(repo.root, {
+      reviewMd: mdBlock(reviewDoc()),
+      evaluationMd: mdBlock(evaluationDoc()),
+      qaWeb: { status: 'done', reason: null, steps: [] },
+    });
+
+    const result = runCli(repo.root, ['--dir', dir]);
+
+    assert.equal(result.status, 2);
+    assert.match(result.stderr, /qa-web\.steps: status "done" требует хотя бы один шаг/);
+    assert.equal(existsSync(join(dir, 'decision.1.json')), false);
+  });
+
+  test('qa-web not_run без причины — отказ схемы (код 2)', (t) => {
+    const repo = makeRepo(t);
+    writeRepoFile(repo.root, 'apps/frontend/app/page.tsx', 3);
+    const dir = makeCycleDir(repo.root, {
+      reviewMd: mdBlock(reviewDoc()),
+      evaluationMd: mdBlock(evaluationDoc()),
+      qaWeb: { status: 'not_run', reason: null, steps: [] },
+    });
+
+    const result = runCli(repo.root, ['--dir', dir]);
+
+    assert.equal(result.status, 2);
+    assert.match(result.stderr, /qa-web\.reason: status "not_run" требует причину/);
   });
 
   test('битый qa-web.json — отказ (код 2)', (t) => {

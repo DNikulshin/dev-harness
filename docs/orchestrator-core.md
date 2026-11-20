@@ -111,7 +111,7 @@ scripts/
 | `paths.mjs`    | корень репо; каталог артефактов; имена файлов с номером итерации (`plan.<n>.md` …); поиск активного цикла (единственный каталог со `stage` ≠ `DONE`/`ESCALATED`, иначе ошибка)                                                                           |
 | `io.mjs`       | `readJson`, `writeJsonAtomic`, `tail(file, lines)`, `extractLastJsonBlock(md)` (последний блок ```json, `JSON.parse`; нет блока — ошибка)                                                                                                                |
 | `validate.mjs` | валидаторы `state`, `gates`, `review`, `evaluation`, `qaWeb`, `integrity`, `decision`; возвращают `{ ok, errors[] }`; перечисления и обязательные поля — Приложение A |
-| `refs.mjs`     | `parseRef(str)` и `resolveRef(ref, ctx)`: `path:line`, `path:start-end` (обе границы включительно, начало не больше конца), `gate:<id>`, `qa:<id>`; запрещены абсолютные пути, `..`, `.pi/artifacts/`, `node_modules/`; файл существует, строка не больше числа строк; гейт есть в `gates.<n>.json`; шаг есть в `qa-web.json` |
+| `refs.mjs`     | `parseRef(str)` и `resolveRef(ref, ctx)`: `path:line`, `path:start-end` (обе границы включительно, начало не больше конца), `gate:<id>`, `qa:<id>`; запрещены абсолютные пути, `..`, `.pi/artifacts/`, `node_modules/`; файл существует, строка не больше числа строк; гейт есть в `gates.<n>.json`; шаг есть в `qa-web.json` со `status = done` |
 | `git.mjs`      | `baseSha()`, `intentToAddUntracked()`, `diffFromBase(base)`, `changedFiles(base)`, `changedFilesWithStatus(base)` (пары `{ path, status }`: `added`/`modified`/`deleted`; `-z`, переименования не разворачиваются), `addedLines(diff)`; все вызовы через `execFileSync('git', …)` |
 | `redact.mjs`   | `redactLog(text)`, `redactQa(obj)`, `scanSecrets(addedLines)` (§5.4, §5.5)                                                                                                                                                                               |
 | `config.mjs`   | определения гейтов, пути-условия, правила `integrity` (что считать тестами и защищёнными файлами), лимиты (`maxDiffLines` 2000 / `maxDiffBytes` 400 КБ, `logMaxBytes` 5 МБ, `evidenceTailLines` 200, `defaultMaxIterations` 2, `maxCycleCostRub` 30 ₽), стартовые тайм-ауты |
@@ -394,6 +394,8 @@ node scripts/cycle-decide.mjs --dir D [--iteration N]
 4. Нет блокеров. unverified = required-гейты not_run (кроме no_database) ∪ web-дифф без qa-web done
                               ∪ критерии unverified ∪ evaluation.unverified
                               ∪ факты integrity (§5.4, #36)
+   (у `qa-web not_run (<reason>)`: `reason` из файла, `web-diff` — файла нет,
+   `reason_missing` — причина пуста, #30)
    unverified ≠ ∅:
      есть исполнимое (required-гейт not_run не по no_database; QA не выполнен при web-диффе;
      правка защищённых файлов или удаление теста) и retries.evidence < 1
@@ -814,6 +816,8 @@ A1–A9 статически; запуск `node --test` и `gh` остаётс�
 `unverified[]`: `{ what, why, how_to_verify }`.
 
 **qa-web.json**: `status ∈ {done, not_run}`, `reason`, `steps[]`: `{ id, url, action, observed, console_errors[], failed_requests[], cache_headers }`.
+Связка полей проверяется схемой (#30): `done` требует хотя бы один шаг, `not_run` — непустой
+`reason` и пустой `steps`; шаг `not_run` ссылкой `qa:<id>` не разрешается.
 
 **evidence/integrity.json** (#27): `{ test_paths[], protected_paths[], tests, protected }`, где
 `tests` и `protected` — `{ added[], modified[], deleted[] }` с непустыми строками-путями;

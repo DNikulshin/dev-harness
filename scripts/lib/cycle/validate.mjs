@@ -894,6 +894,10 @@ function validateQaStep(item, path, errors) {
 
 /**
  * `qa-web.json` — сырые данные браузерной проверки (`docs/qa-web.md`).
+ *
+ * Кроме типов проверяется связка `status` ↔ `steps` ↔ `reason` (issue #30): без неё
+ * `{"status": "done", "steps": []}` закрывал QA без единого свидетельства, а `not_run`
+ * с непустыми шагами разрешал ссылки `qa:<id>` на невыполненную проверку.
  * @param {unknown} doc
  * @returns {ValidationResult}
  */
@@ -909,6 +913,28 @@ export function validateQaWeb(doc) {
     str(value, valuePath, errs);
   });
   reqList(doc, 'steps', 'qa-web', errors, validateQaStep);
+
+  // Связка полей — только там, где поля уже прошли проверку типа: иначе один дефект
+  // печатался бы дважды и под чужим правилом (как H2/H4 в check-harness).
+  const stepCount = Array.isArray(doc.steps) ? doc.steps.length : null;
+  if (doc.status === 'done' && stepCount === 0) {
+    errors.push(
+      'qa-web.steps: status "done" требует хотя бы один шаг — без шагов проверка не выполнялась',
+    );
+  }
+
+  if (doc.status === 'not_run') {
+    if (stepCount !== null && stepCount > 0) {
+      errors.push(
+        `qa-web.steps: status "not_run" требует пустой steps, получено шагов: ${stepCount}`,
+      );
+    }
+    if (doc.reason === undefined || doc.reason === null) {
+      errors.push('qa-web.reason: status "not_run" требует причину');
+    } else if (typeof doc.reason === 'string' && doc.reason.trim() === '') {
+      errors.push('qa-web.reason: status "not_run" требует непустую причину');
+    }
+  }
 
   return { ok: errors.length === 0, errors };
 }

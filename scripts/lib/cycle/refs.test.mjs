@@ -40,7 +40,8 @@ function makeRoot(t) {
 }
 
 const GATES = { gates: [{ id: 'typecheck' }, { id: 'secrets_scan' }] };
-const QA = { steps: [{ id: 's1' }, { id: 's2' }] };
+/** `qa-web.json` со статусом `done` — единственный, что даёт свидетельства (#30). */
+const QA = { status: 'done', steps: [{ id: 's1' }, { id: 's2' }] };
 
 /**
  * Создаёт символическую ссылку. Там, где их создать нельзя (Windows без прав), тест
@@ -350,6 +351,21 @@ describe('resolveRef: gate и qa', () => {
       resolveRef('qa:s2', { root: '/', qa: null }).error ?? '',
       /qa-web\.json не передан/,
     );
+  });
+
+  test('шаг из not_run не разрешается: проверки не было', () => {
+    const qa = { status: 'not_run', reason: 'mcp_unavailable', steps: [{ id: 's1' }] };
+    const result = resolveRef('qa:s1', { root: '/', qa });
+
+    assert.equal(result.ok, false);
+    assert.match(result.error ?? '', /qa-web\.json не выполнен \(status not_run\)/);
+  });
+
+  test('без status ссылка не разрешается: невалидный файл не даёт свидетельств', () => {
+    const result = resolveRef('qa:s1', { root: '/', qa: { steps: [{ id: 's1' }] } });
+
+    assert.equal(result.ok, false);
+    assert.match(result.error ?? '', /qa-web\.json не выполнен \(status не задан\)/);
   });
 
   test('нераспознанная ссылка возвращает отказ, а не исключение', () => {

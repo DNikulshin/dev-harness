@@ -3,7 +3,8 @@
  *
  * Формы: `path:line` (файл репозитория и номер строки), `path:start-end` (диапазон строк
  * того же файла, обе границы включительно), `gate:<id>` (гейт из `gates.<n>.json`),
- * `qa:<id>` (шаг из `qa-web.json`). Ссылки приходят из вывода агентов, поэтому разрешение
+ * `qa:<id>` (шаг из `qa-web.json`; только при `status = done` — шаг невыполненной проверки
+ * свидетельством не считается, issue #30). Ссылки приходят из вывода агентов, поэтому разрешение
  * защитное: абсолютные пути, `..`, `.pi/artifacts/`, `node_modules/` и `.env*`
  * (кроме `.env.example`) запрещены, файл должен существовать, строка (обе границы
  * диапазона) — попадать в файл. Диапазон разрешается по началу: счётчики §5.6 и понижение
@@ -362,7 +363,12 @@ function resolveGate(base, parsed, ctx) {
 }
 
 /**
- * `qa:<id>`: шаг есть в переданном `qa-web.json`.
+ * `qa:<id>`: шаг есть в переданном `qa-web.json`, а сама проверка выполнена.
+ *
+ * `status` читается (issue #30): шаг из `not_run` — не свидетельство, а запись о том,
+ * что проверки не было. Раньше ссылка разрешалась, и находка могла опереться на
+ * невыполненную проверку. Отсутствующий `status` — тоже отказ: невалидный документ
+ * не должен давать свидетельств (fail-closed).
  * @param {RefResolution} base
  * @param {ParsedRef} parsed
  * @param {RefContext} ctx
@@ -372,6 +378,16 @@ function resolveQa(base, parsed, ctx) {
   const qa = ctx ? ctx.qa : null;
   if (qa === null || qa === undefined) {
     return fail(base, parsed, `qa-web.json не передан: ссылка qa:${parsed.value} неразрешима`);
+  }
+
+  const status = isRecord(qa) ? qa.status : undefined;
+  if (status !== 'done') {
+    const shown = typeof status === 'string' && status !== '' ? status : 'не задан';
+    return fail(
+      base,
+      parsed,
+      `qa-web.json не выполнен (status ${shown}): ссылка qa:${parsed.value} не свидетельство`,
+    );
   }
 
   const steps = isRecord(qa) && Array.isArray(qa.steps) ? qa.steps : null;

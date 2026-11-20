@@ -155,6 +155,12 @@ const QA_WEB_INVALID = {
   'qa-web.invalid.step-cache-headers.json': /qa-web\.steps\[0\]\.cache_headers: ожидается строка/,
   'qa-web.invalid.step-cache-headers-missing.json':
     /qa-web\.steps\[1\]\.cache_headers: обязательное поле/,
+  // Связка status ↔ steps ↔ reason (#30).
+  'qa-web.invalid.done-no-steps.json': /qa-web\.steps: status "done" требует хотя бы один шаг/,
+  'qa-web.invalid.not-run-with-steps.json':
+    /qa-web\.steps: status "not_run" требует пустой steps, получено шагов: 1/,
+  'qa-web.invalid.not-run-blank-reason.json':
+    /qa-web\.reason: status "not_run" требует непустую причину/,
 };
 
 /** Нарушения `evidence/integrity.json` (#27): по одному на файл. */
@@ -388,6 +394,40 @@ describe('validateQaWeb', () => {
     const doc = { status: 'not_run', reason: 'MCP playwright недоступен', steps: [] };
 
     assert.deepEqual(validateQaWeb(doc), { ok: true, errors: [] });
+  });
+
+  test('not_run без причины отвергается: null и пустая строка', () => {
+    for (const reason of [null, '']) {
+      const result = validateQaWeb({ status: 'not_run', reason, steps: [] });
+      assert.equal(result.ok, false);
+      assert.match(result.errors.join('\n'), /qa-web\.reason: status "not_run" требует/);
+    }
+  });
+
+  test('done без шагов отвергается: свидетельств нет', () => {
+    const result = validateQaWeb({ status: 'done', reason: null, steps: [] });
+
+    assert.equal(result.ok, false);
+    assert.deepEqual(result.errors, [
+      'qa-web.steps: status "done" требует хотя бы один шаг — без шагов проверка не выполнялась',
+    ]);
+  });
+
+  test('done с шагом и not_run с причиной — две допустимые комбинации', () => {
+    const step = fixture('qa-web.valid.json').steps[0];
+
+    assert.equal(validateQaWeb({ status: 'done', reason: null, steps: [step] }).ok, true);
+    assert.equal(validateQaWeb({ status: 'not_run', reason: 'нет стенда', steps: [] }).ok, true);
+  });
+
+  test('битые status/steps не дают второго сообщения о связке', () => {
+    const result = validateQaWeb({ status: 'maybe', reason: null, steps: 'нет' });
+
+    assert.equal(result.ok, false);
+    assert.deepEqual(result.errors, [
+      'qa-web.status: ожидается одно из done|not_run, получено "maybe"',
+      'qa-web.steps: ожидается массив, получено "нет"',
+    ]);
   });
 });
 
