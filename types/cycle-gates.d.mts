@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { Transform } from 'node:stream';
 export type GateOutcome = {
     /**
      * итог запуска
@@ -116,6 +117,19 @@ export declare function trimLog(file: string, maxBytes?: number): boolean;
  * @returns {NodeJS.ProcessEnv} окружение для `spawn`
  */
 export declare function gateEnv(base?: NodeJS.ProcessEnv): NodeJS.ProcessEnv;
+/**
+ * Поток маскирования вывода гейта (§5.4, §5.5): `redactLog` применяется до записи в файл,
+ * поэтому секрет из stdout/stderr не оказывается на диске даже на время.
+ *
+ * Pipe отдаёт данные кусками, поэтому текст копится до последнего перевода строки, а
+ * необработанный хвост ждёт следующего куска или `flush`: иначе секрет, разрезанный между
+ * двумя кусками, ни одному шаблону не подошёл бы. Шаблоны `redactLog` не переходят через
+ * `\n`, так что маскирование готового блока целиком эквивалентно построчному, а нумерация
+ * строк сохраняется — §5.4 требует именно этого. `StringDecoder` не даёт разрезать
+ * многобайтовый символ на границе куска.
+ * @returns {Transform} поток маскирования
+ */
+export declare function createRedactStream(): Transform;
 /**
  * Полный прогон: план, последовательное выполнение, зависимости и записи гейтов.
  * Чистая относительно файловой системы — пишет только `secrets_scan` и (через `runner`)

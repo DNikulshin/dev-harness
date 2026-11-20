@@ -17,6 +17,7 @@ import { describe, test } from 'node:test';
 
 import {
   classifyTestIntLog,
+  createRedactStream,
   exitCode,
   gateEnv,
   isGateApplicable,
@@ -726,6 +727,87 @@ describe('cycle-gates: лог и тайм-аут', () => {
 
     assert.equal(trimLog(file), false);
     assert.equal(readFileSync(file, 'utf8'), 'строка\n');
+  });
+
+  test('createRedactStream маскирует секрет, разрезанный между кусками', async () => {
+    const stream = createRedactStream();
+    /** @type {string[]} */
+    const chunks = [];
+    stream.on('data', (chunk) => chunks.push(String(chunk)));
+    const done = new Promise((resolveDone, rejectDone) => {
+      stream.on('end', resolveDone);
+      stream.on('error', rejectDone);
+    });
+
+    // Секрет разрезан ровно там, где шаблон `authorization` ещё не совпадает целиком:
+    // без буферизации по строке значение уцелело бы в логе.
+    const prefix = 'authorization: Bearer ';
+    stream.write(prefix.slice(0, 10));
+    stream.write(`${prefix.slice(10)}${SAMPLE.value}`);
+    stream.write('\nследующая строка');
+    // Многобайтовый символ тоже разрезан, но по байтам, а не по символам.
+    const multibyte = Buffer.from('\nкириллица\n', 'utf8');
+    stream.write(multibyte.subarray(0, 4));
+    stream.write(multibyte.subarray(4));
+    stream.end();
+
+    await done;
+    const text = chunks.join('');
+
+    assert.equal(text, 'authorization: [secret]\nследующая строка\nкириллица\n');
+    assert.equal(text.split('\n').length, 4, 'нумерация строк не съехала');
+  });
+
+  test('вывод гейта попадает в лог уже маскированным', async (t) => {
+    const dir = makeCycleDir(t);
+    const script = join(dir, 'leaky.mjs');
+    // Образцы собираются из частей: цельная секретоподобная строка в тестовом коде стала бы
+    // находкой `secrets_scan` на самом диффе. Значения вымышленные (§ПДн).
+    const leaked = ['Zx9', 'gate', 'log', '0000'].join('-');
+    writeFileSync(
+      script,
+      [
+        'const token = process.env.PROBE_TOKEN;',
+        "process.stdout.write('authorization: Bearer ' + token.slice(0, 4));",
+        'setTimeout(() => {',
+        "  process.stdout.write(token.slice(4) + '\\n');",
+        "  console.log('клиент +7 (900) 000-00-00, ok');",
+        "  console.error('строка без секретов: ok');",
+        '}, 50);',
+        '',
+      ].join('\n'),
+    );
+
+    const definitions = [
+      {
+        id: 'leaky_gate',
+        cmd: `${process.execPath} ${script}`,
+        required: true,
+        dependsOn: [],
+        pathPrefixes: [],
+      },
+    ];
+
+    const previous = process.env.PROBE_TOKEN;
+    process.env.PROBE_TOKEN = leaked;
+    t.after(() => {
+      if (previous === undefined) delete process.env.PROBE_TOKEN;
+      else process.env.PROBE_TOKEN = previous;
+    });
+
+    const run = await runGates({ definitions, iteration: 1, dir, runner: undefined });
+    const entry = run.gates[0];
+    assert.ok(entry, 'запись гейта есть');
+    assert.equal(entry.status, 'pass');
+    assert.equal(entry.log, 'gates/leaky_gate.1.log');
+
+    const text = readFileSync(join(dir, entry.log), 'utf8');
+    assert.ok(!text.includes(leaked), 'значение секрета не попало на диск');
+    assert.ok(!text.includes('+7 (900) 000-00-00'), 'телефон замаскирован');
+    assert.match(text, /authorization: \[secret\]/, 'ключ сохранён, значение заменено');
+    assert.match(text, /клиент \[phone\], ok/, 'остальной текст строки на месте');
+    assert.match(text, /строка без секретов: ok/, 'stderr идёт в тот же лог');
+    assert.equal(text.split('\n').filter((line) => line !== '').length, 3, 'число строк прежнее');
   });
 
   test('тайм-аут завершает процесс и его потомков: fail с причиной timeout', async (t) => {
