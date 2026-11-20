@@ -9,6 +9,10 @@
   "engines": {
     "node": ">=26.13 <27"
   },
+  "os": [
+    "linux",
+    "darwin"
+  ],
   "keywords": [
     "harness",
     "agent-workflow",
