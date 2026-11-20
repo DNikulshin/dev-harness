@@ -55,6 +55,7 @@ git-URL потребует настроенного доступа `git`/`gh` н
 | `harness-cycle-pr-body`                             | `scripts/cycle-pr-body.mjs`  |
 | `harness-cycle-usage`                               | `scripts/cycle-usage.mjs`    |
 | `harness-check-layout`                              | `scripts/check-harness.mjs`  |
+| `harness-init`                                      | `scripts/harness-init.mjs`   |
 | `harness-evals-collect`, `-cost`, `-pack`, `-score` | `scripts/evals-*.mjs`        |
 | `harness-selftest`                                  | `scripts/selftest.mjs`       |
 
@@ -71,18 +72,41 @@ import { runGates } from '@dnikulshin/harness/scripts/cycle-gates';
 import { loadConfig } from '@dnikulshin/harness/scripts/lib/cycle/config';
 ```
 
-### Что проект приносит себе сам
+### Установка шаблонов в проект (`harness init`)
 
-Политика остаётся проектной: шаблоны ролей и промпта копируются из пакета и адаптируются под проект,
+Политика остаётся проектной: шаблоны ролей и промпта ставятся из пакета и адаптируются под проект,
 конфиг собирается из примера. Копия ядра при этом не появляется — `scripts/` в проекте пуст по
 отношению к циклу.
+
+```bash
+pnpm harness-init            # установить и проверить раскладку
+pnpm harness-init --check    # только отчёт: что устарело, что правили локально
+pnpm harness-init --dry-run  # план без записи
+pnpm harness-init --force    # перезаписать файлы, которые правили руками
+```
 
 | Что берётся из пакета                               | Куда в проекте                            |
 | --------------------------------------------------- | ----------------------------------------- |
 | `templates/.pi/agents/*.md`                         | `.pi/agents/` (и адаптировать под проект) |
 | `templates/.pi/prompts/cycle.md`                    | `.pi/prompts/cycle.md`                    |
 | `templates/.pi/harness.config.example.json`         | `.pi/harness.config.json`                 |
-| `docs/orchestrator-core.md`, `docs/orchestrator.md` | `docs/`                                   |
+| `docs/orchestrator-core.md`, `docs/orchestrator.md` | `docs/` (копируются вручную)              |
+
+Кроме шаблонов команда создаёт `.pi/settings.json` с `subagents.maxSubagentSpawnsPerRun` (H5), если
+файла нет, — существующий не меняется, но нарушение печатается; и `.pi/harness.version` — версию
+пакета с `sha256` каждого установленного файла. Дальше она сверяет раскладку тем же кодом, что
+`check-harness`, и печатает, что осталось поправить под проект (`AGENTS.md`, гейты, модели): свежий
+шаблон проекта не знает, и «осталось поправить» — подсказка, а не провал установки.
+
+Коды выхода: `0` — план выполнен (в том числе «уже актуально»); `1` — есть расхождения, которые
+команда не правила (локальные правки без `--force`, дрейф в `--check`); `2` — ошибка использования
+или чтения.
+
+**Версия шаблонов и миграции.** `.pi/harness.version` помнит дайджесты того, что поставили, поэтому
+обновление пакета не затирает работу проекта: файл, чей дайджест совпал с записанным, локально не
+правили — его можно обновить; не совпал — правили, и перезапись только по `--force`. Конфиг проекта
+(`.pi/harness.config.json`) после создания не обновляется никогда: это политика, а не шаблон. Файлы,
+которых больше нет в шаблонах, не удаляются — команда о них сообщает.
 
 Готовые файлы лежат в `node_modules/@dnikulshin/harness/`; ядро не импортирует проектные модули.
 
