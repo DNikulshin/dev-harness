@@ -280,7 +280,48 @@ describe('buildReport', () => {
     assert.equal(report.configs.a.summary.misses, 0);
     assert.equal(report.configs.a.summary.completeness, null);
     assert.equal(report.configs.a.by_seed.E5.union, 'invalid');
+    assert.equal(report.verdict, 'insufficient_data');
+    assert.match(report.insufficient.join('\n'), /не вычисляются/u);
+  });
+
+  test('недобор повторов по всем ячейкам — insufficient_data, хотя данные есть', () => {
+    const report = buildReport({
+      seeds,
+      thresholds,
+      runs: [
+        { config: 'a', seed: 'E5', stage: 'review', status: 'hit', repeat: 3 },
+        { config: 'a', seed: 'E10', stage: 'review', status: 'clean', repeat: 3 },
+      ],
+    });
+    assert.equal(report.configs.a.summary.completeness, 1);
+    assert.equal(report.verdict, 'insufficient_data');
+    assert.match(report.insufficient.join('\n'), /планового числа повторов/u);
+  });
+
+  test('нарушенный порог важнее нехватки данных', () => {
+    const report = buildReport({
+      seeds,
+      thresholds,
+      runs: [{ config: 'a', seed: 'E5', stage: 'review', status: 'miss', repeat: 3 }],
+    });
+    assert.equal(report.verdict, 'below_threshold');
+    assert.equal(report.failures.length, 1);
+    // Причины нехватки всё равно видны: это не противоречие, а два разных факта.
+    assert.ok(report.insufficient.length > 0);
+  });
+
+  test('измерена хотя бы одна конфигурация — вердикт обычный', () => {
+    const report = buildReport({
+      seeds,
+      thresholds,
+      runs: [
+        { config: 'a', seed: 'E5', stage: 'review', status: 'hit' },
+        { config: 'b', seed: 'E5', stage: 'review', status: 'invalid' },
+      ],
+    });
+    assert.equal(report.configs.b.summary.completeness, null);
     assert.equal(report.verdict, 'ok');
+    assert.deepEqual(report.insufficient, []);
   });
 
   test('стоимость усредняется только по прогонам с известным usage', () => {

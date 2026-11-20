@@ -53,6 +53,13 @@ const WORST_FIRST = Object.freeze({
 /** План повторов, если `meta.json` его не задаёт: старые каталоги — один прогон. */
 export const DEFAULT_REPEAT = 1;
 
+/**
+ * Вердикты отчёта (`evals/preregistration.md`, правило «недостаточно данных ≠ ok»).
+ * `ok` — данные не противоречат порогам; `below_threshold` — порог нарушен;
+ * `insufficient_data` — проверять было нечего (все ответы не разобрались или недобор повторов).
+ */
+export const VERDICTS = Object.freeze(['ok', 'below_threshold', 'insufficient_data']);
+
 /** Ссылка `path:line` из `evidence[]` оценщика. */
 const REF_PATTERN = /^(.+):([1-9]\d*)$/u;
 
@@ -353,6 +360,10 @@ export function buildReport({ runs, seeds, thresholds }) {
   let repeatsPlan = DEFAULT_REPEAT;
   let cells = 0;
   let disagreements = 0;
+  /** Конфигурации, где хоть одна величина вычисляется: иначе порог проверять не над чем. */
+  let measuredConfigs = 0;
+  /** Ячейки, набравшие плановое число повторов. */
+  let cellsAtPlan = 0;
 
   for (const [name, config] of Object.entries(configs)) {
     let hits = 0;
@@ -455,6 +466,25 @@ export function buildReport({ runs, seeds, thresholds }) {
     config.summary.repeats = own.reduce((max, cell) => Math.max(max, cell.planned ?? 1), 1);
     const disagreed = own.filter((cell) => cell.disagreement === true).length;
     config.summary.disagreement = share(disagreed, own.length);
+    if (config.summary.completeness !== null || config.summary.false_positive_rate !== null) {
+      measuredConfigs += 1;
+    }
+    cellsAtPlan += own.filter((cell) => (cell.count ?? 0) >= (cell.planned ?? 1)).length;
+  }
+
+  // «Мерить нечего» — отдельный исход, а не `ok`: зелёный вердикт при отсутствии данных
+  // читался бы как «порог выдержан». Нарушенный порог всегда важнее: он факт о данных.
+  /** @type {string[]} */
+  const insufficient = [];
+  if (measuredConfigs === 0) {
+    insufficient.push(
+      'полнота и доля ложных блокировок не вычисляются: ответы не разобрались или прогонов нужных сидов нет',
+    );
+  }
+  if (cells > 0 && cellsAtPlan === 0) {
+    insufficient.push(
+      `ни одна ячейка не набрала планового числа повторов (план ${repeatsPlan}, §15 требует минимум 3)`,
+    );
   }
 
   /** @type {string[]} */
@@ -485,9 +515,16 @@ export function buildReport({ runs, seeds, thresholds }) {
     configs,
     failures,
     warnings,
+    // Почему пороги не проверялись: пусто, если данные есть.
+    insufficient,
     // Доля ячеек, где повторы разошлись: разброс — главный повод повторять сид.
     disagreement: share(disagreements, cells),
     repeats: repeatsPlan,
-    verdict: failures.length === 0 ? 'ok' : 'below_threshold',
+    verdict:
+      failures.length > 0
+        ? 'below_threshold'
+        : insufficient.length > 0
+          ? 'insufficient_data'
+          : 'ok',
   };
 }

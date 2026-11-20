@@ -10,6 +10,12 @@ export declare const RUN_STATUSES: readonly string[];
 /** План повторов, если `meta.json` его не задаёт: старые каталоги — один прогон. */
 export declare const DEFAULT_REPEAT = 1;
 /**
+ * Вердикты отчёта (`evals/preregistration.md`, правило «недостаточно данных ≠ ok»).
+ * `ok` — данные не противоречат порогам; `below_threshold` — порог нарушен;
+ * `insufficient_data` — проверять было нечего (все ответы не разобрались или недобор повторов).
+ */
+export declare const VERDICTS: readonly string[];
+/**
  * Все блоки `json` из markdown, в порядке появления. Блок с битым JSON пропускается:
  * агент мог показать пример схемы, а не результат.
  * @param {unknown} markdown ответ агента (нестрока — пустой список блоков)
