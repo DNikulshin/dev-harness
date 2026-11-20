@@ -40,6 +40,10 @@ export declare function validateReview(doc: unknown): ValidationResult;
 export declare function validateEvaluation(doc: unknown): ValidationResult;
 /**
  * `qa-web.json` — сырые данные браузерной проверки (`docs/qa-web.md`).
+ *
+ * Кроме типов проверяется связка `status` ↔ `steps` ↔ `reason` (issue #30): без неё
+ * `{"status": "done", "steps": []}` закрывал QA без единого свидетельства, а `not_run`
+ * с непустыми шагами разрешал ссылки `qa:<id>` на невыполненную проверку.
  * @param {unknown} doc
  * @returns {ValidationResult}
  */

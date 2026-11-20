@@ -62,7 +62,8 @@
  *   `<id> [SEV] <свидетельство> — <claim>; сценарий: <repro>` (defect),
  *   `<id> [unmet] — <note>; свидетельства: <…>` (критерий),
  *   `gate:<id> [fail] — обязательный гейт не прошёл; лог: gates/<id>.<n>.log` (гейт);
- * - `unverified[]`: `gate:<id> not_run (<reason>)`, `qa-web not_run (<reason>)`,
+ * - `unverified[]`: `gate:<id> not_run (<reason>)`, `qa-web not_run (<reason>)`
+ *   (`<reason>` — причина из файла, `web-diff` — файла нет, `reason_missing` — причина пуста),
  *   `criteria:<id> unverified`, `evaluation unverified: <what>`,
  *   `integrity: protected <путь> (<added|modified|deleted>)`,
  *   `integrity: tests deleted <путь>`, `integrity: tests changed (<N>)`;
@@ -690,7 +691,15 @@ export function decide(inputs) {
   }
 
   if (webDiff && (qaWeb === null || qaWeb.status !== 'done')) {
-    const qaReason = qaWeb !== null && isText(qaWeb.reason) ? qaWeb.reason.trim() : 'web-diff';
+    // Файла нет — web-дифф без браузерной проверки. Файл есть, а причина пуста — это
+    // дефект файла (#30): схема такое отвергает, а `reason_missing` — подсказка человеку,
+    // что именно чинить, вместо бессмысленного `web-diff`.
+    const qaReason =
+      qaWeb === null
+        ? 'web-diff'
+        : isText(qaWeb.reason) && qaWeb.reason.trim() !== ''
+          ? qaWeb.reason.trim()
+          : 'reason_missing';
     unverified.push(`qa-web not_run (${qaReason})`);
     acquire.push('qa-web');
   }

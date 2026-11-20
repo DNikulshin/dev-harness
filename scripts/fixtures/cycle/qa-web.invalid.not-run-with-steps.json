@@ -1,0 +1,15 @@
+{
+  "status": "not_run",
+  "reason": "MCP playwright недоступен",
+  "steps": [
+    {
+      "id": "s1",
+      "url": "http://127.0.0.1:3003/booking",
+      "action": "Открыть страницу записи и выбрать услугу",
+      "observed": "",
+      "console_errors": [],
+      "failed_requests": [],
+      "cache_headers": null
+    }
+  ]
+}
