@@ -49,6 +49,11 @@ export type DecideInputs = {
         steps?: unknown[];
     } | null;
     /**
+     * проверенный `evidence/integrity.json`
+     * или `null` (по умолчанию): правил `integrity` в проекте нет или пакет собран без них
+     */
+    integrity?: Record<string, any> | null;
+    /**
      * дифф затрагивает `apps/frontend`
      */
     webDiff: boolean;
@@ -134,6 +139,8 @@ export type Decision = {
  * @property {Record<string, any>|null} evaluation проверенный блок оценки или `null`
  * @property {{ status?: string, reason?: string|null, steps?: unknown[] }|null} qaWeb
  *   проверенный `qa-web.json` или `null`, если файла нет
+ * @property {Record<string, any>|null} [integrity] проверенный `evidence/integrity.json`
+ *   или `null` (по умолчанию): правил `integrity` в проекте нет или пакет собран без них
  * @property {boolean} webDiff дифф затрагивает `apps/frontend`
  * @property {string} root корень репозитория для разрешения ссылок
  * @property {number|null} [costRub] стоимость цикла по `usage.json` и `evals/prices.json`:
@@ -197,6 +204,20 @@ export declare function normalizeDoc(value: unknown): unknown;
  * @returns {boolean}
  */
 export declare function diffTouchesWeb(files: string[], prefixes?: readonly string[]): boolean;
+/**
+ * Факты контроля целостности проверок (#36) → строки `unverified[]` и признак добора.
+ * Правило узкое и фактическое: ядро не судит, ослаблены ли тесты, оно фиксирует, что
+ * изменилось. Правка защищённого файла (любой статус) и удаление теста — повод добрать
+ * свидетельства (`acquire: integrity`); правка тестов под задачу — только отметка, иначе
+ * каждый цикл с новыми тестами терял бы `PROCEED` и владелец получал бы чекбоксы на
+ * нормальной работе.
+ * @param {Record<string, any>|null|undefined} integrity проверенный документ или `null`
+ * @returns {{ unverified: string[], acquires: boolean }}
+ */
+export declare function integritySignals(integrity: Record<string, any> | null | undefined): {
+    unverified: string[];
+    acquires: boolean;
+};
 /**
  * Расчёт решения цикла. Чистая функция: файлов не читает и не пишет, время и
  * случайность не использует — на одних и тех же входах результат совпадает.
