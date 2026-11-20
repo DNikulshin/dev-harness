@@ -300,10 +300,14 @@ export function seedIssueMarkdown(seed) {
 
 /**
  * Текст `evidence/criteria.md`: единственный источник критериев приёмки (§7).
+ *
+ * Формат строки — контракт ядра `CRITERION_LINE` (`lib/cycle/criteria.mjs`): `- C1: текст`,
+ * двоеточие обязательно. Сид, записанный иначе, ядро не разберёт: критериев не найдётся ни
+ * одного, и цикл увидит пустой набор вместо прогона сида (#34).
  * @param {Seed} seed
  * @returns {string}
  */
 export function seedCriteriaMarkdown(seed) {
-  const lines = seed.criteria.map((criterion, index) => `- C${index + 1} ${criterion}`);
+  const lines = seed.criteria.map((criterion, index) => `- C${index + 1}: ${criterion}`);
   return `# Критерии приёмки\n\n${lines.join('\n')}\n`;
 }
