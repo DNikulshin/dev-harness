@@ -8,21 +8,31 @@
  * пропустить можно любой, а проверить результат было нечем.
  *
  * Что делает:
- * 1. копирует `templates/.pi/**` в проект; `harness.config.example.json` → `.pi/harness.config.json`
- *    (имя примера в проекте не должно оставаться);
- * 2. пишет `.pi/harness.version` — версия пакета и `sha256` каждого установленного файла;
+ * 1. копирует шаблоны пакета в проект **по профилю раскладки**: пути берутся из
+ *    `config.paths` проекта (`agentsDir`, `settings`, `cyclePrompt`), пример конфига
+ *    становится рабочим конфигом там, где его ждёт ядро; имя примера в проекте не остаётся;
+ * 2. пишет `harness.version` рядом с конфигом — версия пакета и `sha256` каждого
+ *    установленного файла;
  * 3. обновляет шаблоны при смене версии пакета, но не затирает локальные правки без `--force`;
- * 4. создаёт минимальный `.pi/settings.json` с лимитом субагентов, если файла нет;
+ * 4. создаёт минимальный `settings`-файл с лимитом субагентов, если файла нет;
  * 5. в конце проверяет раскладку тем же кодом, что `check-harness`, и печатает, что осталось
  *    поправить под проект.
  *
+ * Раскладка — данные (ADR 0005, г): в коде нет ни одного пути проекта. Каталог шаблонов
+ * повторяет умолчания (`templates/<CONFIG_FILE.dir>/`), поэтому его имя берётся из
+ * `CONFIG_FILE`, а не пишется вторым литералом. Конфиг вне умолчания находится по `--config`
+ * (ADR 0005, б): установка в проект с `harness/harness.config.json` не требует ручного
+ * копирования — файлы едут по путям этого конфига, а если его ещё нет, он создаётся по указанному
+ * пути. Конфиг снаружи корня проекта — ошибка: шаблоны ставятся внутрь проекта.
+ *
  * Режимы:
  * ```
- * harness-init [--root DIR] [--templates DIR] [--dry-run] [--check] [--force]
+ * harness-init [--root DIR] [--templates DIR] [--config FILE] [--dry-run] [--check] [--force]
  * ```
  * `--dry-run` — только план, без записи. `--check` — только отчёт о расхождениях. `--force` —
  * перезаписать и файлы с локальными правками. `--root` — проект (по умолчанию текущий каталог),
- * `--templates` — источник шаблонов (по умолчанию `templates/` пакета).
+ * `--templates` — источник шаблонов (по умолчанию `templates/` пакета), `--config` — путь конфига
+ * (см. границу CLI в `lib/cycle/config.mjs`).
  *
  * Миграции без реестра версий: `.pi/harness.version` хранит дайджесты того, что поставили. Файл,
  * чей дайджест совпал с записанным, локально не правили — его можно обновить; не совпал — правили,
@@ -39,13 +49,19 @@
  */
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
-import { dirname, join, relative, resolve, sep } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { analyzeHarness, formatViolation, formatWarning, readHarness } from './check-harness.mjs';
 
 import { isDirectRun } from './lib/cycle/cli.mjs';
-import { loadConfig, takeConfigOption } from './lib/cycle/config.mjs';
+import {
+  CONFIG_FILE,
+  DEFAULTS,
+  loadConfig,
+  resolveConfigPath,
+  takeConfigOption,
+} from './lib/cycle/config.mjs';
 
 /** Корень репозитория ядра: родитель каталога `scripts/`. */
 const DEFAULT_ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
@@ -53,30 +69,112 @@ const DEFAULT_ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 /** Шаблоны пакета: отдаются потребителю вместе с пакетом (`files` в `package.json`). */
 const DEFAULT_TEMPLATES = join(DEFAULT_ROOT, 'templates');
 
-/** Префикс путей шаблонов: всё внутри `.pi/` копируется как есть. */
-const TEMPLATE_PREFIX = '.pi/';
+/**
+ * Имя файла версии шаблонов: версия пакета и дайджесты установленного. Лежит рядом с конфигом —
+ * единственной фиксированной точкой раскладки (ADR 0005): на профиле с конфигом вне умолчания
+ * версия едет за ним, а не остаётся в каталоге умолчаний.
+ */
+export const VERSION_NAME = 'harness.version';
+
+/** Имя примера конфига в каталоге шаблонов: становится рабочим конфигом проекта. */
+const EXAMPLE_CONFIG = 'harness.config.example.json';
 
 /**
- * Переименования при установке: пример конфига становится рабочим файлом проекта.
- * @type {Readonly<Record<string, string>>}
+ * Источник шаблона внутри каталога шаблонов → путь в проекте, где путь — функция профиля.
+ * Ключи — имена файлов и каталогов **пакета**, а не проекта: у пакета один набор шаблонов, и
+ * профиль потребителя переводится только значениями `paths`.
+ * @type {Readonly<Record<string, (layout: InstallLayout) => string>>}
  */
-export const RENAME_ON_INSTALL = Object.freeze({
-  '.pi/harness.config.example.json': '.pi/harness.config.json',
+const TARGET_RULES = Object.freeze({
+  [EXAMPLE_CONFIG]: (layout) => layout.config,
+  'settings.json': (layout) => layout.settings,
+  'prompts/cycle.md': (layout) => layout.cyclePrompt,
 });
 
+/** Каталог шаблонов агентов внутри пакета: файлы ложатся в `paths.agentsDir`. */
+const AGENTS_SOURCE = 'agents/';
+
 /**
- * Файлы, которые после установки принадлежат проекту: конфиг — политика, а не шаблон.
- * Такой файл создаётся один раз и больше не обновляется даже `--force`: перезаписать
- * гейты и лимиты проекта примером из пакета — это тихая потеря настроек.
- * @type {ReadonlySet<string>}
+ * Раскладка установки в проекте: куда ставить шаблоны и что считается установленным.
+ * @typedef {{
+ *   agentsDir: string,
+ *   settings: string,
+ *   cyclePrompt: string,
+ *   config: string,
+ *   version: string,
+ * }} InstallLayout
  */
-export const PROJECT_OWNED = new Set(Object.values(RENAME_ON_INSTALL));
 
-/** Файл версии шаблонов: версия пакета и дайджесты установленного. */
-export const VERSION_FILE = '.pi/harness.version';
+/**
+ * Раскладка по умолчанию: умолчания ядра, собранные в одном месте. По ней работает установка в
+ * чистый проект — конфига ещё нет, и спрашивать не у кого.
+ * @returns {InstallLayout}
+ */
+export function defaultLayout() {
+  const config = `${CONFIG_FILE.dir}/${CONFIG_FILE.name}`;
+  return {
+    agentsDir: DEFAULTS.paths.agentsDir,
+    settings: DEFAULTS.paths.settings,
+    cyclePrompt: DEFAULTS.paths.cyclePrompt,
+    config,
+    version: `${CONFIG_FILE.dir}/${VERSION_NAME}`,
+  };
+}
 
-/** Настройки pi, в которых живёт лимит субагентов (H5). */
-export const SETTINGS_FILE = '.pi/settings.json';
+/**
+ * Раскладка установки по профилю проекта: пути берутся из конфига, который ядро и так читает.
+ * @param {ReturnType<typeof loadConfig>} config конфиг проекта
+ * @param {string} root корень проекта
+ * @returns {InstallLayout}
+ */
+export function installLayout(config, root) {
+  const configTarget = projectPath(root, config.configPath);
+  const dir = configTarget.includes('/')
+    ? configTarget.slice(0, configTarget.lastIndexOf('/'))
+    : '';
+  return {
+    agentsDir: config.paths.agentsDir,
+    settings: config.paths.settings,
+    cyclePrompt: config.paths.cyclePrompt,
+    config: configTarget,
+    version: `${dir === '' ? '' : `${dir}/`}${VERSION_NAME}`,
+  };
+}
+
+/**
+ * Путь внутри проекта: конфиг снаружи корня означал бы запись шаблонов за пределы проекта, а
+ * `../` в путях установки — сюрприз для того, кто запускал команду в своём каталоге.
+ * @param {string} root корень проекта
+ * @param {string} absolute абсолютный путь
+ * @returns {string} путь проекта через `/`
+ */
+function projectPath(root, absolute) {
+  const rel = toPosix(relative(root, absolute));
+  if (rel === '' || rel === '..' || rel.startsWith('../') || isAbsolute(rel)) {
+    throw new Error(
+      `конфиг вне корня проекта: ${absolute} — шаблоны ставятся только внутрь проекта`,
+    );
+  }
+  return rel;
+}
+
+/**
+ * Путь в проекте для шаблона. Неизвестный шаблон — ошибка: положить файл «куда-нибудь» хуже,
+ * чем отказаться, потому что дальше его никто не найдёт.
+ * @param {string} source путь внутри каталога шаблонов (после его корня)
+ * @param {InstallLayout} layout раскладка проекта
+ * @returns {string}
+ */
+export function targetFor(source, layout) {
+  const rule = TARGET_RULES[source];
+  if (rule !== undefined) return rule(layout);
+  if (source.startsWith(AGENTS_SOURCE)) {
+    return `${layout.agentsDir}/${source.slice(AGENTS_SOURCE.length)}`;
+  }
+  throw new Error(
+    `шаблон ${source}: профиль раскладки не знает, куда его ставить — добавьте правило`,
+  );
+}
 
 /** Что говорят об установленном файле, которого больше нет в шаблонах. */
 const REMOVED_HINT = 'не удаляется (нет в шаблонах)';
@@ -160,13 +258,16 @@ function toPosix(path) {
 }
 
 /**
- * Собирает шаблоны для установки: всё из `<templatesDir>/.pi/**` с учётом переименований.
+ * Собирает шаблоны для установки: всё из `<templatesDir>/<CONFIG_FILE.dir>/**`, разложенное по
+ * профилю проекта.
  * @param {string} templatesDir каталог шаблонов (в пакете — `templates/`)
+ * @param {InstallLayout} [layout] раскладка проекта; по умолчанию умолчания ядра
  * @returns {{ source: string, target: string, text: string, digest: string }[]}
- *   `source` — путь внутри `templates/`, `target` — путь в проекте; порядок стабильный
+ *   `source` — путь внутри каталога шаблонов пакета (`.`-каталог включён), `target` — путь в
+ *   проекте; порядок стабильный
  */
-export function collectTemplates(templatesDir) {
-  const start = join(templatesDir, '.pi');
+export function collectTemplates(templatesDir, layout = defaultLayout()) {
+  const start = join(templatesDir, CONFIG_FILE.dir);
   if (!existsSync(start) || !statSync(start).isDirectory()) {
     throw new Error(
       `шаблоны не найдены: ${toPosix(relative(templatesDir, start))} в ${templatesDir}`,
@@ -176,10 +277,10 @@ export function collectTemplates(templatesDir) {
   /** @type {{ source: string, target: string, text: string, digest: string }[]} */
   const files = [];
   for (const source of walkFiles(start)) {
-    const sourcePath = `${TEMPLATE_PREFIX}${toPosix(relative(start, source))}`;
-    const target = RENAME_ON_INSTALL[sourcePath] ?? sourcePath;
+    const inner = toPosix(relative(start, source));
+    const target = targetFor(inner, layout);
     const text = readFileSync(source, 'utf8');
-    files.push({ source: sourcePath, target, text, digest: digest(text) });
+    files.push({ source: `${CONFIG_FILE.dir}/${inner}`, target, text, digest: digest(text) });
   }
 
   return files.sort((left, right) => left.target.localeCompare(right.target));
@@ -208,10 +309,11 @@ function walkFiles(dir) {
  * Читает `.pi/harness.version`. Нет файла — пустая запись (первая установка).
  * Битый файл — ошибка чтения: по нему решается, правили ли шаблоны, и догадка здесь
  * означала бы «затрём, наверное, не жалко».
- * @param {string} file
+ * @param {string} file абсолютный путь
+ * @param {string} [label] путь для сообщения (`harness.version` рядом с конфигом)
  * @returns {{ version: string | null, templates: Record<string, string> }}
  */
-export function readVersionFile(file) {
+export function readVersionFile(file, label = VERSION_NAME) {
   if (!existsSync(file)) return { version: null, templates: {} };
 
   /** @type {unknown} */
@@ -220,25 +322,25 @@ export function readVersionFile(file) {
     doc = JSON.parse(readFileSync(file, 'utf8'));
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
-    throw new Error(`${VERSION_FILE}: не читается как JSON: ${reason}`);
+    throw new Error(`${label}: не читается как JSON: ${reason}`);
   }
 
   if (typeof doc !== 'object' || doc === null || Array.isArray(doc)) {
-    throw new Error(`${VERSION_FILE}: ожидается объект`);
+    throw new Error(`${label}: ожидается объект`);
   }
 
   const record = /** @type {Record<string, unknown>} */ (doc);
   const version = typeof record.version === 'string' ? record.version : null;
   const templates = record.templates;
   if (typeof templates !== 'object' || templates === null || Array.isArray(templates)) {
-    throw new Error(`${VERSION_FILE}: поле templates должно быть объектом`);
+    throw new Error(`${label}: поле templates должно быть объектом`);
   }
 
   /** @type {Record<string, string>} */
   const digests = {};
   for (const [path, value] of Object.entries(templates)) {
     if (typeof value !== 'string') {
-      throw new Error(`${VERSION_FILE}: templates[${JSON.stringify(path)}] должен быть строкой`);
+      throw new Error(`${label}: templates[${JSON.stringify(path)}] должен быть строкой`);
     }
     digests[path] = value;
   }
@@ -260,10 +362,14 @@ export function readVersionFile(file) {
  * @param {object} options
  * @param {string} options.root каталог проекта
  * @param {{ source: string, target: string, text: string, digest: string }[]} options.templates
- * @param {Record<string, string>} options.recorded дайджесты из `.pi/harness.version`
+ * @param {Record<string, string>} options.recorded дайджесты из `harness.version`
+ * @param {readonly string[]} [options.owned] файлы, принадлежащие проекту: конфиг по профилю
+ *   раскладки — политика, а не шаблон, и после создания не обновляется даже `--force`
+ *   (перезаписать гейты и лимиты примером из пакета — тихая потеря настроек)
  * @returns {{ entries: { target: string, state: TargetState, text: string, digest: string }[], removed: string[] }}
  */
-export function planInstall({ root, templates, recorded }) {
+export function planInstall({ root, templates, recorded, owned = [defaultLayout().config] }) {
+  const projectOwned = new Set(owned);
   const entries = templates.map((template) => {
     const file = join(root, ...template.target.split('/'));
     const onDisk = existsSync(file) ? readFileSync(file, 'utf8') : null;
@@ -271,7 +377,7 @@ export function planInstall({ root, templates, recorded }) {
     let state;
     if (onDisk === null) {
       state = 'create';
-    } else if (PROJECT_OWNED.has(template.target)) {
+    } else if (projectOwned.has(template.target)) {
       state = 'owned';
     } else if (digest(onDisk) === template.digest) {
       state = 'current';
@@ -394,18 +500,22 @@ export function packageVersion(root) {
  *   log?: (line: string) => void,
  *   configFile?: string|null,
  * }} [io]
- *   `configFile` — путь конфига из `--config`/`HARNESS_CONFIG` (граница CLI, ADR 0005):
- *   по нему ищутся пути профиля в отчёте о раскладке
+ *   `configFile` — путь конфига из `--config`/`HARNESS_CONFIG` (граница CLI, ADR 0005): он же
+ *   цель установки и источник профиля раскладки
  * @returns {{ code: number, lines: string[] }}
  */
 export function runInit(args, io = {}) {
   const log = io.log ?? (() => {});
   const write = io.write ?? ((file, text) => writeFileSync(file, text));
 
-  const templates = collectTemplates(args.templates);
-  const versionPath = join(args.root, ...VERSION_FILE.split('/'));
-  const recorded = readVersionFile(versionPath).templates;
-  const plan = planInstall({ root: args.root, templates, recorded });
+  const configFile = io.configFile ?? null;
+  // Конфига может не быть: установка в чистый проект — штатный случай, профиль тогда — умолчания.
+  const config = loadConfig(args.root, { file: configFile, allowMissing: true });
+  const layout = installLayout(config, args.root);
+  const templates = collectTemplates(args.templates, layout);
+  const versionPath = join(args.root, ...layout.version.split('/'));
+  const recorded = readVersionFile(versionPath, layout.version).templates;
+  const plan = planInstall({ root: args.root, templates, recorded, owned: [layout.config] });
 
   /** @type {string[]} */
   const lines = [];
@@ -475,15 +585,15 @@ export function runInit(args, io = {}) {
     }
   }
 
-  // `.pi/settings.json` — файл pi, а не наш: создаём только при отсутствии, чужое не трогаем.
-  const settingsPath = join(args.root, ...SETTINGS_FILE.split('/'));
+  // Файл настроек pi — не наш шаблон: создаём только при отсутствии, чужое не трогаем.
+  const settingsPath = join(args.root, ...layout.settings.split('/'));
   const settings = readSettingsState(settingsPath);
   if (settings.state === 'absent') {
     mkdirSync(dirname(settingsPath), { recursive: true });
     write(settingsPath, `${JSON.stringify(minimalSettings(), null, 2)}\n`);
-    emit(`создан: ${SETTINGS_FILE} (subagents.maxSubagentSpawnsPerRun = ${MIN_SUBAGENT_SPAWNS})`);
+    emit(`создан: ${layout.settings} (subagents.maxSubagentSpawnsPerRun = ${MIN_SUBAGENT_SPAWNS})`);
   } else if (settings.state === 'current') {
-    emit(`${SETTINGS_FILE}: лимит субагентов в порядке`);
+    emit(`${layout.settings}: лимит субагентов в порядке`);
   } else {
     const detail =
       settings.state === 'low'
@@ -492,7 +602,7 @@ export function runInit(args, io = {}) {
         : settings.state === 'invalid'
           ? 'maxSubagentSpawnsPerRun должен быть целым'
           : 'файл не разбирается как JSON-объект';
-    emit(`${SETTINGS_FILE}: не тронут, но H5 не выполнен — ${detail}`);
+    emit(`${layout.settings}: не тронут, но H5 не выполнен — ${detail}`);
   }
 
   for (const target of plan.removed) {
@@ -514,10 +624,12 @@ export function runInit(args, io = {}) {
   const currentVersionText = existsSync(versionPath) ? readFileSync(versionPath, 'utf8') : null;
   if (currentVersionText !== nextVersionText) {
     write(versionPath, nextVersionText);
-    emit(`записан: ${VERSION_FILE} (версия ${version})`);
+    emit(`записан: ${layout.version} (версия ${version})`);
   }
 
-  printReport(args.root, emit, io.configFile ?? null);
+  // Отчёт читает конфиг заново: только что созданный пример — уже политика проекта, и
+  // проверять раскладку надо по нему, а не по умолчаниям, с которыми начинали установку.
+  printReport(args.root, loadConfig(args.root, { file: configFile }), emit);
   // Точная команда: у `check-harness` без `--root` корень — каталог пакета, а не проект.
   emit('проверить отдельно: harness-check-layout --root .');
 
@@ -543,19 +655,19 @@ function describeState(state, forCheck) {
 }
 
 /**
- * Отчёт проверки раскладки: тот же код, что `check-harness`, без подпроцесса.
+ * Отчёт проверки раскладки: тот же код, что `check-harness`, без подпроцесса. Конфиг приходит
+ * загруженным: отчёт обязан читать те же пути, по которым ставились шаблоны.
  * @param {string} root
+ * @param {ReturnType<typeof loadConfig>} config конфиг проекта (или умолчания)
  * @param {(line: string) => void} emit
- * @param {string|null} configFile путь конфига из `--config` (`null` — умолчание)
  * @returns {void}
  */
-function printReport(root, emit, configFile) {
+function printReport(root, config, emit) {
   /** @type {import('./check-harness.mjs').Violation[]} */
   let violations;
   /** @type {import('./check-harness.mjs').Warning[]} */
   let warnings;
   try {
-    const config = loadConfig(root, { file: configFile });
     const agentsMd = join(root, ...config.paths.agentsMd.split('/'));
     if (!existsSync(agentsMd)) {
       // Без `AGENTS.md` проверка раскладки бессмысленна: это правила проекта, и их пишет

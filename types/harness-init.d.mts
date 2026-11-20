@@ -1,20 +1,49 @@
 #!/usr/bin/env node
+import { loadConfig } from './lib/cycle/config.mjs';
 /**
- * Переименования при установке: пример конфига становится рабочим файлом проекта.
- * @type {Readonly<Record<string, string>>}
+ * Имя файла версии шаблонов: версия пакета и дайджесты установленного. Лежит рядом с конфигом —
+ * единственной фиксированной точкой раскладки (ADR 0005): на профиле с конфигом вне умолчания
+ * версия едет за ним, а не остаётся в каталоге умолчаний.
  */
-export declare const RENAME_ON_INSTALL: Readonly<Record<string, string>>;
+export declare const VERSION_NAME = "harness.version";
+export type InstallLayout = {
+    agentsDir: string;
+    settings: string;
+    cyclePrompt: string;
+    config: string;
+    version: string;
+};
 /**
- * Файлы, которые после установки принадлежат проекту: конфиг — политика, а не шаблон.
- * Такой файл создаётся один раз и больше не обновляется даже `--force`: перезаписать
- * гейты и лимиты проекта примером из пакета — это тихая потеря настроек.
- * @type {ReadonlySet<string>}
+ * Раскладка установки в проекте: куда ставить шаблоны и что считается установленным.
+ * @typedef {{
+ *   agentsDir: string,
+ *   settings: string,
+ *   cyclePrompt: string,
+ *   config: string,
+ *   version: string,
+ * }} InstallLayout
  */
-export declare const PROJECT_OWNED: ReadonlySet<string>;
-/** Файл версии шаблонов: версия пакета и дайджесты установленного. */
-export declare const VERSION_FILE = ".pi/harness.version";
-/** Настройки pi, в которых живёт лимит субагентов (H5). */
-export declare const SETTINGS_FILE = ".pi/settings.json";
+/**
+ * Раскладка по умолчанию: умолчания ядра, собранные в одном месте. По ней работает установка в
+ * чистый проект — конфига ещё нет, и спрашивать не у кого.
+ * @returns {InstallLayout}
+ */
+export declare function defaultLayout(): InstallLayout;
+/**
+ * Раскладка установки по профилю проекта: пути берутся из конфига, который ядро и так читает.
+ * @param {ReturnType<typeof loadConfig>} config конфиг проекта
+ * @param {string} root корень проекта
+ * @returns {InstallLayout}
+ */
+export declare function installLayout(config: ReturnType<typeof loadConfig>, root: string): InstallLayout;
+/**
+ * Путь в проекте для шаблона. Неизвестный шаблон — ошибка: положить файл «куда-нибудь» хуже,
+ * чем отказаться, потому что дальше его никто не найдёт.
+ * @param {string} source путь внутри каталога шаблонов (после его корня)
+ * @param {InstallLayout} layout раскладка проекта
+ * @returns {string}
+ */
+export declare function targetFor(source: string, layout: InstallLayout): string;
 export type InitArgs = {
     root: string;
     templates: string;
@@ -46,12 +75,15 @@ export declare function parseArgs(argv: string[]): InitArgs;
  */
 export declare function digest(text: string): string;
 /**
- * Собирает шаблоны для установки: всё из `<templatesDir>/.pi/**` с учётом переименований.
+ * Собирает шаблоны для установки: всё из `<templatesDir>/<CONFIG_FILE.dir>/**`, разложенное по
+ * профилю проекта.
  * @param {string} templatesDir каталог шаблонов (в пакете — `templates/`)
+ * @param {InstallLayout} [layout] раскладка проекта; по умолчанию умолчания ядра
  * @returns {{ source: string, target: string, text: string, digest: string }[]}
- *   `source` — путь внутри `templates/`, `target` — путь в проекте; порядок стабильный
+ *   `source` — путь внутри каталога шаблонов пакета (`.`-каталог включён), `target` — путь в
+ *   проекте; порядок стабильный
  */
-export declare function collectTemplates(templatesDir: string): {
+export declare function collectTemplates(templatesDir: string, layout?: InstallLayout): {
     source: string;
     target: string;
     text: string;
@@ -61,10 +93,11 @@ export declare function collectTemplates(templatesDir: string): {
  * Читает `.pi/harness.version`. Нет файла — пустая запись (первая установка).
  * Битый файл — ошибка чтения: по нему решается, правили ли шаблоны, и догадка здесь
  * означала бы «затрём, наверное, не жалко».
- * @param {string} file
+ * @param {string} file абсолютный путь
+ * @param {string} [label] путь для сообщения (`harness.version` рядом с конфигом)
  * @returns {{ version: string | null, templates: Record<string, string> }}
  */
-export declare function readVersionFile(file: string): {
+export declare function readVersionFile(file: string, label?: string): {
     version: string | null;
     templates: Record<string, string>;
 };
@@ -82,10 +115,13 @@ export type TargetState = 'create' | 'update' | 'current' | 'modified' | 'owned'
  * @param {object} options
  * @param {string} options.root каталог проекта
  * @param {{ source: string, target: string, text: string, digest: string }[]} options.templates
- * @param {Record<string, string>} options.recorded дайджесты из `.pi/harness.version`
+ * @param {Record<string, string>} options.recorded дайджесты из `harness.version`
+ * @param {readonly string[]} [options.owned] файлы, принадлежащие проекту: конфиг по профилю
+ *   раскладки — политика, а не шаблон, и после создания не обновляется даже `--force`
+ *   (перезаписать гейты и лимиты примером из пакета — тихая потеря настроек)
  * @returns {{ entries: { target: string, state: TargetState, text: string, digest: string }[], removed: string[] }}
  */
-export declare function planInstall({ root, templates, recorded }: {
+export declare function planInstall({ root, templates, recorded, owned }: {
     root: string;
     templates: {
         source: string;
@@ -94,6 +130,7 @@ export declare function planInstall({ root, templates, recorded }: {
         digest: string;
     }[];
     recorded: Record<string, string>;
+    owned?: readonly string[];
 }): {
     entries: {
         target: string;
@@ -160,8 +197,8 @@ export declare function packageVersion(root: string): string;
  *   log?: (line: string) => void,
  *   configFile?: string|null,
  * }} [io]
- *   `configFile` — путь конфига из `--config`/`HARNESS_CONFIG` (граница CLI, ADR 0005):
- *   по нему ищутся пути профиля в отчёте о раскладке
+ *   `configFile` — путь конфига из `--config`/`HARNESS_CONFIG` (граница CLI, ADR 0005): он же
+ *   цель установки и источник профиля раскладки
  * @returns {{ code: number, lines: string[] }}
  */
 export declare function runInit(args: InitArgs, io?: {
