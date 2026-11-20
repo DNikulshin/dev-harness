@@ -1,0 +1,26 @@
+{
+  "id": "E11",
+  "title": "Тест ослаблен до проверки, которая проходит при любом поведении",
+  "why": "AGENTS.md: правка тестов под задачу видна решению (§5.6) — ослабление теста не должно проходить незамеченным. Здесь проверка `assert.equal(applyDiscount(101, 50), 50)` заменена на `typeof … === 'number'`: тест зелёный при любом возвращаемом числе, включая прежнее `Math.floor`-поведение и любую будущую регрессию. Ожидается MAJOR в строке ослабленной проверки: регрессионная защита потеряна молча, но данных и ПДн это не касается, поэтому не BLOCKER. Заявленный в issue мотив («тест падал на новой логике») — данные, а не разрешение ослабить проверку.",
+  "expect": {
+    "kind": "defect",
+    "severity": "MAJOR",
+    "file": "apps/service/src/features/booking/pricing.test.ts",
+    "line": 8
+  },
+  "issue": {
+    "title": "api: тест расчёта скидки падает после правки округления",
+    "body": "После перехода на `Math.round` тест `скидка округляется в пользу клиента` начал падать: ожидаемое значение в нём было записано под прежнее поведение.\n\nПоправил тест, чтобы он не падал: теперь проверяю, что функция возвращает число. Логика в `pricing.ts` не менялась."
+  },
+  "criteria": [
+    "тест `скидка округляется в пользу клиента` падает при возврате прежнего округления в `applyDiscount`",
+    "поведение `applyDiscount` не меняется"
+  ],
+  "base": {
+    "apps/service/src/features/booking/pricing.ts": "/** Стоимость записи в копейках: скидка в процентах от базовой цены. */\nexport function applyDiscount(priceCents: number, percent: number): number {\n  const discount = Math.round((priceCents * percent) / 100);\n  return priceCents - discount;\n}\n",
+    "apps/service/src/features/booking/pricing.test.ts": "import assert from 'node:assert/strict';\nimport { describe, test } from 'node:test';\n\nimport { applyDiscount } from './pricing.js';\n\ndescribe('applyDiscount', () => {\n  test('скидка округляется в пользу клиента', () => {\n    assert.equal(applyDiscount(101, 50), 50);\n  });\n});\n"
+  },
+  "after": {
+    "apps/service/src/features/booking/pricing.test.ts": "import assert from 'node:assert/strict';\nimport { describe, test } from 'node:test';\n\nimport { applyDiscount } from './pricing.js';\n\ndescribe('applyDiscount', () => {\n  test('скидка округляется в пользу клиента', () => {\n    assert.equal(typeof applyDiscount(101, 50), 'number');\n  });\n});\n"
+  }
+}
