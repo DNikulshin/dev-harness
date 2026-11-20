@@ -130,7 +130,7 @@ describe('evals-pack', () => {
       root,
       '--seed',
       'E5',
-      '--config',
+      '--candidate',
       'evaluate-flash',
       '--now',
       '2026-01-02T03:04:05Z',

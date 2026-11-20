@@ -24,7 +24,7 @@ import { existsSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 
 import { isDirectRun } from './lib/cycle/cli.mjs';
-import { loadConfig } from './lib/cycle/config.mjs';
+import { loadConfig, takeConfigOption } from './lib/cycle/config.mjs';
 import { addUsage, emptyUsage, readTranscript, sumUsage } from './lib/evals/usage.mjs';
 import { readJson, writeJsonAtomic } from './lib/cycle/io.mjs';
 import { FIXED_NAMES, artifactsDir, repoRoot } from './lib/cycle/paths.mjs';
@@ -86,7 +86,8 @@ export function addStageUsage(previous, stage, run) {
  */
 function main() {
   try {
-    const args = parseArgs(process.argv.slice(2));
+    const cli = takeConfigOption(process.argv.slice(2));
+    const args = parseArgs(cli.argv);
     if (args.dir === null) throw new Error('--dir: обязателен (каталог цикла)');
     if (args.stage === null || !USAGE_STAGES.includes(args.stage)) {
       throw new Error(`--stage: ожидается ${USAGE_STAGES.join('|')}`);
@@ -94,7 +95,7 @@ function main() {
     if (args.transcript === null) throw new Error('--transcript: обязателен (путь к *.jsonl)');
 
     const root = args.root === null ? repoRoot() : resolve(args.root);
-    const config = loadConfig(root);
+    const config = loadConfig(root, { file: cli.file });
     const cycleDir = resolve(args.dir);
     const artifacts = artifactsDir(root, config);
     if (!cycleDir.startsWith(`${artifacts}${sep}`)) {

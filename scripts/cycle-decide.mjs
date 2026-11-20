@@ -96,7 +96,7 @@ import {
 } from './lib/cycle/criteria.mjs';
 import { changedFiles } from './lib/cycle/git.mjs';
 import { cycleCostRub, readPriceSnapshot } from './lib/cycle/cost.mjs';
-import { DEFAULTS, loadConfig } from './lib/cycle/config.mjs';
+import { DEFAULTS, loadConfig, takeConfigOption } from './lib/cycle/config.mjs';
 import {
   LIMIT_FLAGS,
   checkLimitValue,
@@ -897,9 +897,10 @@ function readAgentBlock(file, validator) {
  */
 function main() {
   try {
-    const args = parseArgs(process.argv.slice(2));
+    const cli = takeConfigOption(process.argv.slice(2));
+    const args = parseArgs(cli.argv);
     const root = repoRoot();
-    const config = loadConfig(root);
+    const config = loadConfig(root, { file: cli.file });
     const dir = args.dir === null ? findActiveCycle() : resolve(args.dir);
 
     const state = readRequiredJson(join(dir, FIXED_NAMES.state), validateState, 'state.json');
@@ -945,6 +946,7 @@ function main() {
       cli: { maxCycleCostRub: args.maxCostRub },
       env: process.env,
       defaults: DEFAULTS.limits,
+      configLabel: config.configFile,
     });
 
     const agentErrors = {

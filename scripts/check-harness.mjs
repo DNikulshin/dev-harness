@@ -69,7 +69,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
 import { isDirectRun } from './lib/cycle/cli.mjs';
-import { DEFAULTS, loadConfig } from './lib/cycle/config.mjs';
+import { DEFAULTS, loadConfig, takeConfigOption } from './lib/cycle/config.mjs';
 
 /**
  * Корень по умолчанию — текущий каталог, а не каталог пакета (#42): у потребителя bin лежит
@@ -706,8 +706,10 @@ export function parseArgs(argv) {
 /** Тонкий CLI: нарушения — в stdout, предупреждения и диагностика — в stderr. */
 function main() {
   try {
-    const { root } = parseArgs(process.argv.slice(2));
-    const { violations, warnings } = analyzeHarness(readHarness(root, loadConfig(root)));
+    const cli = takeConfigOption(process.argv.slice(2));
+    const { root } = parseArgs(cli.argv);
+    const config = loadConfig(root, { file: cli.file });
+    const { violations, warnings } = analyzeHarness(readHarness(root, config));
     if (warnings.length > 0) {
       process.stderr.write(`${warnings.map(formatWarning).join('\n')}\n`);
     }

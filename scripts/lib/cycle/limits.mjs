@@ -57,7 +57,7 @@ export const LIMIT_FLAGS = Object.freeze({
 const SOURCE_LABELS = Object.freeze({
   cli: 'CLI-флаг',
   env: 'переменная окружения',
-  config: '.pi/harness.config.json',
+  config: 'конфиг проекта',
   default: 'дефолт ядра',
 });
 
@@ -115,11 +115,14 @@ export function checkLimitValue(key, value, source) {
  *   cli?: Record<string, unknown>,
  *   env?: Record<string, string|undefined>,
  *   defaults?: Readonly<Record<string, number>>,
+ *   configLabel?: string,
  * }} [options]
  *   `config` — раздел `limits` из `loadConfig` (уже проверен схемой), `configured` — ключи,
  *   заданные в файле проекта (`config.limitsExplicit`): только они имеют источник `config`,
  *   остальные значения из `config` пришли из дефолтов ядра. `cli` — значения флагов,
- *   `env` — окружение, `defaults` — дефолты ядра (`DEFAULTS.limits`).
+ *   `env` — окружение, `defaults` — дефолты ядра (`DEFAULTS.limits`), `configLabel` —
+ *   фактический путь конфига для текста ошибки (`config.configFile`): литерал соврал бы,
+ *   если конфиг лежит вне `.pi/` (ADR 0005, б).
  * @returns {{
  *   values: Record<string, number>,
  *   sources: Record<string, 'cli'|'env'|'config'|'default'>,
@@ -131,6 +134,7 @@ export function resolveLimits({
   cli = {},
   env = process.env,
   defaults = {},
+  configLabel = sourceLabel('config'),
 } = {}) {
   const fromConfig =
     configured === null ? (config === null ? [] : Object.keys(config)) : [...configured];
@@ -157,7 +161,7 @@ export function resolveLimits({
 
     const configValue = config === null || !fromConfig.includes(key) ? undefined : config[key];
     if (configValue !== undefined) {
-      values[key] = checkLimitValue(key, configValue, '.pi/harness.config.json');
+      values[key] = checkLimitValue(key, configValue, configLabel);
       sources[key] = 'config';
       continue;
     }

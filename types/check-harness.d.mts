@@ -70,6 +70,8 @@ export declare function readHarness(root: string, config?: Readonly<{
     integrity: import("./lib/cycle/config.mjs").IntegrityRules;
     provider: string;
     gateTimeouts: Record<string, number>;
+    configFile: string;
+    configPath: string;
 }>): HarnessInput;
 /**
  * Семейство модели: второй сегмент `acme-ai/<семейство>/<модель>`.

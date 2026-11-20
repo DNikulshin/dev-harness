@@ -34,7 +34,7 @@ import {
   sumUsage,
 } from './lib/evals/usage.mjs';
 import { readJson, writeJsonAtomic, writeTextAtomic } from './lib/cycle/io.mjs';
-import { loadConfig } from './lib/cycle/config.mjs';
+import { loadConfig, takeConfigOption } from './lib/cycle/config.mjs';
 import { artifactsDir, repoRoot } from './lib/cycle/paths.mjs';
 
 /**
@@ -77,7 +77,8 @@ export function parseArgs(argv) {
  */
 function main() {
   try {
-    const args = parseArgs(process.argv.slice(2));
+    const cli = takeConfigOption(process.argv.slice(2));
+    const args = parseArgs(cli.argv);
     if (args.run === null) throw new Error('--run: обязателен (каталог прогона)');
     const stage = args.stage;
     if (stage === null || !SCORED_STAGES.includes(/** @type {any} */ (stage))) {
@@ -86,7 +87,7 @@ function main() {
     if (args.transcript === null) throw new Error('--transcript: обязателен (путь к *.jsonl)');
 
     const root = args.root === null ? repoRoot() : resolve(args.root);
-    const config = loadConfig(root);
+    const config = loadConfig(root, { file: cli.file });
     const runDir = resolve(args.run);
     const evalsRoot = join(artifactsDir(root, config), 'evals');
     if (!runDir.startsWith(`${evalsRoot}${sep}`)) {

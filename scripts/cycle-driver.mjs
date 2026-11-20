@@ -42,7 +42,7 @@ import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { isDirectRun } from './lib/cycle/cli.mjs';
-import { loadConfig } from './lib/cycle/config.mjs';
+import { loadConfig, takeConfigOption } from './lib/cycle/config.mjs';
 import { CRITERIA_FILE } from './lib/cycle/criteria.mjs';
 import {
   buildJournalEntry,
@@ -340,9 +340,10 @@ function execute(command, root) {
  * @returns {number} код выхода
  */
 function main() {
-  const args = parseArgs(process.argv.slice(2));
+  const cli = takeConfigOption(process.argv.slice(2));
+  const args = parseArgs(cli.argv);
   const root = args.root === null ? repoRoot() : resolve(args.root);
-  const config = loadConfig(root);
+  const config = loadConfig(root, { file: cli.file });
 
   /** @type {string} */
   let dir;

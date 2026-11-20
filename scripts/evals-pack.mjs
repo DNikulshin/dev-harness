@@ -15,8 +15,10 @@
  *   как нехватку свидетельств);
  * - `meta.json` — сид, конфигурация, модели, план повторов, время сборки.
  *
- * Повтор — это тот же `--config` и **другой** `--out`: агрегирует повторы `evals-score`,
+ * Повтор — это тот же `--candidate` и **другой** `--out`: агрегирует повторы `evals-score`,
  * а `--repeat N` пишет план (§15: минимум 3), чтобы отчёт видел, сколько прогонов не хватает.
+ * `--config` здесь — не имя кандидата, а путь конфига проекта (граница CLI, ADR 0005):
+ * поэтому кандидат называется `--candidate`.
  *
  * `AGENTS.md` копируется в базовый коммит: правила проекта действуют и на синтетическом
  * дереве, иначе агент не смог бы сослаться на них, а дифф не должен их содержать.
@@ -36,7 +38,7 @@ import { isDirectRun } from './lib/cycle/cli.mjs';
 import { readAgentModels } from './lib/evals/agents.mjs';
 import { applyDelta, readCandidates } from './lib/evals/cost.mjs';
 import { loadSeeds, seedCriteriaMarkdown, seedIssueMarkdown } from './lib/evals/seeds.mjs';
-import { loadConfig } from './lib/cycle/config.mjs';
+import { loadConfig, takeConfigOption } from './lib/cycle/config.mjs';
 import { writeJsonAtomic } from './lib/cycle/io.mjs';
 import { artifactsDir, repoRoot } from './lib/cycle/paths.mjs';
 import { SCORED_STAGES, DEFAULT_REPEAT } from './lib/evals/score.mjs';
@@ -50,13 +52,13 @@ const BRANCH = 'evals';
 /**
  * Разбирает аргументы командной строки.
  * @param {string[]} argv
- * @returns {{ seed: string|null, config: string, out: string|null, now: string|null, repeat: number, force: boolean, root: string|null }}
+ * @returns {{ seed: string|null, candidate: string, out: string|null, now: string|null, repeat: number, force: boolean, root: string|null }}
  */
 export function parseArgs(argv) {
-  /** @type {{ seed: string|null, config: string, out: string|null, now: string|null, repeat: number, force: boolean, root: string|null }} */
+  /** @type {{ seed: string|null, candidate: string, out: string|null, now: string|null, repeat: number, force: boolean, root: string|null }} */
   const args = {
     seed: null,
-    config: 'current',
+    candidate: 'current',
     out: null,
     now: null,
     repeat: DEFAULT_REPEAT,
@@ -81,7 +83,7 @@ export function parseArgs(argv) {
       index += 1;
       continue;
     }
-    if (key === 'seed' || key === 'config' || key === 'out' || key === 'now' || key === 'root') {
+    if (key === 'seed' || key === 'candidate' || key === 'out' || key === 'now' || key === 'root') {
       const value = argv[index + 1];
       if (typeof value !== 'string' || value.trim() === '' || value.startsWith('--')) {
         throw new Error(`${arg}: ожидается значение`);
@@ -162,11 +164,12 @@ export function describeExpectation(expect) {
  */
 function main() {
   try {
-    const args = parseArgs(process.argv.slice(2));
+    const cli = takeConfigOption(process.argv.slice(2));
+    const args = parseArgs(cli.argv);
     if (args.seed === null) throw new Error('--seed: обязателен (например, --seed E5)');
 
     const root = args.root === null ? repoRoot() : resolve(args.root);
-    const config = loadConfig(root);
+    const config = loadConfig(root, { file: cli.file });
     const seeds = loadSeeds(join(root, config.evals.seedsDir));
     const seed = seeds.find((item) => item.id === args.seed);
     if (seed === undefined) {
@@ -178,14 +181,14 @@ function main() {
     const current = readAgentModels(root, config);
     /** @type {Record<string, string>} */
     let models = current;
-    if (args.config !== 'current') {
+    if (args.candidate !== 'current') {
       const candidates = readCandidates(
         JSON.parse(readFileSync(join(root, config.evals.candidates), 'utf8')),
       );
-      const candidate = candidates[args.config];
+      const candidate = candidates[args.candidate];
       if (candidate === undefined) {
         throw new Error(
-          `кандидат ${args.config} не найден; есть: current, ${Object.keys(candidates).join(', ')}`,
+          `кандидат ${args.candidate} не найден; есть: current, ${Object.keys(candidates).join(', ')}`,
         );
       }
       models = applyDelta(current, candidate.models);
@@ -195,7 +198,7 @@ function main() {
     const evalsRoot = join(artifactsDir(root, config), 'evals');
     const runDir =
       args.out === null
-        ? join(evalsRoot, `${datePart(now)}-${seed.id}-${args.config}`)
+        ? join(evalsRoot, `${datePart(now)}-${seed.id}-${args.candidate}`)
         : resolve(args.out);
 
     // Запись и удаление — только внутри каталога прогонов: сид не должен уметь
@@ -249,7 +252,7 @@ function main() {
       join(runDir, 'meta.json'),
       {
         seed: seed.id,
-        config: args.config,
+        config: args.candidate,
         models: Object.fromEntries(SCORED_STAGES.map((stage) => [stage, models[stage]])),
         stages: [...SCORED_STAGES],
         repeat: args.repeat,

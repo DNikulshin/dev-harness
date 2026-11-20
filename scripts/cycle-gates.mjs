@@ -60,7 +60,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 
 import { normalizeDoc } from './cycle-decide.mjs';
 import { isDirectRun } from './lib/cycle/cli.mjs';
-import { DEFAULTS, loadConfig } from './lib/cycle/config.mjs';
+import { DEFAULTS, loadConfig, takeConfigOption } from './lib/cycle/config.mjs';
 import { resolveLimits } from './lib/cycle/limits.mjs';
 import {
   addedLinesByFile,
@@ -810,15 +810,16 @@ export function exitCode(doc) {
  */
 async function main() {
   try {
+    const cli = takeConfigOption(process.argv.slice(2));
     const root = repoRoot();
-    const config = loadConfig(root);
+    const config = loadConfig(root, { file: cli.file });
     if (config.gates.length === 0) {
       throw new Error(
-        'гейты не заданы: добавьте секцию gates в .pi/harness.config.json (см. templates/.pi/harness.config.example.json)',
+        `гейты не заданы: добавьте секцию gates в ${config.configFile} (пример конфига ставит harness-init)`,
       );
     }
     const args = parseArgs(
-      process.argv.slice(2),
+      cli.argv,
       config.gates.map((gate) => gate.id),
     );
     const dir = args.dir === null ? findActiveCycle() : resolve(args.dir);
@@ -846,6 +847,7 @@ async function main() {
       configured: config.limitsExplicit,
       env: process.env,
       defaults: DEFAULTS.limits,
+      configLabel: config.configFile,
     });
 
     const run = await runGates({

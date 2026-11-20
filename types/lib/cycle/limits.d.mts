@@ -71,22 +71,26 @@ export declare function checkLimitValue(key: string, value: unknown, source: str
  *   cli?: Record<string, unknown>,
  *   env?: Record<string, string|undefined>,
  *   defaults?: Readonly<Record<string, number>>,
+ *   configLabel?: string,
  * }} [options]
  *   `config` — раздел `limits` из `loadConfig` (уже проверен схемой), `configured` — ключи,
  *   заданные в файле проекта (`config.limitsExplicit`): только они имеют источник `config`,
  *   остальные значения из `config` пришли из дефолтов ядра. `cli` — значения флагов,
- *   `env` — окружение, `defaults` — дефолты ядра (`DEFAULTS.limits`).
+ *   `env` — окружение, `defaults` — дефолты ядра (`DEFAULTS.limits`), `configLabel` —
+ *   фактический путь конфига для текста ошибки (`config.configFile`): литерал соврал бы,
+ *   если конфиг лежит вне `.pi/` (ADR 0005, б).
  * @returns {{
  *   values: Record<string, number>,
  *   sources: Record<string, 'cli'|'env'|'config'|'default'>,
  * }}
  */
-export declare function resolveLimits({ config, configured, cli, env, defaults, }?: {
+export declare function resolveLimits({ config, configured, cli, env, defaults, configLabel, }?: {
     config?: Record<string, number> | null;
     configured?: readonly string[] | null;
     cli?: Record<string, unknown>;
     env?: Record<string, string | undefined>;
     defaults?: Readonly<Record<string, number>>;
+    configLabel?: string;
 }): {
     values: Record<string, number>;
     sources: Record<string, 'cli' | 'env' | 'config' | 'default'>;

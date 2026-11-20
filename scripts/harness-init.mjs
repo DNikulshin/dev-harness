@@ -45,7 +45,7 @@ import { fileURLToPath } from 'node:url';
 import { analyzeHarness, formatViolation, formatWarning, readHarness } from './check-harness.mjs';
 
 import { isDirectRun } from './lib/cycle/cli.mjs';
-import { loadConfig } from './lib/cycle/config.mjs';
+import { loadConfig, takeConfigOption } from './lib/cycle/config.mjs';
 
 /** Корень репозитория ядра: родитель каталога `scripts/`. */
 const DEFAULT_ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
@@ -389,7 +389,13 @@ export function packageVersion(root) {
  * Побочные эффекты внедряются (`io.write`/`io.log`), чтобы тесты проверяли план и текст вывода,
  * не трогая дерево проекта.
  * @param {InitArgs} args
- * @param {{ write?: (file: string, text: string) => void, log?: (line: string) => void }} [io]
+ * @param {{
+ *   write?: (file: string, text: string) => void,
+ *   log?: (line: string) => void,
+ *   configFile?: string|null,
+ * }} [io]
+ *   `configFile` — путь конфига из `--config`/`HARNESS_CONFIG` (граница CLI, ADR 0005):
+ *   по нему ищутся пути профиля в отчёте о раскладке
  * @returns {{ code: number, lines: string[] }}
  */
 export function runInit(args, io = {}) {
@@ -511,7 +517,7 @@ export function runInit(args, io = {}) {
     emit(`записан: ${VERSION_FILE} (версия ${version})`);
   }
 
-  printReport(args.root, emit);
+  printReport(args.root, emit, io.configFile ?? null);
   // Точная команда: у `check-harness` без `--root` корень — каталог пакета, а не проект.
   emit('проверить отдельно: harness-check-layout --root .');
 
@@ -540,15 +546,16 @@ function describeState(state, forCheck) {
  * Отчёт проверки раскладки: тот же код, что `check-harness`, без подпроцесса.
  * @param {string} root
  * @param {(line: string) => void} emit
+ * @param {string|null} configFile путь конфига из `--config` (`null` — умолчание)
  * @returns {void}
  */
-function printReport(root, emit) {
+function printReport(root, emit, configFile) {
   /** @type {import('./check-harness.mjs').Violation[]} */
   let violations;
   /** @type {import('./check-harness.mjs').Warning[]} */
   let warnings;
   try {
-    const config = loadConfig(root);
+    const config = loadConfig(root, { file: configFile });
     const agentsMd = join(root, ...config.paths.agentsMd.split('/'));
     if (!existsSync(agentsMd)) {
       // Без `AGENTS.md` проверка раскладки бессмысленна: это правила проекта, и их пишет
@@ -577,8 +584,12 @@ function printReport(root, emit) {
 /** Тонкий CLI: план и отчёт в stdout, диагностика — в stderr. */
 function main() {
   try {
-    const args = parseArgs(process.argv.slice(2));
-    const { code } = runInit(args, { log: (line) => process.stdout.write(`${line}\n`) });
+    const cli = takeConfigOption(process.argv.slice(2));
+    const args = parseArgs(cli.argv);
+    const { code } = runInit(args, {
+      log: (line) => process.stdout.write(`${line}\n`),
+      configFile: cli.file,
+    });
     process.exitCode = code;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

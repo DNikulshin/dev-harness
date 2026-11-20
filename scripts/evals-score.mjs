@@ -38,7 +38,7 @@ import { priceStage, readPrices, roundRub } from './lib/evals/cost.mjs';
 import { SCORED_STAGES, DEFAULT_REPEAT, buildReport, scoreRun } from './lib/evals/score.mjs';
 import { loadSeeds } from './lib/evals/seeds.mjs';
 import { writeJsonAtomic, writeTextAtomic } from './lib/cycle/io.mjs';
-import { loadConfig } from './lib/cycle/config.mjs';
+import { loadConfig, takeConfigOption } from './lib/cycle/config.mjs';
 import { artifactsDir, repoRoot } from './lib/cycle/paths.mjs';
 
 /** Пороги по умолчанию (docs/orchestrator.md §15: полнота ≥ 0.8, ложные блокировки ≤ 1 из 5). */
@@ -145,9 +145,10 @@ export function repeatOf(meta, label) {
  */
 function main() {
   try {
-    const args = parseArgs(process.argv.slice(2));
+    const cli = takeConfigOption(process.argv.slice(2));
+    const args = parseArgs(cli.argv);
     const root = args.root === null ? repoRoot() : resolve(args.root);
-    const config = loadConfig(root);
+    const config = loadConfig(root, { file: cli.file });
     const runsDir =
       args.runs === null ? join(artifactsDir(root, config), 'evals') : resolve(args.runs);
     const seeds = loadSeeds(args.seeds ?? join(root, config.evals.seedsDir));

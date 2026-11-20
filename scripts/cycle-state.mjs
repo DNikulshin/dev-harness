@@ -156,7 +156,7 @@ import { dirname, join, resolve } from 'node:path';
 import { normalizeDoc } from './cycle-decide.mjs';
 import { assertWritableDir, extractCriteria, readIssue } from './cycle-evidence.mjs';
 import { isDirectRun } from './lib/cycle/cli.mjs';
-import { DEFAULTS, loadConfig } from './lib/cycle/config.mjs';
+import { DEFAULTS, loadConfig, takeConfigOption } from './lib/cycle/config.mjs';
 import {
   CRITERIA_FILE,
   CRITERIA_OWNER_APPROVED,
@@ -1415,6 +1415,7 @@ function runInit(args, root, config) {
     cli: { defaultMaxIterations: args.maxIterations },
     env: process.env,
     defaults: DEFAULTS.limits,
+    configLabel: config.configFile,
   });
 
   const state = buildInitState({
@@ -2151,9 +2152,10 @@ function run(args, root, config) {
  */
 function main() {
   try {
-    const args = parseArgs(process.argv.slice(2));
+    const cli = takeConfigOption(process.argv.slice(2));
+    const args = parseArgs(cli.argv);
     const root = repoRoot();
-    process.exitCode = run(args, root, loadConfig(root));
+    process.exitCode = run(args, root, loadConfig(root, { file: cli.file }));
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     process.stderr.write(`cycle-state: ${message}\n`);

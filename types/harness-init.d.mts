@@ -155,12 +155,19 @@ export declare function packageVersion(root: string): string;
  * Побочные эффекты внедряются (`io.write`/`io.log`), чтобы тесты проверяли план и текст вывода,
  * не трогая дерево проекта.
  * @param {InitArgs} args
- * @param {{ write?: (file: string, text: string) => void, log?: (line: string) => void }} [io]
+ * @param {{
+ *   write?: (file: string, text: string) => void,
+ *   log?: (line: string) => void,
+ *   configFile?: string|null,
+ * }} [io]
+ *   `configFile` — путь конфига из `--config`/`HARNESS_CONFIG` (граница CLI, ADR 0005):
+ *   по нему ищутся пути профиля в отчёте о раскладке
  * @returns {{ code: number, lines: string[] }}
  */
 export declare function runInit(args: InitArgs, io?: {
     write?: (file: string, text: string) => void;
     log?: (line: string) => void;
+    configFile?: string | null;
 }): {
     code: number;
     lines: string[];

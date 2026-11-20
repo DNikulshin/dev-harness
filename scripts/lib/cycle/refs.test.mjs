@@ -194,13 +194,13 @@ describe('resolveRef: path:line', () => {
     assert.match(resolveRef('C:\\repo\\file.mjs:1', { root }).error ?? '', /обратные слэши/);
   });
 
-  test('`..`, `.pi/artifacts/` и `node_modules/` запрещены по отдельности', (t) => {
+  test('`..`, каталог артефактов и `node_modules/` запрещены по отдельности', (t) => {
     const root = makeRoot(t);
 
     assert.match(resolveRef('../secret.mjs:1', { root }).error ?? '', /«\.\.» в пути запрещён/);
     assert.match(
       resolveRef('.pi/artifacts/2026-11-16-1-slug/state.json:1', { root }).error ?? '',
-      /путь в \.pi\/artifacts\/ запрещён/,
+      /путь в каталог артефактов запрещён/,
     );
     assert.match(
       resolveRef('node_modules/left-pad/index.js:1', { root }).error ?? '',
