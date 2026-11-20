@@ -19,3 +19,10 @@ export declare function parseArgs(argv: string[]): {
  * @returns {string}
  */
 export declare function datePart(iso: string): string;
+/**
+ * Ожидание сида одной строкой: набор `severities` печатается набором, а не одним значением,
+ * иначе сид с `MAJOR|FOLLOW-UP` выглядел бы как требование `BLOCKER`.
+ * @param {import('./lib/evals/seeds.mjs').SeedExpectation} expect
+ * @returns {string}
+ */
+export declare function describeExpectation(expect: import('./lib/evals/seeds.mjs').SeedExpectation): string;
