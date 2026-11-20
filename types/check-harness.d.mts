@@ -26,19 +26,11 @@ export type Violation = {
     file: string;
     messages: string[];
 };
-/**
- * @typedef {{ name: string, file: string, fields: Record<string, string | string[]> | null }} AgentDoc
- *   `fields === null` — файла агента нет (нарушение H1).
- * @typedef {{
- *   agents: AgentDoc[],
- *   settings: unknown,
- *   cycleText: string,
- *   agentsMdText: string,
- *   provider?: string,
- * }} HarnessInput
- * @typedef {{ rule: string, file: string, messages: string[] }} Violation
- *   Одно нарушение = одна строка вывода: правило + файл + склеенные сообщения.
- */
+export type Warning = {
+    rule: string;
+    file: string;
+    message: string;
+};
 /**
  * Разбирает frontmatter агента: блок между строками `---`, строки `key: value`,
  * значения в одинарных или двойных кавычках, `tools` — список через запятую.
@@ -83,10 +75,26 @@ export declare function familyOf(model: string | string[] | undefined, provider?
 /**
  * Применяет правила H1–H6 к уже прочитанным входам. Чистая функция: файлов не читает,
  * порядок вывода не зависит от порядка ключей объектов.
+ * Возвращает и нарушения (влияют на код выхода), и предупреждения `W2` (только видимость).
+ * @param {HarnessInput} input
+ * @returns {{ violations: Violation[], warnings: Warning[] }}
+ */
+export declare function analyzeHarness(input: HarnessInput): {
+    violations: Violation[];
+    warnings: Warning[];
+};
+/**
+ * Нарушения раскладки: то, из-за чего проверка падает (код выхода 1).
  * @param {HarnessInput} input
  * @returns {Violation[]}
  */
 export declare function evaluateHarness(input: HarnessInput): Violation[];
+/**
+ * Предупреждения `W2`: допустимые конфигурации, которые нужно видеть, но не ломать.
+ * @param {HarnessInput} input
+ * @returns {Warning[]}
+ */
+export declare function harnessWarnings(input: HarnessInput): Warning[];
 /**
  * Находит в тексте идентификаторы моделей в порядке первого появления, без повторов
  * (сравнение без учёта регистра). Возвращает найденные написания как есть. Префикс
@@ -102,6 +110,12 @@ export declare function findModelIdentifiers(text: string, provider?: string): s
  * @returns {string}
  */
 export declare function formatViolation(violation: Violation): string;
+/**
+ * Строка предупреждения одной строкой: `W2: <файл> — <что не так>`.
+ * @param {Warning} warning
+ * @returns {string}
+ */
+export declare function formatWarning(warning: Warning): string;
 /**
  * Разбирает аргументы CLI: единственный необязательный — `--root <dir>`.
  * @param {string[]} argv
