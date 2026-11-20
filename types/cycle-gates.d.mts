@@ -103,7 +103,22 @@ export declare function scanAddedLines(files: unknown): {
  */
 export declare function trimLog(file: string, maxBytes?: number): boolean;
 /**
+ * Переменные, которые гейт получает всегда (ADR 0007, в): `PATH` нужен, чтобы разрешился
+ * `executable`, `HOME` — чтобы работали кэши `pnpm`/`npm`, `TMPDIR` — чтобы было куда писать
+ * временные файлы. Секретов в этом списке нет и не появится: список — часть контракта.
+ * @type {readonly string[]}
+ */
+export declare const SERVICE_ENV: readonly string[];
+/**
  * Окружение процесса гейта: наследуется от текущего процесса плюс `TURBO_FORCE=true`.
+ *
+ * Объявленное окружение (ADR 0007, б) выключает наследование: гейт получает служебные
+ * переменные, `allow`-переменные из базового окружения и литеральные `set` — и ничего больше.
+ * Значит секрет, не названный в `allow`, до гейта не доходит; секрет, попавший в лог, всё равно
+ * маскируется (§5.4), то есть это не замена маскированию, а сужение поверхности.
+ *
+ * `TURBO_FORCE` ставится последним и не переопределяется: `pass` без живого прогона — ложное
+ * свидетельство, и «умное» окружение не должно его отключать.
  *
  * Без этого turbo отдаёт результат из кэша («FULL TURBO»), и `pass` в `gates.<n>.json`
  * означал бы «эти входы когда-то уже проверялись», а не живой прогон (§5.5, #216). Кэш
@@ -114,9 +129,11 @@ export declare function trimLog(file: string, maxBytes?: number): boolean;
  * `check_arch`, `check_harness`, `format_check`, `lint:workflows` и `test:scripts`
  * кэша не имеют.
  * @param {NodeJS.ProcessEnv} [base] базовое окружение (в тестах — подмена)
+ * @param {import('./lib/cycle/config.mjs').GateEnv|null} [declaration] объявленный `env` гейта
+ *   (`null` — объявления нет, наследование полное)
  * @returns {NodeJS.ProcessEnv} окружение для `spawn`
  */
-export declare function gateEnv(base?: NodeJS.ProcessEnv): NodeJS.ProcessEnv;
+export declare function gateEnv(base?: NodeJS.ProcessEnv, declaration?: import('./lib/cycle/config.mjs').GateEnv | null): NodeJS.ProcessEnv;
 /**
  * Поток маскирования вывода гейта (§5.4, §5.5): `redactLog` применяется до записи в файл,
  * поэтому секрет из stdout/stderr не оказывается на диске даже на время.

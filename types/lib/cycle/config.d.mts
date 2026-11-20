@@ -82,6 +82,20 @@ export type LoadedGate = {
      * класс отказа по логу: нет базы → `not_run` с `no_database`
      */
     dbGate: boolean;
+    /**
+     * объявленное окружение гейта (`null` — полное наследование)
+     */
+    env: GateEnv | null;
+};
+export type GateEnv = {
+    /**
+     * имена переменных, наследуемых из окружения вызывающего
+     */
+    allow: readonly string[];
+    /**
+     * литеральные значения (не секреты: конфиг в git)
+     */
+    set: Readonly<Record<string, string>>;
 };
 export type Limits = {
     maxDiffLines: number;

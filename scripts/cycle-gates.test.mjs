@@ -19,6 +19,7 @@ import {
   classifyTestIntLog,
   createRedactStream,
   exitCode,
+  SERVICE_ENV,
   gateEnv,
   isGateApplicable,
   parseArgs as parseArgsRaw,
@@ -678,6 +679,91 @@ describe('cycle-gates: лог и тайм-аут', () => {
     assert.equal(env.TURBO_FORCE, 'true', 'turbo обязан исполнить задачу, а не отдать кэш');
     assert.equal(env.PATH, '/usr/bin');
     assert.equal(env.DATABASE_URL, 'postgresql://localhost/x', 'окружение не теряется');
+  });
+
+  test('объявленный env выключает наследование: только allow, set и служебные', () => {
+    /** @type {Record<string, string>} */
+    const base = {
+      PATH: '/usr/bin',
+      HOME: '/home/fixture',
+      TMPDIR: '/tmp/fixture',
+      ALLOWED: 'видимое',
+      SECRET_MARKER: 'значение-которого-гейт-видеть-не-должен',
+    };
+
+    const env = gateEnv(base, { allow: ['ALLOWED'], set: { CI: '1' } });
+
+    assert.equal(env.ALLOWED, 'видимое', 'разрешённая переменная наследуется');
+    assert.equal(env.SECRET_MARKER, undefined, 'неразрешённая переменная не доходит');
+    for (const name of SERVICE_ENV) {
+      assert.equal(env[name], base[name], `служебная переменная ${name} доступна`);
+    }
+    assert.equal(env.CI, '1', 'литерал из set попадает в окружение');
+    assert.equal(env.TURBO_FORCE, 'true');
+  });
+
+  test('служебные переменные не переопределяются объявлением, TURBO_FORCE — тем более', () => {
+    const env = gateEnv(
+      { PATH: '/usr/bin', HOME: '/home/fixture', TMPDIR: '/tmp/fixture' },
+      { allow: ['PATH'], set: { TURBO_FORCE: 'false', PATH: '/usr/local/bin' } },
+    );
+
+    assert.equal(env.PATH, '/usr/local/bin', 'set сильнее унаследованного значения');
+    assert.equal(env.TURBO_FORCE, 'true', 'живой прогон важнее объявления');
+  });
+
+  test('пустое объявление env: остаются только служебные переменные', () => {
+    const env = gateEnv(
+      { PATH: '/usr/bin', ALLOWED: 'видимое', SECRET_MARKER: 'секрет' },
+      { allow: [], set: {} },
+    );
+
+    assert.deepEqual(Object.keys(env).sort(), ['PATH', 'TURBO_FORCE']);
+  });
+
+  test('без объявления окружение наследуется целиком (обратная совместимость)', () => {
+    const base = { PATH: '/usr/bin', DATABASE_URL: 'postgresql://localhost/x', ANY: 'значение' };
+
+    assert.deepEqual(gateEnv(base, null), { ...base, TURBO_FORCE: 'true' });
+  });
+
+  test('объявленный env действует на реальном прогоне: секрет не доходит до гейта', async (t) => {
+    const dir = makeCycleDir(t);
+    const allowed = 'HARNESS_TEST_ALLOWED_VAR';
+    const secret = 'HARNESS_TEST_SECRET_VAR';
+    const previous = { allowed: process.env[allowed], secret: process.env[secret] };
+    process.env[allowed] = 'разрешено';
+    process.env[secret] = 'не-должно-попасть-в-лог';
+    t.after(() => {
+      if (previous.allowed === undefined) delete process.env[allowed];
+      else process.env[allowed] = previous.allowed;
+      if (previous.secret === undefined) delete process.env[secret];
+      else process.env[secret] = previous.secret;
+    });
+
+    const definitions = [
+      {
+        id: 'probe_declared_env',
+        executable: process.execPath,
+        args: [
+          '-e',
+          `process.stdout.write(JSON.stringify({ allowed: process.env.${allowed} ?? null, secret: process.env.${secret} ?? null, path: Boolean(process.env.PATH), turbo: process.env.TURBO_FORCE }))`,
+        ],
+        required: true,
+        dependsOn: [],
+        pathPrefixes: [],
+        env: { allow: [allowed], set: {} },
+      },
+    ];
+
+    const run = await runGates({ definitions, iteration: 1, dir, runner: undefined });
+    const entry = run.gates[0];
+    assert.ok(entry, 'запись гейта есть');
+    assert.equal(entry.status, 'pass', entry.reason ?? '');
+    assert.ok(entry.log, 'лог гейта записан');
+
+    const seen = JSON.parse(readFileSync(join(dir, entry.log), 'utf8'));
+    assert.deepEqual(seen, { allowed: 'разрешено', secret: null, path: true, turbo: 'true' });
   });
 
   test('гейт запускается с TURBO_FORCE=true: pass — живой прогон, а не FULL TURBO', async (t) => {
