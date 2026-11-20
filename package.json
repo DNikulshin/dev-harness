@@ -36,6 +36,7 @@
     "harness-evals-cost": "./scripts/evals-cost.mjs",
     "harness-evals-pack": "./scripts/evals-pack.mjs",
     "harness-evals-score": "./scripts/evals-score.mjs",
+    "harness-init": "./scripts/harness-init.mjs",
     "harness-selftest": "./scripts/selftest.mjs"
   },
   "scripts": {
