@@ -91,7 +91,7 @@
 scripts/
   cycle-state.mjs      cycle-evidence.mjs   cycle-gates.mjs
   cycle-decide.mjs     cycle-pr-body.mjs    cycle-metrics.mjs
-  cycle-usage.mjs      cycle-report.mjs
+  cycle-usage.mjs      cycle-report.mjs      cycle-driver.mjs
   check-harness.mjs
   lib/cycle/
     paths.mjs  io.mjs  validate.mjs  refs.mjs  git.mjs  redact.mjs  config.mjs
@@ -118,6 +118,7 @@ scripts/
 | `limits.mjs`   | `resolveLimits({ config, configured, cli, env, defaults })` — приоритет CLI → env → конфиг → дефолт и источники значений; `checkLimitValue` (диапазоны), `describedLimits` (блок `applied_limits`), `LIMIT_FLAGS`, `envNameFor`. Файлов не читает: конфиг приходит загруженным |
 | `criteria.mjs` | `parseCriteria(md)` — разбор `evidence/criteria.md` (`- C1: …`); `criteriaDigest(criteria)` — `sha256` пар `[id, текст]` в порядке файла; `CRITERIA_FILE`, `CRITERIA_OWNER_APPROVED`. Один разбор на три скрипта: `cycle-evidence`, `cycle-state`, `cycle-decide` |
 | `cost.mjs`     | `normalizeUsage`, `priceUsage`, `priceKeyFor`, `readUsage`, `readPriceSnapshot`, `cycleCostRub`: расход и его стоимость по `usage.json` и `evals/prices.json` — одна формула и для `metrics.json`, и для бюджетного порога                               |
+| `driver.mjs`   | `planStep({ state, artifacts })` — чистая маршрутизация: какой шаг следующий (`run`/`advance`/`finish`/`spawn`/`handoff`/`stop`/`blocked`), какая стадия и почему; `isExecutable`, `describeStep`; журнал решений: `buildJournalEntry`, `mismatchAfter`, `expectedAfter`, `sameAnswer`, `parseJournal`, `summarizeJournal` (§5.3a). Ни файлов, ни процессов, ни моделей: наличие артефактов приходит готовым |
 | `integrity.mjs` | `matchesPath(pattern, path)` — правила путей: `*` внутри сегмента, `**` через сегменты, правило без wildcard задевает и всё вложенное; `classifyIntegrity({ changes, integrity })` — пути из `changedFilesWithStatus` раскладываются по `added`/`modified`/`deleted` раздельно для тестов и защищённых файлов; `integrityConfigured`. Чистые функции: ни файлов, ни git, ни времени |
 
 **Источники лимитов (#235).** Шесть лимитов — `maxCycleCostRub`, `defaultMaxIterations`,
@@ -207,8 +208,13 @@ lock [--dir D] [--slug S] | unlock [--dir D]  блокировка дерева,
 | EVALUATE         | REVIEW, DECIDE                                            |
 | DECIDE           | REWORK, ACQUIRE_EVIDENCE, REVIEW, EVALUATE, PR, ESCALATED |
 | REWORK           | CODE                                                      |
-| ACQUIRE_EVIDENCE | GATES, QA_WEB                                             |
+| ACQUIRE_EVIDENCE | GATES, QA_WEB, REVIEW                                     |
 | PR               | DONE                                                      |
+
+**`ACQUIRE_EVIDENCE → REVIEW`** реализовано в #47: `acquire: integrity` (§5.6) означает повтор
+ревью с вопросом «не ослаблены ли проверки», а не гейт и не браузерную проверку — без этого
+ребра добор целостности упирался в тупик: из `ACQUIRE_EVIDENCE` вели только `GATES` и `QA_WEB`.
+Драйвер маршрутизации выбирает эту цель по `acquire[]` решения, а не по смыслу.
 
 **`QA_WEB → ESCALATED`** реализовано (issue #202): ребро есть в `TRANSITIONS.QA_WEB`, его
 требует Приложение B (`escalate --reason diff_too_large` на ANALYSIS уже после QA_WEB).
@@ -267,6 +273,55 @@ lock [--dir D] [--slug S] | unlock [--dir D]  блокировка дерева,
 inode — удаления «по пути» нет. `unlock` безусловен: отсутствующий файл — no-op с кодом 0;
 вызывается и на `DONE`, и на `ESCALATE` (иначе lock с живым pid супервизора держит дерево до
 конца сессии).
+
+### 5.3a `cycle-driver.mjs`
+
+```
+node scripts/cycle-driver.mjs next [--dir D] [--root R]       что делать прямо сейчас
+node scripts/cycle-driver.mjs run  [--dir D] [--max-steps N]  исполнить детерминированные шаги
+```
+
+Маршрутизация стадий кодом вместо LLM-супервизора (issue #47, «фаза 3» §17
+`docs/orchestrator.md`). Драйвер читает `state.json`, наличие артефактов и `decision.<n>.json`
+и отвечает одним дескриптором шага: `action` (`run` / `advance` / `finish` / `spawn` /
+`handoff` / `stop` / `blocked`), `step` (токен детерминированного скрипта), `reason`,
+`commands` (готовые команды с путями), `waiting_for`, `allowed_next`. Решение принимает чистая
+функция `lib/cycle/driver.mjs`; CLI только рендерит команды и исполняет их.
+
+- `next` — только чтение состояния: не меняет `state.json` и артефакты, не запускает процессов
+  и не зовёт моделей. Единственный побочный эффект — запись в журнал `driver.jsonl` (ниже).
+- `run` — исполняет `run`/`advance`/`finish` подряд до первого `spawn`/`handoff`/`stop`/
+  `blocked`. Работу моделей (`plan`, `code`, `review`, `evaluate`) и коммиты с PR драйвер не
+  делает: он говорит, кому и с каким входом их передать.
+- Писатель состояния остаётся один: драйвер зовёт `cycle-state` подпроцессом, а не правит
+  `state.json` сам. Таблица переходов берётся из `TRANSITIONS`/`advanceTargets` — копии
+  автомата в драйвере нет.
+- Маршрутизация после закрытой стадии — факт, а не суждение: `GATES → QA_WEB` только при
+  web-диффе от `base_sha`, `ACQUIRE_EVIDENCE` → цель из `acquire[]` решения, `REVIEW →
+  EVALUATE → DECIDE` по протоколу.
+- Коды выхода: `0` — шаг определён или исполнен; `1` — `blocked` (стадия закрыта с ошибкой,
+  нет перехода, неизвестная стадия); `2` — ошибка использования или данных; `3`/`4` — коды
+  подпроцесса (`state_conflict`, `diff_too_large`) без переупаковки.
+
+**Журнал и наблюдаемость (#47).** Каждое отличающееся от предыдущего решение драйвер дописывает
+строкой JSONL в `driver.jsonl` каталога цикла: `at`, `stage`, `status`, `action`, `step`,
+`target`, `reason`, `executed`, `mismatch`. Повторный `next` на том же дереве ответа не меняет и
+журнал не растит — счётчики считают шаги маршрута, а не число вопросов. Журнал — телеметрия, а
+не артефакт протокола: в `evidence/` он не входит, руками не правится, при разборе цикла его
+можно удалить (тогда `metrics.json` напишет блок `driver` как отсутствующий).
+
+`mismatch` — расхождение состояния с предыдущим ответом драйвера: `true`, если после шага
+состояние пришло не туда, куда шаг вёл (`advance` — в `target`, `finish`/`spawn`/`run` — в ту же
+стадию). У `handoff` ожидание шире: работа передана супервизору (коммиты, PR, бриф, браузер) и
+заканчивается его `finish` + `advance`, поэтому допустимы и цели `advanceTargets` — `PR → DONE`
+после создания PR расхождением не считается. Не сверяются `apply-decision` (стадию переводит
+решение, а не драйвер), `stop`/`blocked` и переход в `ESCALATED`: эскалация — штатный выход
+протокола §18, а не обход маршрута. Ноль в `driver.mismatch` и есть измерение §17: маршрутизация
+действительно кодом.
+
+Граница объёма: драйвер не заменяет модели и не отменяет супервизора — он отбирает у него
+решение «какая стадия следующая». Поведение супервизора описано в Приложении B; драйвер —
+исполняемая форма той же таблицы.
 
 ### 5.4 `cycle-evidence.mjs`
 
@@ -478,7 +533,10 @@ node scripts/cycle-pr-body.mjs --dir D [--draft-escalation]
 каталога цикла: `tokens` — суммы по этапам (пишет `cycle-usage` по транскриптам субагентов),
 `cost_rub` — те же токены по `evals/prices.json` и моделям из `state.models`. Нет замера —
 `null` (это «не измеряли», а не ноль); нет цен или модели хотя бы у одного этапа с расходом —
-`cost_rub: null`, потому что неполная сумма выдавала бы себя за полную.
+`cost_rub: null`, потому что неполная сумма выдавала бы себя за полную. Блок `driver` (#47) —
+счётчики журнала `driver.jsonl`: `steps` (решений выдано), `executed` (исполнено драйвером),
+`handed_off` (`spawn`/`handoff` супервизору), `mismatch` (расхождений с ответом драйвера).
+Журнала нет — блока нет: цикл вели без драйвера, и выдумывать нули нельзя.
 
 ### 5.8a `cycle-report.mjs`
 
@@ -872,10 +930,14 @@ A1–A9 статически; запуск `node --test` и `gh` остаётс�
 | `evaluator_shares_family_with_plan`           | boolean: семейство — второй сегмент `model` (§5.9); нет ключа `evaluate` — `true` (R2)                                                   |
 | `tokens`                                      | `null` или карта «этап → `{runs, input, cache_read, cache_write, output, reasoning}`»; этапы только `plan`, `code`, `review`, `evaluate` |
 | `cost_rub`                                    | `null` или число ≥ 0 (₽, копейки): те же токены по `evals/prices.json` и `state.models`                                                  |
+| `driver`                                      | необязательный блок: `{ steps, executed, handed_off, mismatch }`, целые ≥ 0 — сводка журнала `driver.jsonl` (§5.3a); нет журнала — нет блока |
 
 ## Приложение B. Протокол супервизора (канонический порядок команд)
 
 Супервизор вызывает команды и выполняет `action` из `decision`, ничего не решая сам.
+Маршрутизацию стадий с #47 отдаёт `cycle-driver next`: он отвечает, какая стадия следующая и
+что именно делать, а супервизор исполняет. Команды ниже приведены в том же порядке — драйвер
+выдаёт их же, поэтому расхождение таблицы и кода видно по `next`.
 
 ```
 INIT       gh issue view N --json title,body,labels > <dir>/issue.json
@@ -898,7 +960,8 @@ ANALYSIS   node scripts/cycle-evidence.mjs packet --dir <dir>   (код 4 → es
 DECIDE     advance --to DECIDE → node scripts/cycle-decide.mjs --dir <dir> → cycle-state apply-decision
            действия по `action`:
              RETRY_STAGE            повторить указанный этап один раз
-             ACQUIRE_EVIDENCE       выполнить acquire[] (гейт или QA_WEB), затем снова ANALYSIS
+             ACQUIRE_EVIDENCE       выполнить acquire[] (гейт → GATES, qa-web → QA_WEB,
+                                    integrity → повтор REVIEW), затем снова ANALYSIS
              REWORK                 rework-brief.<n>.md из rework_items → CODE (iteration+1)
              PROCEED[_WITH_UNVERIFIED]  followups.md (замечания вне скоупа — до сборки тела,
                                          иначе «Вне скоупа» останется пустым), коммиты, push,

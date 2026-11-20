@@ -1,4 +1,13 @@
 #!/usr/bin/env node
+/** Имена файлов внутри `evidence/`. Экспорт — для `cycle-driver`: он проверяет наличие пакета. */
+export declare const EVIDENCE_FILES: Readonly<{
+    issue: "issue.md";
+    criteria: "criteria.md";
+    diff: "diff.patch";
+    gates: "gates.json";
+    integrity: "integrity.json";
+    qaWeb: "qa-web.json";
+}>;
 export type Criterion = {
     /**
      * `C1`, `C2`, …

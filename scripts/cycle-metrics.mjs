@@ -61,7 +61,7 @@
  * (нет/битый `state.json` или `gates.<n>.json`, нарушена схема, мусор в аргументах).
  * Shebang нужен: файл запускается напрямую.
  */
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 
 import { normalizeDoc } from './cycle-decide.mjs';
@@ -75,6 +75,7 @@ import {
   readUsage,
 } from './lib/cycle/cost.mjs';
 import { isDirectRun } from './lib/cycle/cli.mjs';
+import { parseJournal, summarizeJournal } from './lib/cycle/driver.mjs';
 import { DEFAULTS, loadConfig } from './lib/cycle/config.mjs';
 import { readJson, writeJsonAtomic } from './lib/cycle/io.mjs';
 import { describedLimits, resolveLimits } from './lib/cycle/limits.mjs';
@@ -148,6 +149,7 @@ const DURATION_FACTOR = 10 ** DURATION_DIGITS;
  * @property {boolean} evaluator_shares_family_with_plan
  * @property {Record<string, { runs: number, input: number, cache_read: number, cache_write: number, output: number, reasoning: number }>|null} tokens
  * @property {number|null} cost_rub
+ * @property {{ steps: number, executed: number, handed_off: number, mismatch: number }} [driver]
  */
 
 /**
@@ -349,9 +351,12 @@ export function evaluatorSharesFamilyWithPlan(models) {
  *   usage?: Record<string, any>|null,
  *   prices?: Record<string, import('./lib/evals/cost.mjs').ModelPrice>|null,
  *   appliedLimits?: Record<string, { value: number, source: string }>|null,
+ *   driver?: { steps: number, executed: number, handed_off: number, mismatch: number }|null,
  * }} inputs
  *   `appliedLimits` — лимиты с источниками (#235): попав в `metrics.json`, они объясняют,
  *   по какому порогу считались бюджет и размер диффа. Считает CLI, а не эта функция.
+ *   `driver` — сводка журнала `driver.jsonl` (#47): сколько шагов выдал драйвер, сколько
+ *   исполнил сам и сколько раз состояние разошлось с его ответом. `null` — журнала нет.
  * @returns {Metrics}
  */
 export function buildMetrics({
@@ -360,6 +365,7 @@ export function buildMetrics({
   usage = null,
   prices = null,
   appliedLimits = null,
+  driver = null,
 }) {
   /** @type {Record<string, number>} */
   const stageTotals = {};
@@ -490,6 +496,8 @@ export function buildMetrics({
     cost_rub: tokens === null || prices === null ? null : priceUsage(tokens, state.models, prices),
     // Применённые лимиты цикла (#235): видно, с каким порогом считали бюджет и дифф.
     ...(appliedLimits === null ? {} : { applied_limits: appliedLimits }),
+    // Маршрутизация кодом (#47): `mismatch = 0` — супервизор ни разу не разошёлся с драйвером.
+    ...(driver === null ? {} : { driver }),
   };
 }
 
@@ -599,6 +607,19 @@ function readIterations(dir, state) {
 }
 
 /**
+ * Сводка журнала решений драйвера (#47). Нет файла — `null`: цикл вели без драйвера, и это
+ * факт, а не ноль. Битая запись — исключение (код 2), а не тихий пропуск: `mismatch`
+ * считается по журналу, и потерянная строка выдала бы себя за чистую маршрутизацию.
+ * @param {string} dir каталог цикла
+ * @returns {{ steps: number, executed: number, handed_off: number, mismatch: number }|null}
+ */
+export function readDriverJournal(dir) {
+  const file = join(dir, FIXED_NAMES.driverJournal);
+  if (!existsSync(file)) return null;
+  return summarizeJournal(parseJournal(readFileSync(file, 'utf8')));
+}
+
+/**
  * Каталог цикла при запуске без `--dir`. Сообщение `findActiveCycle` содержит
  * абсолютный путь каталога артефактов; для диагностики он заменяется относительным.
  * @param {string} root корень репозитория
@@ -642,6 +663,7 @@ function main() {
       usage: readUsage(dir),
       prices: readPriceSnapshot(root, config.evals.prices),
       appliedLimits: describedLimits(resolvedLimits),
+      driver: readDriverJournal(dir),
     });
 
     // Самопроверка: метрики обязаны проходить собственный валидатор (Приложение A).

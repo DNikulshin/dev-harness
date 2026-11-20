@@ -136,8 +136,8 @@ const REASON_DIFF_TOO_LARGE = 'diff_too_large';
 /** Подкоманды CLI. */
 const COMMANDS = Object.freeze(['criteria', 'packet']);
 
-/** Имена файлов внутри `evidence/`. */
-const EVIDENCE_FILES = Object.freeze({
+/** Имена файлов внутри `evidence/`. Экспорт — для `cycle-driver`: он проверяет наличие пакета. */
+export const EVIDENCE_FILES = Object.freeze({
   issue: 'issue.md',
   criteria: 'criteria.md',
   diff: 'diff.patch',
