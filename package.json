@@ -1,12 +1,34 @@
 {
   "name": "@dnikulshin/harness",
   "version": "0.1.0",
-  "private": true,
+  "private": false,
+  "description": "Переиспользуемое ядро цикла разработки: plan → code → gates → review → evaluate → decide, схема артефактов, проверка раскладки harness и evals-слой",
   "license": "MIT",
   "type": "module",
   "packageManager": "pnpm@9.15.0",
   "engines": {
     "node": ">=26.13 <27"
+  },
+  "keywords": [
+    "harness",
+    "agent-workflow",
+    "code-review",
+    "orchestrator",
+    "code-gates",
+    "evals",
+    "cli"
+  ],
+  "homepage": "https://github.com/DNikulshin/dev-harness#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DNikulshin/dev-harness.git"
+  },
+  "bugs": {
+    "url": "https://github.com/DNikulshin/dev-harness/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
   },
   "files": [
     "scripts/",
@@ -16,6 +38,8 @@
     "README.md"
   ],
   "exports": {
+    "./templates/*": "./templates/*",
+    "./package.json": "./package.json",
     "./scripts/check-harness": {
       "types": "./types/check-harness.d.mts",
       "default": "./scripts/check-harness.mjs"
@@ -56,10 +80,6 @@
       "types": "./types/cycle-usage.d.mts",
       "default": "./scripts/cycle-usage.mjs"
     },
-    "./scripts/lib/cycle/config": {
-      "types": "./types/lib/cycle/config.d.mts",
-      "default": "./scripts/lib/cycle/config.mjs"
-    },
     "./scripts/evals-collect": {
       "types": "./types/evals-collect.d.mts",
       "default": "./scripts/evals-collect.mjs"
@@ -76,18 +96,25 @@
       "types": "./types/evals-score.d.mts",
       "default": "./scripts/evals-score.mjs"
     },
+    "./scripts/harness": {
+      "types": "./types/harness.d.mts",
+      "default": "./scripts/harness.mjs"
+    },
     "./scripts/harness-init": {
       "types": "./types/harness-init.d.mts",
       "default": "./scripts/harness-init.mjs"
     },
+    "./scripts/lib/cycle/config": {
+      "types": "./types/lib/cycle/config.d.mts",
+      "default": "./scripts/lib/cycle/config.mjs"
+    },
     "./scripts/selftest": {
       "types": "./types/selftest.d.mts",
       "default": "./scripts/selftest.mjs"
-    },
-    "./templates/*": "./templates/*",
-    "./package.json": "./package.json"
+    }
   },
   "bin": {
+    "harness": "./scripts/harness.mjs",
     "harness-check-layout": "./scripts/check-harness.mjs",
     "harness-cycle-decide": "./scripts/cycle-decide.mjs",
     "harness-cycle-driver": "./scripts/cycle-driver.mjs",
