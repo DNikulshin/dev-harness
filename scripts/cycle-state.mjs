@@ -1329,7 +1329,7 @@ function frontmatterValue(text, key) {
  * @param {string} root корень репозитория
  * @returns {Record<string, string>}
  */
-function readModels(root, agentsDir = '.pi/agents') {
+function readModels(root, agentsDir = DEFAULTS.paths.agentsDir) {
   /** @type {Record<string, string>} */
   const models = {};
   for (const agent of MODEL_AGENTS) {

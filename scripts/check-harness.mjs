@@ -135,16 +135,32 @@ const MODEL_ID_PATTERNS = Object.freeze([
  */
 const RULE_ORDER = Object.freeze(['H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'W2']);
 
-/** Порядок файлов в выводе внутри правила. */
-const FILE_ORDER = Object.freeze([
-  '.pi/agents/plan.md',
-  '.pi/agents/code.md',
-  '.pi/agents/review.md',
-  '.pi/agents/evaluate.md',
-  '.pi/settings.json',
-  '.pi/prompts/cycle.md',
-  'AGENTS.md',
-]);
+/**
+ * Порядок файлов в выводе внутри правила. Считается из профиля раскладки (ADR 0005):
+ * сначала агенты в фиксированном порядке имён, затем настройки, промпт цикла, `AGENTS.md`.
+ * Литералы здесь были бы вторым источником истины: на профиле с другими путями вывод
+ * терял бы детерминизм, потому что ни один файл не попал бы в список и сравнение
+ * падало бы на `localeCompare`.
+ * @param {LayoutPaths} paths пути профиля (`config.paths`)
+ * @returns {string[]}
+ */
+function fileOrder(paths) {
+  return [
+    ...AGENT_NAMES.map((name) => `${paths.agentsDir}/${name}.md`),
+    paths.settings,
+    paths.cyclePrompt,
+    paths.agentsMd,
+  ];
+}
+
+/**
+ * Профиль раскладки (ADR 0005): пути, по которым проверка читает и **называет** файлы.
+ * @typedef {object} LayoutPaths
+ * @property {string} agentsDir
+ * @property {string} settings
+ * @property {string} cyclePrompt
+ * @property {string} agentsMd
+ */
 
 /**
  * @typedef {{ name: string, file: string, fields: Record<string, string | string[]> | null }} AgentDoc
@@ -155,7 +171,10 @@ const FILE_ORDER = Object.freeze([
  *   cycleText: string,
  *   agentsMdText: string,
  *   provider?: string,
+ *   paths?: LayoutPaths,
  * }} HarnessInput
+ *   `paths` — профиль раскладки (`config.paths`, ADR 0005): по нему строятся метки файлов
+ *   и порядок вывода. Без него берутся умолчания ядра.
  * @typedef {{ rule: string, file: string, messages: string[] }} Violation
  *   Одно нарушение = одна строка вывода: правило + файл + склеенные сообщения.
  * @typedef {{ rule: string, file: string, message: string }} Warning
@@ -285,6 +304,7 @@ export function readHarness(root, config = loadConfig(root)) {
     cycleText: readText(join(root, config.paths.cyclePrompt), config.paths.cyclePrompt),
     agentsMdText: readText(join(root, config.paths.agentsMd), config.paths.agentsMd),
     provider: config.provider,
+    paths: config.paths,
   };
 }
 
@@ -404,6 +424,8 @@ export function analyzeHarness(input) {
   };
 
   const provider = input.provider ?? DEFAULTS.provider;
+  const paths = input.paths ?? DEFAULTS.paths;
+  const order = fileOrder(paths);
   const byName = new Map(input.agents.map((agent) => [agent.name, agent]));
   const family = new Map(
     input.agents.map((agent) => [agent.name, familyOf(agent.fields?.model, provider)]),
@@ -413,7 +435,7 @@ export function analyzeHarness(input) {
   for (const name of AGENT_NAMES) {
     const agent = byName.get(name);
     if (agent === undefined || agent.fields === null) {
-      add('H1', `.pi/agents/${name}.md`, 'агент отсутствует');
+      add('H1', `${paths.agentsDir}/${name}.md`, 'агент отсутствует');
       continue;
     }
     const fields = agent.fields;
@@ -505,17 +527,17 @@ export function analyzeHarness(input) {
   const spawns = readSpawns(input.settings);
   const spawnsValue = spawns.value;
   if (spawns.missing) {
-    add('H5', '.pi/settings.json', 'subagents.maxSubagentSpawnsPerRun не задан');
+    add('H5', paths.settings, 'subagents.maxSubagentSpawnsPerRun не задан');
   } else if (typeof spawnsValue !== 'number' || !Number.isInteger(spawnsValue)) {
     add(
       'H5',
-      '.pi/settings.json',
+      paths.settings,
       `subagents.maxSubagentSpawnsPerRun должен быть целым: ${JSON.stringify(spawnsValue)}`,
     );
   } else if (spawnsValue < MIN_SUBAGENT_SPAWNS) {
     add(
       'H5',
-      '.pi/settings.json',
+      paths.settings,
       `subagents.maxSubagentSpawnsPerRun = ${spawnsValue}, требуется ≥ ${MIN_SUBAGENT_SPAWNS}`,
     );
   }
@@ -525,16 +547,19 @@ export function analyzeHarness(input) {
     (stage) => !new RegExp(`\\b${stage}\\b`, 'iu').test(input.cycleText),
   );
   if (missingStages.length > 0) {
-    add('H6', '.pi/prompts/cycle.md', `нет имён этапов: ${missingStages.join(', ')}`);
+    add('H6', paths.cyclePrompt, `нет имён этапов: ${missingStages.join(', ')}`);
   }
 
   // H6 (AGENTS.md): идентификаторы моделей переезжают в `.pi/agents/*`, не в прозу.
   const identifiers = findModelIdentifiers(input.agentsMdText, provider);
   if (identifiers.length > 0) {
-    add('H6', 'AGENTS.md', `идентификаторы моделей: ${identifiers.join(', ')}`);
+    add('H6', paths.agentsMd, `идентификаторы моделей: ${identifiers.join(', ')}`);
   }
 
-  return { violations: [...buckets.values()].sort(compareViolations), warnings };
+  return {
+    violations: [...buckets.values()].sort((left, right) => compareViolations(left, right, order)),
+    warnings,
+  };
 }
 
 /**
@@ -612,20 +637,21 @@ export function findModelIdentifiers(text, provider = DEFAULTS.provider) {
 }
 
 /**
- * Сравнение нарушений: сначала правило (H1→H6), затем файл в порядке `FILE_ORDER`.
+ * Сравнение нарушений: сначала правило (H1→H6), затем файл в порядке профиля.
  * @param {Violation} left
  * @param {Violation} right
+ * @param {string[]} order порядок файлов из профиля раскладки
  * @returns {number}
  */
-function compareViolations(left, right) {
+function compareViolations(left, right, order) {
   const ruleDiff = RULE_ORDER.indexOf(left.rule) - RULE_ORDER.indexOf(right.rule);
   if (ruleDiff !== 0) {
     return ruleDiff;
   }
-  const leftFile = FILE_ORDER.indexOf(left.file);
-  const rightFile = FILE_ORDER.indexOf(right.file);
-  const leftIndex = leftFile === -1 ? FILE_ORDER.length : leftFile;
-  const rightIndex = rightFile === -1 ? FILE_ORDER.length : rightFile;
+  const leftFile = order.indexOf(left.file);
+  const rightFile = order.indexOf(right.file);
+  const leftIndex = leftFile === -1 ? order.length : leftFile;
+  const rightIndex = rightFile === -1 ? order.length : rightFile;
   if (leftIndex !== rightIndex) {
     return leftIndex - rightIndex;
   }

@@ -9,6 +9,12 @@ export type AgentName = 'plan' | 'code' | 'review' | 'evaluate';
 export declare const AGENT_NAMES: readonly AgentName[];
 /** Имена этапов автомата `cycle-state.mjs` (§5.3) — их должен знать `cycle.md` (H6). */
 export declare const STAGES: readonly string[];
+export type LayoutPaths = {
+    agentsDir: string;
+    settings: string;
+    cyclePrompt: string;
+    agentsMd: string;
+};
 export type AgentDoc = {
     name: string;
     file: string;
@@ -20,6 +26,7 @@ export type HarnessInput = {
     cycleText: string;
     agentsMdText: string;
     provider?: string;
+    paths?: LayoutPaths;
 };
 export type Violation = {
     rule: string;

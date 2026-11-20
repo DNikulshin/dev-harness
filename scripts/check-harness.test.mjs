@@ -1,6 +1,14 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  cpSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -762,5 +770,98 @@ describe('CLI на фикстурных деревьях', () => {
     const result = runCli(['--unknown']);
     assert.equal(result.code, 2);
     assert.match(result.stderr, /неизвестный аргумент: --unknown/);
+  });
+});
+
+describe('check-harness: профиль раскладки (#80)', () => {
+  /**
+   * Копия фикстуры `ok`, перенесённая на профиль `harness/**`: пути в конфиге, файлы — по путям.
+   * @param {import('node:test').TestContext} t
+   * @returns {string}
+   */
+  function customProfile(t) {
+    const root = copyFixture(t, 'ok');
+    mkdirSync(join(root, 'harness'), { recursive: true });
+    renameSync(join(root, '.pi/agents'), join(root, 'harness/agents'));
+    renameSync(join(root, '.pi/settings.json'), join(root, 'harness/settings.json'));
+    renameSync(join(root, '.pi/prompts/cycle.md'), join(root, 'harness/cycle.md'));
+    rmSync(join(root, '.pi/prompts'), { recursive: true, force: true });
+    writeFileSync(
+      join(root, '.pi/harness.config.json'),
+      `${JSON.stringify(
+        {
+          provider: 'acme-ai/',
+          paths: {
+            agentsDir: 'harness/agents',
+            settings: 'harness/settings.json',
+            cyclePrompt: 'harness/cycle.md',
+          },
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    return root;
+  }
+
+  /**
+   * Файл из строки вывода: `H1: <файл> — сообщение`.
+   * @param {string} line
+   * @returns {string}
+   */
+  function fileOf(line) {
+    const head = line.split(' — ')[0] ?? line;
+    return head.split(': ').slice(1).join(': ');
+  }
+
+  test('читает файлы по путям профиля, а не по умолчаниям', (t) => {
+    const root = customProfile(t);
+
+    const result = runCli(['--root', root]);
+    assert.equal(result.code, 0, `дерево по профилю должно быть зелёным: ${result.stdout}`);
+  });
+
+  test('называет фактические пути профиля и держит порядок профиля', (t) => {
+    const root = customProfile(t);
+    rmSync(join(root, 'harness/agents/plan.md'));
+    writeFileSync(
+      join(root, 'harness/settings.json'),
+      `${JSON.stringify({ subagents: { maxSubagentSpawnsPerRun: 3 } }, null, 2)}\n`,
+    );
+    writeFileSync(join(root, 'harness/cycle.md'), 'ни одного этапа автомата\n');
+    writeFileSync(join(root, 'AGENTS.md'), '# Проект\n\nМодель gpt-6-luna в прозе.\n');
+
+    const result = runCli(['--root', root]);
+    assert.equal(result.code, 1);
+    assert.ok(!result.stdout.includes('.pi/'), 'вывод не должен ссылаться на умолчания ядра');
+
+    assert.deepEqual(lines(result.stdout).map(fileOf), [
+      'harness/agents/plan.md',
+      'harness/settings.json',
+      'harness/cycle.md',
+      'AGENTS.md',
+    ]);
+  });
+
+  test('analyzeHarness без профиля работает по умолчаниям ядра', () => {
+    const { violations } = analyzeHarness({
+      agents: AGENT_NAMES.map((name) => ({ name, file: `.pi/agents/${name}.md`, fields: null })),
+      settings: { subagents: { maxSubagentSpawnsPerRun: 1 } },
+      cycleText: 'ничего',
+      agentsMdText: 'gpt-6-luna',
+    });
+
+    assert.deepEqual(
+      violations.map((violation) => violation.file),
+      [
+        '.pi/agents/plan.md',
+        '.pi/agents/code.md',
+        '.pi/agents/review.md',
+        '.pi/agents/evaluate.md',
+        '.pi/settings.json',
+        '.pi/prompts/cycle.md',
+        'AGENTS.md',
+      ],
+    );
   });
 });
