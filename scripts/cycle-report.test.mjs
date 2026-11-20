@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
@@ -8,11 +8,14 @@ import { fileURLToPath } from 'node:url';
 
 import {
   aggregateGates,
+  barPercent,
   buildReport,
+  escapeHtml,
   listCycleDirs,
   median,
   parseArgs,
   percent,
+  renderHtml,
   renderMarkdown,
   summarizeCycle,
 } from './cycle-report.mjs';
@@ -184,6 +187,73 @@ describe('cycle-report: markdown', () => {
   });
 });
 
+describe('cycle-report: html', () => {
+  /** Отчёт из одного цикла с расходом — база для вариантов. */
+  function oneCycle(overrides = {}) {
+    return buildReport([summarizeCycle('2026-11-17-108-confirmation-url', metricsDoc(overrides))], {
+      gateIds: ['contracts_build', 'typecheck', 'lint'],
+    });
+  }
+
+  test('самодостаточная страница: doctype, язык, стили внутри, без внешних ресурсов', () => {
+    const html = renderHtml(oneCycle({ cost_rub: 4.72 }));
+
+    assert.match(html, /^<!doctype html>\n<html lang="ru">/u);
+    assert.match(html, /<meta charset="utf-8">/u);
+    assert.ok(html.includes('<style>'), 'стили внутри документа');
+    assert.ok(!html.includes('http://') && !html.includes('https://'), 'ни одного внешнего URL');
+    assert.ok(!html.includes('<script'), 'без JS');
+    assert.ok(!html.includes('<link'), 'без внешних стилей и шрифтов');
+    assert.ok(html.endsWith('\n'), 'вывод завершается переводом строки');
+  });
+
+  test('те же факты, что в markdown: итоги, строка цикла, таблица гейтов', () => {
+    const html = renderHtml(oneCycle({ cost_rub: 4.72 }));
+
+    assert.ok(html.includes('Циклов: 1, с расходом: 1. Расход: 4.72 ₽, медиана: 4.72 ₽.'));
+    assert.ok(html.includes('2026-11-17-108-confirmation-url'));
+    assert.ok(html.includes('<th scope="col">Расход, ₽</th>'));
+    assert.ok(html.includes('<td>4.72</td>'));
+    assert.ok(html.includes('contracts_build'));
+    assert.ok(html.includes('Расход по циклам'), 'полоски расхода');
+    assert.ok(html.includes('style="width: 100%"'), 'единственный замер — полная полоска');
+  });
+
+  test('имена каталогов и id гейтов экранируются', () => {
+    const report = buildReport([summarizeCycle('a<b>&"c\'d', metricsDoc({ cost_rub: 1 }))], {
+      gateIds: [],
+    });
+    const html = renderHtml(report);
+
+    assert.ok(html.includes('a&lt;b&gt;&amp;&quot;c&#39;d'));
+    assert.ok(!html.includes('a<b>&'), 'сырой текст имени не попадает в разметку');
+    assert.equal(escapeHtml('<&>"\''), '&lt;&amp;&gt;&quot;&#39;');
+  });
+
+  test('пустой отчёт — честная страница без таблиц', () => {
+    const html = renderHtml(buildReport([], { skipped: 7 }));
+
+    assert.ok(html.includes('Циклов с <code>metrics.json</code> нет'));
+    assert.ok(html.includes('Пропущено каталогов без <code>metrics.json</code>: 7.'));
+    assert.ok(!html.includes('<table>'), 'пустых таблиц нет');
+  });
+
+  test('полоски считаются от максимума в отчёте и детерминированы', () => {
+    const report = buildReport([
+      summarizeCycle('a', metricsDoc({ cost_rub: 10 })),
+      summarizeCycle('b', metricsDoc({ cost_rub: 5 })),
+    ]);
+    const html = renderHtml(report);
+
+    assert.ok(html.includes('style="width: 100%"'));
+    assert.ok(html.includes('style="width: 50%"'));
+    assert.equal(barPercent(5, 10), 50);
+    assert.equal(barPercent(1, 3), 33.3);
+    assert.equal(barPercent(1, 0), 0);
+    assert.equal(html, renderHtml(report), 'два вызова дают побайтно равную страницу');
+  });
+});
+
 describe('cycle-report: CLI', () => {
   test('читает metrics.json каталогов и печатает отчёт детерминированно', (t) => {
     const dir = makeDir(t);
@@ -223,6 +293,32 @@ describe('cycle-report: CLI', () => {
     assert.ok(Array.isArray(report.gates));
   });
 
+  test('--html печатает страницу в stdout и ничего не пишет на диск', (t) => {
+    const dir = makeDir(t);
+    writeCycle(dir, '2026-11-17-108-confirmation-url', metricsDoc({ cost_rub: 4.72 }));
+    const before = readdirSync(dir).sort();
+
+    const first = runCli(['--dir', dir, '--html']);
+    const second = runCli(['--dir', dir, '--html']);
+
+    assert.equal(first.status, 0, first.stderr);
+    assert.match(first.stdout, /^<!doctype html>/u);
+    assert.ok(first.stdout.includes('Циклов: 1, с расходом: 1.'));
+    assert.equal(first.stdout, second.stdout, 'два прогона дают побайтно равную страницу');
+    assert.deepEqual(readdirSync(dir).sort(), before, 'в каталоге артефактов ничего не появилось');
+  });
+
+  test('--html и --json вместе — код 2: формат выбирает человек', (t) => {
+    const dir = makeDir(t);
+    writeCycle(dir, 'a', metricsDoc());
+
+    const result = runCli(['--dir', dir, '--html', '--json']);
+
+    assert.equal(result.status, 2);
+    assert.equal(result.stdout, '');
+    assert.match(result.stderr, /--json и --html взаимоисключающие/u);
+  });
+
   test('битый metrics.json — код 2 с именем каталога, а не молчаливый пропуск', (t) => {
     const dir = makeDir(t);
     const cycleDir = writeCycle(dir, 'broken', metricsDoc());
@@ -259,11 +355,13 @@ describe('cycle-report: CLI', () => {
     }
   });
 
-  test('parseArgs: --dir и --json, мусор — исключение', () => {
-    assert.deepEqual(parseArgs([]), { dir: null, json: false });
-    assert.deepEqual(parseArgs(['--dir', 'D', '--json']), { dir: 'D', json: true });
+  test('parseArgs: --dir, --json, --html, мусор — исключение', () => {
+    assert.deepEqual(parseArgs([]), { dir: null, json: false, html: false });
+    assert.deepEqual(parseArgs(['--dir', 'D', '--json']), { dir: 'D', json: true, html: false });
+    assert.deepEqual(parseArgs(['--html']), { dir: null, json: false, html: true });
     assert.throws(() => parseArgs(['--dir']), /--dir: ожидается путь/u);
     assert.throws(() => parseArgs(['--json', '--wat']), /неизвестный аргумент/u);
+    assert.throws(() => parseArgs(['--html', '--json']), /взаимоисключающие/u);
   });
 
   test('listCycleDirs: только подкаталоги с metrics.json, по имени', (t) => {

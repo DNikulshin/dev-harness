@@ -102,11 +102,34 @@ export declare function buildReport(cycles: CycleSummary[], { skipped, gateIds }
  */
 export declare function renderMarkdown(report: Report): string;
 /**
+ * Экранирует текст для HTML. Имена каталогов циклов и id гейтов приходят из файловой системы
+ * и конфига проекта, то есть в общем случае недоверенные.
+ * @param {unknown} value
+ * @returns {string}
+ */
+export declare function escapeHtml(value: unknown): string;
+/**
+ * Доля от максимума в процентах — для ширины полоски расхода. Детерминированно: округление
+ * до десятых, ноль знаменателя — ноль ширины.
+ * @param {number} value
+ * @param {number} max
+ * @returns {number}
+ */
+export declare function barPercent(value: number, max: number): number;
+/**
+ * Отчёт одной самодостаточной HTML-страницей (#45). Чистая функция: те же факты, что в
+ * markdown, без времени, случайности и внешних ресурсов.
+ * @param {Report} report
+ * @returns {string}
+ */
+export declare function renderHtml(report: Report): string;
+/**
  * Разбирает аргументы командной строки. Любой мусор — ошибка использования (код 2).
  * @param {string[]} argv
- * @returns {{ dir: string|null, json: boolean }}
+ * @returns {{ dir: string|null, json: boolean, html: boolean }}
  */
 export declare function parseArgs(argv: string[]): {
     dir: string | null;
     json: boolean;
+    html: boolean;
 };

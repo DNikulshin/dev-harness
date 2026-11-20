@@ -2,7 +2,7 @@
 /**
  * Сводка `metrics.json` по циклам (docs/orchestrator.md §11, §15, issue #224).
  *
- *   node scripts/cycle-report.mjs [--dir <каталог артефактов>] [--json]
+ *   node scripts/cycle-report.mjs [--dir <каталог артефактов>] [--json | --html]
  *
  * Скрипт читает `metrics.json` каждого каталога цикла в `.pi/artifacts/` (по умолчанию),
  * проверяет документ валидатором схемы и печатает markdown-таблицу: расход, итерации,
@@ -12,6 +12,13 @@
  *
  * **Только факты.** Скрипт не выносит вердиктов и не сравнивает с порогами: пороги —
  * в `limits` конфига проекта и в §15, а здесь агрегат. Ничего не пишет на диск.
+ *
+ * **`--html` (#45).** Тот же отчёт одной самодостаточной страницей: стили внутри, без внешних
+ * ресурсов и без JS — файл открывается с диска и в сеть не ходит (`> report.html` делает
+ * человек, поэтому контракт «ничего не пишет на диск» сохраняется). Модель отчёта общая с
+ * markdown: `renderHtml` и `renderMarkdown` берут один `Report`, второго источника правды нет.
+ * Ширина полоски расхода — доля от максимума в отчёте, число подписано рядом; всё считается
+ * из данных, поэтому два запуска дают побайтно одинаковую страницу.
  *
  * **Что попадает в отчёт.** Каталоги без `metrics.json` пропускаются (цикл не завершён или
  * метрики не собирались) — их число печатается отдельно, чтобы «нет данных» не выглядело
@@ -340,14 +347,214 @@ export function renderMarkdown(report) {
 }
 
 /**
+ * Экранирует текст для HTML. Имена каталогов циклов и id гейтов приходят из файловой системы
+ * и конфига проекта, то есть в общем случае недоверенные.
+ * @param {unknown} value
+ * @returns {string}
+ */
+export function escapeHtml(value) {
+  return String(value)
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
+/**
+ * Доля от максимума в процентах — для ширины полоски расхода. Детерминированно: округление
+ * до десятых, ноль знаменателя — ноль ширины.
+ * @param {number} value
+ * @param {number} max
+ * @returns {number}
+ */
+export function barPercent(value, max) {
+  if (!(max > 0)) return 0;
+  return Math.round((value / max) * 1000) / 10;
+}
+
+/** Стили страницы: внутри документа, без внешних запросов. */
+const HTML_STYLE = `:root { color-scheme: light dark; }
+* { box-sizing: border-box; }
+body { margin: 0 auto; padding: 2rem 1.25rem 3rem; max-width: 72rem;
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+h1 { margin: 0 0 1rem; font-size: 1.6rem; }
+h2 { margin: 2rem 0 .75rem; font-size: 1.2rem; }
+p { margin: .25rem 0; }
+.lead { font-weight: 600; }
+.muted { color: #6b7280; }
+table { border-collapse: collapse; width: 100%; margin: .5rem 0 1rem; font-size: 14px; }
+caption { text-align: left; padding-bottom: .4rem; color: #6b7280; }
+th, td { border: 1px solid #d1d5db; padding: .35rem .5rem; text-align: right;
+  font-variant-numeric: tabular-nums; white-space: nowrap; }
+th:first-child, td:first-child, caption { text-align: left; }
+td:first-child { white-space: normal; }
+thead th { background: #f3f4f6; font-weight: 600; }
+tbody tr:nth-child(even) { background: #fafafa; }
+.bars { display: grid; grid-template-columns: minmax(10rem, 22rem) 1fr; gap: .3rem .8rem;
+  align-items: center; margin: .5rem 0 1rem; }
+.bars .label { overflow-wrap: anywhere; font-size: 14px; }
+.track { background: #f3f4f6; border-radius: 3px; overflow: hidden; }
+.fill { height: 1.1rem; background: #2563eb; min-width: 1px; }
+.bars .value { grid-column: 2; font-size: 12px; color: #6b7280; margin: -.2rem 0 .3rem; }
+@media (prefers-color-scheme: dark) {
+  body { background: #111827; color: #e5e7eb; }
+  th, td { border-color: #374151; }
+  thead th, .track { background: #1f2937; }
+  tbody tr:nth-child(even) { background: #0f172a; }
+  .fill { background: #60a5fa; }
+  .muted, .bars .value, caption { color: #9ca3af; }
+}`;
+
+/**
+ * Отчёт одной самодостаточной HTML-страницей (#45). Чистая функция: те же факты, что в
+ * markdown, без времени, случайности и внешних ресурсов.
+ * @param {Report} report
+ * @returns {string}
+ */
+export function renderHtml(report) {
+  const { cycles, cost, findings, skipped, gates } = report;
+  /** @type {string[]} */
+  const body = ['<h1>Отчёт по циклам</h1>'];
+
+  if (cycles.length === 0) {
+    body.push(
+      '<p>Циклов с <code>metrics.json</code> нет: собирать нечего.</p>',
+      `<p class="muted">Пропущено каталогов без <code>${escapeHtml(FIXED_NAMES.metrics)}</code>: ${skipped}.</p>`,
+    );
+    return htmlPage('Отчёт по циклам', body);
+  }
+
+  body.push(
+    `<p class="lead">Циклов: ${cost.total}, с расходом: ${cost.measured}.` +
+      ` Расход: ${rub(cost.sum)} ₽, медиана: ${rub(cost.median)} ₽.</p>`,
+    `<p>Находок только у оценщика: ${findings.evaluator_only} из ${findings.total}` +
+      ` (${percentText(findings.percent)}).</p>`,
+    `<p class="muted">Пропущено каталогов без <code>${escapeHtml(FIXED_NAMES.metrics)}</code>: ${skipped}.</p>`,
+  );
+
+  const measured = cycles.filter((cycle) => cycle.cost_rub !== null);
+  if (measured.length > 0) {
+    const max = Math.max(...measured.map((cycle) => cycle.cost_rub ?? 0));
+    body.push('<h2>Расход по циклам</h2>', '<div class="bars">');
+    for (const cycle of measured) {
+      const value = cycle.cost_rub ?? 0;
+      body.push(
+        `<div class="label">${escapeHtml(cycle.name)}</div>`,
+        `<div class="track"><div class="fill" style="width: ${barPercent(value, max)}%"></div></div>`,
+        `<div class="value">${rub(value)} ₽</div>`,
+      );
+    }
+    body.push('</div>');
+  }
+
+  body.push(
+    '<h2>Циклы</h2>',
+    '<table>',
+    '<caption>Факты по завершённым циклам</caption>',
+    '<thead>',
+    '<tr>',
+  );
+  for (const title of [
+    'Цикл',
+    'Стадия',
+    'Итераций',
+    'Время, с',
+    'Расход, ₽',
+    'Только оценщик',
+    'Только ревью',
+    'Оба',
+    'Дефекты оценщика B/M/m',
+    'Неразрешённые ссылки',
+    'Незакрытые этапы',
+  ]) {
+    body.push(`<th scope="col">${escapeHtml(title)}</th>`);
+  }
+  body.push('</tr>', '</thead>', '<tbody>');
+  for (const cycle of cycles) {
+    const defects = cycle.evaluator_defects;
+    body.push(
+      '<tr>' +
+        [
+          escapeHtml(cycle.name),
+          escapeHtml(cycle.final_stage),
+          `${cycle.iterations}/${cycle.max_iterations}`,
+          `${Math.round(cycle.duration_s)}`,
+          rub(cycle.cost_rub),
+          `${cycle.findings.only_evaluator}`,
+          `${cycle.findings.only_review}`,
+          `${cycle.findings.both}`,
+          `${defects.BLOCKER}/${defects.MAJOR}/${defects.MINOR}`,
+          `${cycle.unresolved_refs}`,
+          `${cycle.unclosed_stages}`,
+        ]
+          .map((cell) => `<td>${cell}</td>`)
+          .join('') +
+        '</tr>',
+    );
+  }
+  body.push('</tbody>', '</table>');
+
+  body.push('<h2>Исходы гейтов</h2>');
+  if (gates.length === 0) {
+    body.push('<p>Гейты в метриках не зафиксированы.</p>');
+  } else {
+    body.push(
+      '<table>',
+      '<caption>Суммы по всем циклам отчёта</caption>',
+      '<thead>',
+      '<tr><th scope="col">Гейт</th><th scope="col">pass</th><th scope="col">fail</th>' +
+        '<th scope="col">skipped</th><th scope="col">not_run</th></tr>',
+      '</thead>',
+      '<tbody>',
+    );
+    for (const gate of gates) {
+      body.push(
+        `<tr><td>${escapeHtml(gate.id)}</td><td>${gate.pass}</td><td>${gate.fail}</td>` +
+          `<td>${gate.skipped}</td><td>${gate.not_run}</td></tr>`,
+      );
+    }
+    body.push('</tbody>', '</table>');
+  }
+
+  return htmlPage('Отчёт по циклам', body);
+}
+
+/**
+ * Каркас страницы: кодировка, стили, тело. Ни одного внешнего ресурса — иначе отчёт перестал
+ * бы открываться без сети.
+ * @param {string} title
+ * @param {string[]} body
+ * @returns {string}
+ */
+function htmlPage(title, body) {
+  return [
+    '<!doctype html>',
+    '<html lang="ru">',
+    '<head>',
+    '<meta charset="utf-8">',
+    '<meta name="viewport" content="width=device-width, initial-scale=1">',
+    `<title>${escapeHtml(title)}</title>`,
+    `<style>${HTML_STYLE}</style>`,
+    '</head>',
+    '<body>',
+    ...body,
+    '</body>',
+    '</html>',
+    '',
+  ].join('\n');
+}
+
+/**
  * Разбирает аргументы командной строки. Любой мусор — ошибка использования (код 2).
  * @param {string[]} argv
- * @returns {{ dir: string|null, json: boolean }}
+ * @returns {{ dir: string|null, json: boolean, html: boolean }}
  */
 export function parseArgs(argv) {
   /** @type {string|null} */
   let dir = null;
   let json = false;
+  let html = false;
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -364,10 +571,17 @@ export function parseArgs(argv) {
       json = true;
       continue;
     }
+    if (arg === '--html') {
+      html = true;
+      continue;
+    }
     throw new Error(`неизвестный аргумент: ${arg}`);
   }
 
-  return { dir, json };
+  // Два формата одного отчёта в одном stdout — противоречие; выбирает человек, а не порядок флагов.
+  if (json && html) throw new Error('--json и --html взаимоисключающие: выберите один формат');
+
+  return { dir, json, html };
 }
 
 /**
@@ -392,7 +606,12 @@ function main() {
       skipped,
       gateIds: config.gates.map((gate) => gate.id),
     });
-    process.stdout.write(args.json ? `${JSON.stringify(report)}\n` : renderMarkdown(report));
+    const output = args.html
+      ? renderHtml(report)
+      : args.json
+        ? `${JSON.stringify(report)}\n`
+        : renderMarkdown(report);
+    process.stdout.write(output);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     process.stderr.write(`cycle-report: ${message}\n`);
