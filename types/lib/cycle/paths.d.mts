@@ -9,6 +9,7 @@ export declare const FIXED_NAMES: Readonly<{
     qaWeb: "qa-web.json";
     issue: "issue.json";
     evidenceDir: "evidence";
+    driverJournal: "driver.jsonl";
 }>;
 /**
  * Корень репозитория — единственный источник истины для всех относительных путей.

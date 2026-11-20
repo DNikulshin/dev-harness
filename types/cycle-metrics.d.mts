@@ -56,6 +56,12 @@ export type Metrics = {
         reasoning: number;
     }> | null;
     cost_rub: number | null;
+    driver?: {
+        steps: number;
+        executed: number;
+        handed_off: number;
+        mismatch: number;
+    };
 };
 /**
  * Сопоставление находок ревью с дефектами оценщика (§5.6, «совпали»). Чистая функция:
@@ -99,12 +105,15 @@ export declare function evaluatorSharesFamilyWithPlan(models: unknown): boolean;
  *   usage?: Record<string, any>|null,
  *   prices?: Record<string, import('./lib/evals/cost.mjs').ModelPrice>|null,
  *   appliedLimits?: Record<string, { value: number, source: string }>|null,
+ *   driver?: { steps: number, executed: number, handed_off: number, mismatch: number }|null,
  * }} inputs
  *   `appliedLimits` — лимиты с источниками (#235): попав в `metrics.json`, они объясняют,
  *   по какому порогу считались бюджет и размер диффа. Считает CLI, а не эта функция.
+ *   `driver` — сводка журнала `driver.jsonl` (#47): сколько шагов выдал драйвер, сколько
+ *   исполнил сам и сколько раз состояние разошлось с его ответом. `null` — журнала нет.
  * @returns {Metrics}
  */
-export declare function buildMetrics({ state, iterations, usage, prices, appliedLimits, }: {
+export declare function buildMetrics({ state, iterations, usage, prices, appliedLimits, driver, }: {
     state: Record<string, any>;
     iterations: IterationInputs[];
     usage?: Record<string, any> | null;
@@ -113,6 +122,12 @@ export declare function buildMetrics({ state, iterations, usage, prices, applied
         value: number;
         source: string;
     }> | null;
+    driver?: {
+        steps: number;
+        executed: number;
+        handed_off: number;
+        mismatch: number;
+    } | null;
 }): Metrics;
 /**
  * Разбирает аргументы командной строки. Любой мусор — ошибка использования (код 2).
@@ -122,6 +137,19 @@ export declare function buildMetrics({ state, iterations, usage, prices, applied
 export declare function parseArgs(argv: string[]): {
     dir: string | null;
 };
+/**
+ * Сводка журнала решений драйвера (#47). Нет файла — `null`: цикл вели без драйвера, и это
+ * факт, а не ноль. Битая запись — исключение (код 2), а не тихий пропуск: `mismatch`
+ * считается по журналу, и потерянная строка выдала бы себя за чистую маршрутизацию.
+ * @param {string} dir каталог цикла
+ * @returns {{ steps: number, executed: number, handed_off: number, mismatch: number }|null}
+ */
+export declare function readDriverJournal(dir: string): {
+    steps: number;
+    executed: number;
+    handed_off: number;
+    mismatch: number;
+} | null;
 /**
  * Каталог цикла при запуске без `--dir`. Сообщение `findActiveCycle` содержит
  * абсолютный путь каталога артефактов; для диагностики он заменяется относительным.

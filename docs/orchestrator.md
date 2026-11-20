@@ -105,6 +105,7 @@ decision.<n>.json          решение cycle-decide
 followups.md               замечания вне скоупа
 escalation.json            причина эскалации (только при ESCALATED)
 metrics.json               метрики цикла
+driver.jsonl               журнал решений cycle-driver: блок `driver` в метриках
 evidence/                  пакет для оценщика (§7)
   issue.md  criteria.md  diff.patch  gates.json  gates/*.log  qa-web.json  integrity.json
 ```
@@ -260,7 +261,7 @@ issue, поэтому заморозка и снятие заморозки — 
 ```
 INIT → PLAN → CODE → GATES → [QA_WEB] → REVIEW ┐
                                     └→ EVALUATE ┴→ DECIDE
-DECIDE → REWORK → CODE (iteration+1)  |  ACQUIRE_EVIDENCE → GATES/QA_WEB
+DECIDE → REWORK → CODE (iteration+1)  |  ACQUIRE_EVIDENCE → GATES/QA_WEB/REVIEW
        → PROCEED[_WITH_UNVERIFIED] → PR → DONE
        → ESCALATE → (stop, комментарий в issue, status:blocked + needs-owner)
 
@@ -587,6 +588,18 @@ node scripts/cycle-report.mjs [--dir <каталог артефактов>] [--j
 | 1             | `cycle-gates`, `cycle-evidence`, `cycle-decide`, `check-harness`, схемы; правки `review.md`, `cycle.md`, PR-шаблона | детерминированное ядро, свидетельства и политика решений |
 | 2             | Агент `evaluate`, сиды `evals/orchestrator`, метрики и отчёт                                                        | независимая оценка и измерение её пользы                 |
 | 3 (по данным) | Оркестрация скриптом вместо LLM-супервизора; пересмотр моделей                                                      | только если нарушения протокола выше порога              |
+
+**Фаза 3 начата (#47).** `cycle-driver` отдаёт решение «какая стадия следующая» коду: `next`
+возвращает один шаг по фактам (`state.json`, артефакты, `decision.<n>.json`), `run` исполняет
+детерминированные шаги подряд. Супервизор остаётся исполнителем: он зовёт модели и делает
+коммиты, но не выбирает стадию. Работу моделей драйвер не заменяет — это отдельное решение, а не
+следствие маршрутизации.
+
+**Измерение вместо мнения.** Порог «нарушения протокола выше порога» из строки 3 — это
+`driver.mismatch` в `metrics.json` (§5.3a `docs/orchestrator-core.md`): сколько раз состояние
+ушло не туда, куда сказал драйвер. Ноль — маршрутизация правда кодом; рост — супервизор
+обходит драйвер, и это нарушение, которое видно в артефактах цикла, а не в памяти. Пока журнала
+нет, цикла с драйвером не было, и `mismatch` не выдумывается нулём.
 
 Фазы 1 и 2 небольшие по объёму, но вторая зависит от результатов измерений первой.
 

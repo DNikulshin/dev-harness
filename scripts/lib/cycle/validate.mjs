@@ -111,6 +111,9 @@ const ESCALATION_REASONS = Object.freeze([
 /** Источники значений лимитов (`applied_limits`, #235). */
 const LIMIT_SOURCES = Object.freeze(['cli', 'env', 'config', 'default']);
 
+/** Счётчики блока `driver` в `metrics.json` (#47). */
+const DRIVER_FIELDS = Object.freeze(['steps', 'executed', 'handed_off', 'mismatch']);
+
 /** Этапы, которые можно повторить через `RETRY_STAGE` (§5.6, правило 1). */
 const RETRY_STAGES = Object.freeze(['REVIEW', 'EVALUATE']);
 
@@ -609,6 +612,23 @@ function optionalAppliedLimits(doc, name, errors) {
       num(entry.value, `${entryPath}.value`, errs, { min: 0 });
       oneOf(entry.source, `${entryPath}.source`, errs, LIMIT_SOURCES);
     }
+  });
+}
+
+/**
+ * Блок `driver` в `metrics.json` (#47): счётчики журнала решений драйвера. Ключа нет —
+ * цикл вели без драйвера (или метрики старой схемы); поле необязательное, как
+ * `applied_limits`. Четыре счётчика обязательны, если блок есть: по ним и решается вопрос
+ * §17, поэтому пропущенный ноль выдал бы себя за отсутствие данных.
+ * @param {Record<string, unknown>} doc
+ * @param {string} name
+ * @param {string[]} errors
+ * @returns {void}
+ */
+function optionalDriver(doc, name, errors) {
+  if (doc.driver === undefined) return;
+  reqRecord(doc, 'driver', name, errors, (value, valuePath, errs) => {
+    for (const field of DRIVER_FIELDS) reqInt(value, field, valuePath, errs, { min: 0 });
   });
 }
 
@@ -1209,6 +1229,7 @@ export function validateMetrics(doc) {
   });
 
   optionalAppliedLimits(doc, 'metrics', errors);
+  optionalDriver(doc, 'metrics', errors);
 
   return { ok: errors.length === 0, errors };
 }

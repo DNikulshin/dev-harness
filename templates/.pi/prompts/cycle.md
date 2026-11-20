@@ -5,130 +5,88 @@ argument-hint: '<номер issue и что сделать>'
 
 Задача: ${@:-<номер issue и что сделать>}
 
-Ты супервизор цикла. Читаешь `AGENTS.md` (команды, границы слоёв, ПДн, git-процесс) и
-`docs/orchestrator.md` (политика). Протокол — Приложение B `docs/orchestrator-core.md`; этот файл —
-его рабочая форма. Состояние, переходы и решения ведут скрипты, а не ты: **запрещено** править
-`state.json` руками, пропускать этапы, менять `action` из `decision.<n>.json`, обходить
-`cycle-state` и мержить PR.
-
-Стадии автомата: `INIT`, `PLAN`, `CODE`, `GATES`, `QA_WEB`, `REVIEW`, `EVALUATE`, `DECIDE`,
-`REWORK`, `ACQUIRE_EVIDENCE`, `PR`, `DONE`, `ESCALATED`. Переходы разрешает только
-`cycle-state advance`; недопустимый переход — код 3, это стоп, а не повод обойти.
+Ты супервизор цикла. Читаешь `AGENTS.md` (команды, границы слоёв, ПДн, git-процесс) и Приложение B
+`docs/orchestrator-core.md` (канонический порядок). Маршрут ведёт драйвер, а не ты: `state.json`
+правит только `cycle-state`, переходы разрешает только он, `action` из `decision.<n>.json` не
+пересматривается, PR не мержится.
 
 Каталог: `.pi/artifacts/<YYYY-MM-DD>-<номер>-<slug>/` (в `.gitignore`). `--dir` у скриптов по
-умолчанию — единственный активный цикл; ниже он подразумевается.
+умолчанию — единственный активный цикл.
 
-## INIT
+## Маршрут
+
+Перед каждым шагом — `node scripts/cycle-driver.mjs next`. Он вернёт `action`, `reason` и
+`commands`, посчитанные по `state.json`, артефактам и `decision.<n>.json`. Ничего не додумывай: если
+справка ниже и `next` расходятся, прав драйвер.
+
+| `action`                     | что делаешь                                                                                             |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `run` / `advance` / `finish` | выполняешь `commands` дословно (или `node scripts/cycle-driver.mjs run` — всё детерминированное подряд) |
+| `spawn`                      | запускаешь субагента `spawn.agent` с указанным входом, кладёшь артефакт, закрываешь стадию `finish`     |
+| `handoff`                    | работа твоя: браузерная проверка, бриф доработки, коммиты, PR                                           |
+| `stop`                       | цикл закончен                                                                                           |
+| `blocked`                    | стоп и вопрос владельцу (`stage_status = error` — повтори этап или эскалируй)                           |
+
+Драйвер пишет журнал `driver.jsonl`; `metrics.json` показывает по нему блок `driver`. Повторный
+`next` на том же дереве ответ не меняет.
+
+## INIT — единственное, что до драйвера
 
 1. `node scripts/cycle-state.mjs lock` — одна блокировка на дерево.
-2. `gh issue view <N> --json title,body,labels > <dir>/issue.json`.
-3. `node scripts/cycle-state.mjs init --issue <N> --slug <slug> --branch <ветка>`, ветка от `main`:
-   `feat|fix|chore|data|design/<номер>-<коротко>`.
-4. `node scripts/cycle-evidence.mjs criteria --dir <dir> --issue-json <dir>/issue.json`. Причина
-   отказа берётся из поля `reason` в stdout: `criteria_missing` →
-   `escalate --reason criteria_missing`, `criteria_drift` → `escalate --reason criteria_drift`. В
-   обоих случаях — комментарий в issue (`status:blocked`, `needs-owner`) и стоп.
-5. `node scripts/cycle-state.mjs freeze-criteria` — закрепляет критерии (они извлекаются из
-   `issue.json`) в `state.json`. Код 3 (`criteria_drift`) → `escalate --reason criteria_drift`,
-   стоп: цель меняет владелец; подтверждение — `freeze-criteria --owner-approved` после правки issue
-   и повторного `cycle-evidence criteria`. Повторный прогон с теми же критериями — no-op.
+2. `gh issue view <N> --json title,body,labels > <dir>/issue.json` — вход для критериев.
+3. Ветка от `main`: `feat|fix|chore|data|design/<номер>-<коротко>`, переключиться на неё.
+4. `node scripts/cycle-state.mjs init --issue <N> --slug <slug> --branch <ветка>`.
 
-## PLAN
+Дальше — только `next`. Код 3 на `freeze-criteria` (`criteria_drift`) →
+`escalate --reason criteria_drift`: цель меняет владелец, подтверждение —
+`freeze-criteria --owner-approved` после правки issue и повторного `cycle-evidence criteria`.
 
-`cycle-state advance --to PLAN` → субагент `plan` (read-only) → `plan.<n>.md` →
-`cycle-state finish --stage PLAN --status done`. План просит выбирать вариант →
-`escalate --reason plan_ambiguous`, стоп.
+## Передача моделям (`spawn`)
 
-## CODE
+Агент и его вход названы в `next.spawn`; промпт — `.pi/agents/<agent>.md`.
 
-`advance --to CODE` → субагент `code` с планом, номером issue и требованиями `AGENTS.md`. Он правит
-файлы и прогоняет проверки; ты пишешь `code-report.<n>.md` (файлы, что изменено, вывод проверок, «не
-проверено» с причиной) и вызываешь `finish --stage CODE --status done`. Правки файлов делает только
-`code`; ты коммитишь, пушишь и ведёшь артефакты.
+- `plan` — план по `issue.json` и `evidence/criteria.md`, файлы не правит → `plan.<n>.md`; просит
+  выбрать вариант → `escalate --reason plan_ambiguous`, стоп.
+- `code` — правки по плану и требованиям `AGENTS.md`, прогоняет проверки; отчёт →
+  `code-report.<n>.md` (что изменено, вывод проверок, «не проверено» с причиной). Файлы правит
+  только `code`.
+- `review` — план, `git diff <base_sha>` и `evidence/` → `review.<n>.md` с последним блоком
+  ```json (обязателен).
 
-## Как устроены переходы (читай до GATES)
-
-- `advance --to X` открывает этап `X`; пока этап открыт (`stage_status: running`), следующий
-  `advance` даёт код 3. Поэтому схема любого этапа: `advance` → работа → `finish`.
-- `apply-decision` **сам** переводит автомат в целевой этап решения (`REWORK`, `ACQUIRE_EVIDENCE`,
-  `PR`, этап `RETRY_STAGE`). Повторный `advance` в тот же этап после `apply-decision` — ошибка:
-  целевой этап уже открыт, его надо отработать и закрыть `finish`.
-- У `DECIDE` своего `finish` нет: его закрывает `apply-decision`. У `INIT` — тоже нет.
-- Терминальные `DONE`/`ESCALATED` вперёд не переходят.
-
-## GATES
-
-`advance --to GATES` → `node scripts/cycle-gates.mjs --dir <dir>` →
-`cycle-state finish --stage GATES --status done`. Код 1 — упал гейт, это **не сбой цикла**:
-`gates.<n>.json` написан, этап отработан, идём до DECIDE. Код 2 — ошибка инструмента: разбирайся,
-при необходимости `finish --status error` и `escalate`.
-
-## QA_WEB
-
-Только если дифф затрагивает web-приложение проекта (см. `AGENTS.md`): `advance --to QA_WEB` →
-сценарий `docs/qa-web.md` в браузере (production-сборка — по инструкции из `AGENTS.md`) → сырые
-факты в `<dir>/qa-web.json` с `id` шагов `s1`, `s2`, … по формату из `docs/qa-web.md` → `finish`.
-MCP недоступен — `{"status": "not_run", "reason": "<причина>", "steps": []}` (поле `steps`
-обязательно при любом `status`). ПДн в файл не пишем.
-
-## REVIEW и EVALUATE
-
-1. `node scripts/cycle-evidence.mjs packet --dir <dir>` — сам добавляет untracked-файлы
-   (`git add --intent-to-add`) и собирает `evidence/`: `issue.md`, `criteria.md`, `diff.patch`,
-   `gates.json`, логи упавших гейтов, `qa-web.json`. Код 4 (`diff_too_large`) →
-   `escalate --reason diff_too_large`.
-2. `advance --to REVIEW` → субагент `review`: ему план, `git diff <base_sha>` и путь к `evidence/`;
-   ответ → `review.<n>.md` (последний блок ```json обязателен) →
-   `finish --stage REVIEW --status done`.
-3. `advance --to EVALUATE` → субагент `evaluate`: ему **только** `evidence/` (план, отчёт кода и
-   ревью не передаём — оценка слепая, R2); ответ → `evaluation.<n>.md` →
-   `finish --stage EVALUATE --status done`.
+  ```
+- `evaluate` — **только** `evidence/` (план, отчёт кода и ревью не передаются: оценка слепая) →
+  `evaluation.<n>.md`.
 
 `review.<n>.json` и `evaluation.<n>.json` руками не пишет никто: их извлекает `cycle-decide`.
 
-## Расход токенов
+## Твоя работа (`handoff`)
 
-После каждого этапа, где работал субагент (`PLAN`, `CODE`, `REVIEW`, `EVALUATE`), собери расход:
-
-`node scripts/cycle-usage.mjs --dir <dir> --stage <plan|code|review|evaluate> --transcript <id>_<agent>_transcript.jsonl`
-
-Транскрипт лежит в `~/.pi/agent/sessions/<проект>/subagent-artifacts/`. Прогонов бывает несколько
-(итерации `CODE`, повтор `REVIEW`) — вызывай для каждого, суммы складываются. Без этого
-`metrics.json` пишет `tokens` и `cost_rub` как `null`: «не измеряли», а не «ноль».
-
-## DECIDE
-
-`advance --to DECIDE` → `node scripts/cycle-decide.mjs --dir <dir>` →
-`node scripts/cycle-state.mjs apply-decision` (он же переводит автомат дальше). Дальше — строго по
-`action`, без своих решений:
-
-- `RETRY_STAGE` — этап `retry_stage` уже открыт: повтори его работу, `finish`, затем продолжай по
-  таблице переходов §5.3;
-- `ACQUIRE_EVIDENCE` — этап-учёт, сам свидетельств не добывает: закрой его
-  (`finish --stage ACQUIRE_EVIDENCE --status done`), затем пройди по **всем** пунктам `acquire[]`
-  через их обычные этапы, каждый — один раз: есть `gate:<id>` → `advance --to GATES` (при
-  необходимости `cycle-gates --dir <dir> --only <id>`) → `finish --stage GATES`; есть `qa-web` →
-  `advance --to QA_WEB` → сценарий `docs/qa-web.md` один раз → `finish --stage QA_WEB`. Если в
-  `acquire[]` есть и то, и другое — сначала GATES, потом QA_WEB (`GATES → QA_WEB` разрешён). Дальше
-  снова `cycle-evidence packet` → REVIEW → EVALUATE → DECIDE;
-- `REWORK` — этап `REWORK` открыт: запиши `rework-brief.<n>.md` из `rework_items` дословно,
-  `finish --stage REWORK --status done`, затем `advance --to CODE` (итерация увеличивается на этом
-  ребре). Лимит — `max_iterations` из `state.json` (по умолчанию 2); сверх лимита только
-  `advance --to CODE --owner-approved` с явного разрешения владельца;
-- `PROCEED` / `PROCEED_WITH_UNVERIFIED` — этап `PR` уже открыт: сначала `followups.md` (замечания
-  вне скоупа — до сборки тела, иначе раздел «Вне скоупа» останется пустым), потом коммиты
-  (`<type>(<scope>): <что>`), `git push -u origin <ветка>`, тело — `node scripts/cycle-pr-body.mjs`
-  (при `PROCEED_WITH_UNVERIFIED` там будет блок «не проверено»), `gh pr create --body-file …`, метка
-  `status:review`, `finish --stage PR --status done`. **PR не мержить**: мерж делает владелец;
-- `ESCALATE` — автомат уже в `ESCALATED`: комментарий в issue, `status:blocked`, `needs-owner`.
-  Draft PR — только если `escalation.draft_pr_allowed`: тело собирает
-  `cycle-pr-body --dir <dir> --draft-escalation`.
+- **QA_WEB** — только при web-диффе (`qaWeb.pathPrefixes`): сценарий `docs/qa-web.md` в браузере
+  (production-сборка — по инструкции из `AGENTS.md`) → сырые факты в `qa-web.json`, `id` шагов `s1`,
+  `s2`, … по формату `docs/qa-web.md`. MCP недоступен —
+  `{"status": "not_run", "reason": "<причина>", "steps": []}` (поле `steps` обязательно при любом
+  `status`). ПДн не пишем.
+- **REWORK** — `rework-brief.<n>.md` из `rework_items` решения дословно; лимит итераций —
+  `max_iterations`, сверх него только `advance --to CODE --owner-approved` с разрешения владельца.
+- **ACQUIRE_EVIDENCE** — этап-учёт: `finish`, затем все пункты `acquire[]` по одному разу через их
+  этапы (`gate:<id>` → `GATES` с `--only`, `qa-web` → `QA_WEB`, `integrity` → повтор `REVIEW` с
+  вопросом «не ослаблены ли проверки»; сначала гейт, потом браузер).
+- **PR** — сначала `followups.md` (замечания вне скоупа, до сборки тела, иначе раздел «Вне скоупа»
+  пуст), потом коммиты (`<type>(<scope>): <что>`), `git push -u origin <ветка>`, тело —
+  `node scripts/cycle-pr-body.mjs`, `gh pr create --body-file …`, метка `status:review`. **PR не
+  мержить.**
+- **ESCALATE** — комментарий в issue, `status:blocked`, `needs-owner`; draft PR только при
+  `escalation.draft_pr_allowed` (`cycle-pr-body --draft-escalation`).
+- **Расход** — после каждого этапа с моделью (`PLAN`, `CODE`, `REVIEW`, `EVALUATE`):
+  `node scripts/cycle-usage.mjs --dir <dir> --stage <plan|code|review|evaluate> --transcript <id>_<agent>_transcript.jsonl`
+  (транскрипты — `~/.pi/agent/sessions/<проект>/subagent-artifacts/`). Без этого `metrics.json`
+  пишет `tokens` и `cost_rub` как `null`: «не измеряли», а не «ноль».
 
 ## DONE и ESCALATED
 
-После мержа владельцем и `git pull` (цикл видит свой PR смерженным): `advance --to DONE` →
-`node scripts/cycle-metrics.mjs --dir <dir>` → `node scripts/cycle-state.mjs unlock`. `ESCALATED` —
-цикл закрыт: метрики пишутся так же, `unlock` обязателен.
+Терминальные стадии, вперёд перехода нет. `DONE` — после мержа владельцем и `git pull` (цикл видит
+свой PR смерженным): `advance --to DONE`, затем метрики и `unlock` — их вернёт `next`. `ESCALATED` —
+цикл закрыт, метрики пишутся так же, `unlock` обязателен.
 
 ## Правила
 

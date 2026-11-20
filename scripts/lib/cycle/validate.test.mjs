@@ -537,6 +537,27 @@ describe('validateMetrics', () => {
     assert.deepEqual(validateMetrics(doc), { ok: true, errors: [] });
   });
 
+  test('блок driver необязателен, но если есть — счётчики целые ≥ 0', () => {
+    const doc = fixture('metrics/metrics.valid.json');
+    doc.driver = { steps: 4, executed: 2, handed_off: 2, mismatch: 0 };
+    assert.deepEqual(validateMetrics(doc), { ok: true, errors: [] });
+
+    delete doc.driver;
+    assert.deepEqual(validateMetrics(doc), { ok: true, errors: [] });
+  });
+
+  test('в блоке driver пропущен счётчик — ошибка', () => {
+    const doc = fixture('metrics/metrics.valid.json');
+    doc.driver = { steps: 4, executed: 2, handed_off: 2 };
+    assertSingleError(validateMetrics(doc), /metrics\.driver\.mismatch: обязательное поле/);
+  });
+
+  test('отрицательный mismatch недопустим', () => {
+    const doc = fixture('metrics/metrics.valid.json');
+    doc.driver = { steps: 1, executed: 0, handed_off: 1, mismatch: -1 };
+    assertSingleError(validateMetrics(doc), /metrics\.driver\.mismatch: ожидается целое ≥ 0/);
+  });
+
   test('битая карта длительностей: одна внятная ошибка без расхождения с итогом', () => {
     for (const [value, pattern] of /** @type {[unknown, RegExp][]} */ ([
       [[], /metrics\.stage_durations_s: ожидается объект, получено массив/],

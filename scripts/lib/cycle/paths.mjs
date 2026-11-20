@@ -25,6 +25,9 @@ export const FIXED_NAMES = Object.freeze({
   qaWeb: 'qa-web.json',
   issue: 'issue.json',
   evidenceDir: 'evidence',
+  // Журнал решений `cycle-driver` (#47): телеметрия маршрутизации, вход блока `driver` в
+  // `metrics.json`. Не артефакт протокола: никто, кроме драйвера, его не читает.
+  driverJournal: 'driver.jsonl',
 });
 
 /**
