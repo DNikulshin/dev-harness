@@ -53,7 +53,9 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { Transform } from 'node:stream';
 import { finished } from 'node:stream/promises';
+import { StringDecoder } from 'node:string_decoder';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 import { normalizeDoc } from './cycle-decide.mjs';
@@ -69,7 +71,7 @@ import {
 } from './lib/cycle/git.mjs';
 import { readJson, tail, writeJsonAtomic } from './lib/cycle/io.mjs';
 import { FIXED_NAMES, findActiveCycle, iterNames, repoRoot } from './lib/cycle/paths.mjs';
-import { scanSecrets } from './lib/cycle/redact.mjs';
+import { redactLog, scanSecrets } from './lib/cycle/redact.mjs';
 import { validateGates, validateState } from './lib/cycle/validate.mjs';
 
 /** Причины гейтов §5.5/Приложение A. */
@@ -324,6 +326,41 @@ export function gateEnv(base = process.env) {
 }
 
 /**
+ * Поток маскирования вывода гейта (§5.4, §5.5): `redactLog` применяется до записи в файл,
+ * поэтому секрет из stdout/stderr не оказывается на диске даже на время.
+ *
+ * Pipe отдаёт данные кусками, поэтому текст копится до последнего перевода строки, а
+ * необработанный хвост ждёт следующего куска или `flush`: иначе секрет, разрезанный между
+ * двумя кусками, ни одному шаблону не подошёл бы. Шаблоны `redactLog` не переходят через
+ * `\n`, так что маскирование готового блока целиком эквивалентно построчному, а нумерация
+ * строк сохраняется — §5.4 требует именно этого. `StringDecoder` не даёт разрезать
+ * многобайтовый символ на границе куска.
+ * @returns {Transform} поток маскирования
+ */
+export function createRedactStream() {
+  const decoder = new StringDecoder('utf8');
+  let buffer = '';
+  return new Transform({
+    transform(chunk, _encoding, callback) {
+      buffer += decoder.write(chunk);
+      const lastBreak = buffer.lastIndexOf('\n');
+      if (lastBreak === -1) {
+        callback();
+        return;
+      }
+      const complete = buffer.slice(0, lastBreak + 1);
+      buffer = buffer.slice(lastBreak + 1);
+      callback(null, redactLog(complete));
+    },
+    flush(callback) {
+      const rest = buffer + decoder.end();
+      buffer = '';
+      callback(null, rest === '' ? '' : redactLog(rest));
+    },
+  });
+}
+
+/**
  * Команда гейта в виде `[executable, ...args]`. Новый формат — из конфига; старый `cmd`
  * поддерживается для инъекции определений в тестах и обратной совместимости.
  * @param {{ executable?: string|null, args?: readonly string[], cmd?: string|null }} definition
@@ -374,6 +411,8 @@ async function runCommandGate(
   }
   const startedMs = now();
   const stream = createWriteStream(logFile);
+  const mask = createRedactStream();
+  mask.pipe(stream);
   /** @type {Error|null} */
   let spawnError = null;
   let timedOut = false;
@@ -389,8 +428,10 @@ async function runCommandGate(
   child.on('error', (error) => {
     spawnError = error;
   });
-  if (child.stdout !== null) child.stdout.pipe(stream, { end: false });
-  if (child.stderr !== null) child.stderr.pipe(stream, { end: false });
+  // Оба потока идут через один маскирующий поток: файл остаётся общим логом, а `end: false`
+  // не даёт первому закрытому потоку оборвать второй. Завершение — `mask.end()` ниже.
+  if (child.stdout !== null) child.stdout.pipe(mask, { end: false });
+  if (child.stderr !== null) child.stderr.pipe(mask, { end: false });
 
   const timer = setTimeout(() => {
     timedOut = true;
@@ -408,7 +449,7 @@ async function runCommandGate(
   // Ждём доставку SIGKILL группе, чтобы прогон не возвращался, пока потомки живы.
   if (timedOut) await escalation;
 
-  stream.end();
+  mask.end();
   await finished(stream);
   trimLog(logFile, maxLogBytes);
 
