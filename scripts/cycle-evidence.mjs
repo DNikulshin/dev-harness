@@ -63,6 +63,19 @@
  * `+++`/`---` и контекста) больше `limits.maxDiffLines` или размер больше
  * `limits.maxDiffBytes` → код 4, `diff_too_large`, файлы не пишутся; ровно на границе — успех.
  *
+ * **Снимок размера пакета (ADR 0009, #106).** Вместе с пакетом `packet` пишет в каталог
+ * цикла `manifest.<n>.json`: `iteration`, `base_sha`, `files[]` (`{path, bytes, lines}`,
+ * сортировка по пути) и `totals {files, bytes, lines}`. Место — каталог цикла, а не
+ * `evidence/`: пакет — замороженный вход оценщика, телеметрии в нём не место (то же правило,
+ * что у `driver.jsonl`, #47). Измеряется весь пакет, включая собранные этапом INIT
+ * `issue.md` и `criteria.md`: оценщик читает и их.
+ *
+ * В манифесте только пути, байты и строки — содержимого, выдержек и хэшей содержимого нет
+ * (это проверяется тестом, а не обещанием). Снимок собирается в памяти вместе с пакетом
+ * и пишется только при успехе: при `diff_too_large` и любой другой ошибке сборки файла не
+ * создаётся. Перед записью снимок проверяется валидатором `validateManifest` — битый агрегат
+ * не должен пережить сборку.
+ *
  * Маскировка issue body в `evidence/issue.md` и `criteria.md` не выполняется: §5.4
  * перечисляет только логи, сырые данные QA и дифф, а формулировки критериев оценщик
  * сверяет с issue дословно.
@@ -98,7 +111,12 @@ import {
 } from './lib/cycle/paths.mjs';
 import { classifyIntegrity, integrityConfigured } from './lib/cycle/integrity.mjs';
 import { redactLog, redactQa } from './lib/cycle/redact.mjs';
-import { validateGates, validateQaWeb, validateState } from './lib/cycle/validate.mjs';
+import {
+  validateGates,
+  validateManifest,
+  validateQaWeb,
+  validateState,
+} from './lib/cycle/validate.mjs';
 
 /** Заголовки секций форм issue (`.github/ISSUE_TEMPLATE/*.yml`). */
 const SECTIONS = Object.freeze({
@@ -670,7 +688,95 @@ export function readIssue(file) {
  * @property {string} baseSha разрешённый полный sha базы диффа
  * @property {number} iteration номер итерации цикла
  * @property {EvidenceFile[]} files файлы пакета
+ * @property {Manifest|null} manifest снимок размера пакета (ADR 0009); `null` при отказе
  */
+
+/**
+ * @typedef {object} ManifestFile
+ * @property {string} path путь относительно каталога цикла (`evidence/…`)
+ * @property {number} bytes размер в байтах (UTF-8)
+ * @property {number} lines число строк
+ */
+
+/**
+ * @typedef {object} Manifest
+ * @property {number} iteration номер итерации
+ * @property {string} base_sha полный sha базы диффа
+ * @property {ManifestFile[]} files записи по путям, сортировка по строке
+ * @property {{ files: number, bytes: number, lines: number }} totals итоги
+ */
+
+/**
+ * Размер текста в байтах и строках: байты — UTF-8, строка — до перевода строки. Файл без
+ * завершающего перевода строки содержит ещё одну строку, пустой файл — 0 строк. Считается
+ * по тому тексту, который пишется на диск, поэтому маскирование размеров не меняет.
+ * @param {string} text содержимое файла
+ * @returns {{ bytes: number, lines: number }}
+ */
+export function textSize(text) {
+  if (typeof text !== 'string') throw new TypeError('textSize: ожидается строка');
+  const bytes = Buffer.byteLength(text, 'utf8');
+  if (text === '') return { bytes: 0, lines: 0 };
+
+  const breaks = text.split('\n').length - 1;
+  return { bytes, lines: text.endsWith('\n') ? breaks : breaks + 1 };
+}
+
+/**
+ * Снимок размера пакета в памяти: только пути, байты и строки (ADR 0009). Содержимого,
+ * выдержек и хэшей содержимого здесь нет по решению, а не по забывчивости.
+ *
+ * В снимок входит весь пакет `evidence/`, а не только то, что пишет `packet`: `issue.md` и
+ * `criteria.md` собирает этап INIT, но оценщик читает и их — размер контекста без них был бы
+ * занижен. Размеры этих файлов берутся с диска: перезаписывать их `packet` не вправе.
+ *
+ * Порядок записей — сортировка по пути, `totals` — сумма по отсортированному списку: два
+ * прогона на одном дереве дают побайтно одинаковый файл.
+ * @param {{
+ *   files: EvidenceFile[],
+ *   evidenceDir: string,
+ *   prefix: string,
+ *   iteration: number,
+ *   baseSha: string,
+ * }} options
+ * @returns {Manifest}
+ */
+function buildManifest({ files, evidenceDir, prefix, iteration, baseSha }) {
+  /** @type {Map<string, ManifestFile>} */
+  const entries = new Map();
+
+  /**
+   * @param {string} path
+   * @param {string} text
+   * @returns {void}
+   */
+  const measure = (path, text) => {
+    const size = textSize(text);
+    entries.set(path, { path, bytes: size.bytes, lines: size.lines });
+  };
+
+  for (const file of files) measure(file.path, file.text);
+  for (const name of [EVIDENCE_FILES.issue, EVIDENCE_FILES.criteria]) {
+    const collected = join(evidenceDir, name);
+    if (!existsSync(collected)) continue;
+    measure(`${prefix}/${name}`, readFileSync(collected, 'utf8'));
+  }
+
+  const sorted = [...entries.values()].sort((left, right) =>
+    left.path < right.path ? -1 : left.path > right.path ? 1 : 0,
+  );
+
+  const totals = sorted.reduce(
+    (sum, entry) => ({
+      files: sum.files + 1,
+      bytes: sum.bytes + entry.bytes,
+      lines: sum.lines + entry.lines,
+    }),
+    { files: 0, bytes: 0, lines: 0 },
+  );
+
+  return { iteration, base_sha: baseSha, files: sorted, totals };
+}
 
 /**
  * Сборка пакета `evidence/` в памяти. Дифф строится от базы цикла, untracked-файлы
@@ -732,6 +838,7 @@ function buildPacket({ dir, root, base = null, config = loadConfig(root) }) {
       baseSha: baseShaValue,
       iteration,
       files: [],
+      manifest: null,
     };
   }
 
@@ -783,6 +890,14 @@ function buildPacket({ dir, root, base = null, config = loadConfig(root) }) {
     baseSha: baseShaValue,
     iteration,
     files,
+    // Снимок собирается вместе с пакетом и в памяти: записан он будет вместе с ним.
+    manifest: buildManifest({
+      files,
+      evidenceDir,
+      prefix: config.paths.evidenceDir,
+      iteration,
+      baseSha: baseShaValue,
+    }),
   };
 }
 
@@ -898,8 +1013,8 @@ function runCriteria({ dir, issueJson, config }) {
 }
 
 /**
- * Подкоманда `packet`: сборка `evidence/` для оценщика. При `diff_too_large` файлы не
- * пишутся, в stdout — строка JSON с причиной и размерами, код 4.
+ * Подкоманда `packet`: сборка `evidence/` для оценщика и снимка размера пакета. При
+ * `diff_too_large` файлы не пишутся, в stdout — строка JSON с причиной и размерами, код 4.
  * @param {{
  *   dir: string,
  *   root: string,
@@ -926,7 +1041,17 @@ function runPacket({ dir, root, base, config }) {
     return 4;
   }
 
+  const manifest = /** @type {Manifest} */ (packet.manifest);
+  // Снимок проверяется до записи: битый агрегат не должен пережить сборку — на него
+  // опирается `metrics.json` (#107), а не только человек.
+  const checked = validateManifest(manifest);
+  if (!checked.ok) {
+    throw new Error(`manifest.<n>.json: схема нарушена:\n${checked.errors.join('\n')}`);
+  }
+
   writeEvidenceFiles(dir, packet.files);
+  const manifestName = iterNames(packet.iteration).manifest;
+  writeTextAtomic(join(dir, manifestName), serializeArtifact(manifest));
 
   const summary = {
     command: 'packet',
@@ -935,6 +1060,7 @@ function runPacket({ dir, root, base, config }) {
     files: packet.files.map((file) => file.path),
     iteration: packet.iteration,
     lines: packet.lines,
+    manifest: manifestName,
   };
   process.stdout.write(`${JSON.stringify(normalizeDoc(summary))}\n`);
   return 0;

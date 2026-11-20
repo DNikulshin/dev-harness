@@ -63,6 +63,7 @@ export declare function cycleDirName({ date, issue, slug }: CycleDirNameParams):
  *   evaluationJson: string,
  *   decision: string,
  *   gates: string,
+ *   manifest: string,
  * }}
  */
 export declare function iterNames(iteration: number): {
@@ -75,6 +76,7 @@ export declare function iterNames(iteration: number): {
     evaluationJson: string;
     decision: string;
     gates: string;
+    manifest: string;
 };
 /**
  * Единственный активный цикл в каталоге артефактов: подкаталог со `state.json`,

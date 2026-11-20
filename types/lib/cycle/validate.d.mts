@@ -56,6 +56,20 @@ export declare function validateQaWeb(doc: unknown): ValidationResult;
  */
 export declare function validateIntegrity(doc: unknown): ValidationResult;
 /**
+ * `manifest.<n>.json` — снимок размера пакета `evidence/` (ADR 0009, #106).
+ *
+ * Схема намеренно узкая: только `path`, `bytes` и `lines`. Содержимого файлов, выдержек и
+ * хэшей содержимого в манифесте быть не должно, поэтому лишние поля не проверяются, но и не
+ * поощряются — писатель (`cycle-evidence packet`) их не создаёт.
+ *
+ * Кроме типов проверяются три инварианта писателя: `totals` равны сумме `files[]`, пути
+ * уникальны и отсортированы по строке. Без них повторный прогон давал бы другой файл, а
+ * агрегат в `metrics.json` (#107) — другое число при том же пакете.
+ * @param {unknown} doc
+ * @returns {ValidationResult}
+ */
+export declare function validateManifest(doc: unknown): ValidationResult;
+/**
  * `decision.<n>.json` (§5.6). Списки — массивы непустых строк: `reasons`, `acquire`,
  * `rework_items`, `unverified`, `downgraded`.
  * @param {unknown} doc

@@ -81,8 +81,10 @@ describe('iterNames', () => {
       evaluationJson: 'evaluation.1.json',
       decision: 'decision.1.json',
       gates: 'gates.1.json',
+      manifest: 'manifest.1.json',
     });
     assert.equal(iterNames(2).reviewJson, 'review.2.json');
+    assert.equal(iterNames(2).manifest, 'manifest.2.json');
   });
 
   test('отвергает нецелый и нулевой номер', () => {

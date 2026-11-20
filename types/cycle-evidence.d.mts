@@ -204,6 +204,85 @@ export type PacketPlan = {
      * файлы пакета
      */
     files: EvidenceFile[];
+    /**
+     * снимок размера пакета (ADR 0009); `null` при отказе
+     */
+    manifest: Manifest | null;
+};
+export type ManifestFile = {
+    /**
+     * путь относительно каталога цикла (`evidence/…`)
+     */
+    path: string;
+    /**
+     * размер в байтах (UTF-8)
+     */
+    bytes: number;
+    /**
+     * число строк
+     */
+    lines: number;
+};
+export type Manifest = {
+    /**
+     * номер итерации
+     */
+    iteration: number;
+    /**
+     * полный sha базы диффа
+     */
+    base_sha: string;
+    /**
+     * записи по путям, сортировка по строке
+     */
+    files: ManifestFile[];
+    /**
+     * итоги
+     */
+    totals: {
+        files: number;
+        bytes: number;
+        lines: number;
+    };
+};
+/**
+ * @typedef {object} EvidenceFile
+ * @property {string} path путь относительно каталога цикла (`evidence/…`)
+ * @property {string} text содержимое файла
+ */
+/**
+ * @typedef {object} PacketPlan
+ * @property {boolean} tooLarge дифф больше лимита (§5.2)
+ * @property {number} lines изменённых строк сырого диффа
+ * @property {number} bytes размер сырого диффа
+ * @property {string} baseSha разрешённый полный sha базы диффа
+ * @property {number} iteration номер итерации цикла
+ * @property {EvidenceFile[]} files файлы пакета
+ * @property {Manifest|null} manifest снимок размера пакета (ADR 0009); `null` при отказе
+ */
+/**
+ * @typedef {object} ManifestFile
+ * @property {string} path путь относительно каталога цикла (`evidence/…`)
+ * @property {number} bytes размер в байтах (UTF-8)
+ * @property {number} lines число строк
+ */
+/**
+ * @typedef {object} Manifest
+ * @property {number} iteration номер итерации
+ * @property {string} base_sha полный sha базы диффа
+ * @property {ManifestFile[]} files записи по путям, сортировка по строке
+ * @property {{ files: number, bytes: number, lines: number }} totals итоги
+ */
+/**
+ * Размер текста в байтах и строках: байты — UTF-8, строка — до перевода строки. Файл без
+ * завершающего перевода строки содержит ещё одну строку, пустой файл — 0 строк. Считается
+ * по тому тексту, который пишется на диск, поэтому маскирование размеров не меняет.
+ * @param {string} text содержимое файла
+ * @returns {{ bytes: number, lines: number }}
+ */
+export declare function textSize(text: string): {
+    bytes: number;
+    lines: number;
 };
 /**
  * Разбирает аргументы командной строки: подкоманда и её опции. Любой мусор, в том числе

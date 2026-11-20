@@ -26,6 +26,7 @@ import {
   parseSections,
   renderCriteria,
   renderIssue,
+  textSize,
 } from './cycle-evidence.mjs';
 import { DEFAULTS } from './lib/cycle/config.mjs';
 
@@ -1028,6 +1029,38 @@ describe('packet: сверка критериев с заморозкой (#22)'
   });
 });
 
+describe('textSize: байты и строки снимка (ADR 0009)', () => {
+  test('пустой файл — 0 байт и 0 строк', () => {
+    assert.deepEqual(textSize(''), { bytes: 0, lines: 0 });
+  });
+
+  test('завершающий перевод строки не добавляет строку', () => {
+    assert.deepEqual(textSize('одна\n'), { bytes: Buffer.byteLength('одна\n'), lines: 1 });
+    assert.deepEqual(textSize('одна\nдве\n'), {
+      bytes: Buffer.byteLength('одна\nдве\n'),
+      lines: 2,
+    });
+  });
+
+  test('файл без завершающего перевода строки содержит ещё одну строку', () => {
+    assert.deepEqual(textSize('одна'), { bytes: Buffer.byteLength('одна'), lines: 1 });
+    assert.equal(textSize('одна\nдве').lines, 2);
+  });
+
+  test('байты считаются в UTF-8, а не в символах', () => {
+    // Кириллица — два байта на символ: число байт не равно длине строки.
+    const text = 'критерии\n';
+    assert.equal(textSize(text).bytes, 17);
+    assert.notEqual(textSize(text).bytes, text.length);
+    assert.equal(textSize(text).lines, 1);
+  });
+
+  test('не строка — TypeError, а не молчаливый ноль', () => {
+    // @ts-expect-error проверяется отказ на чужом типе
+    assert.throws(() => textSize(null), TypeError);
+  });
+});
+
 describe('packet: пакет evidence/', () => {
   /**
    * Лог гейта на 250 строк: каждые 50 строк — вымышленные ПДн или секрет.
@@ -1226,6 +1259,7 @@ describe('packet: пакет evidence/', () => {
       gates: evidence(dir, 'gates.json'),
       qa: evidence(dir, 'qa-web.json'),
       log: evidence(dir, join('gates', 'lint.1.log')),
+      manifest: readFileSync(join(dir, 'manifest.1.json'), 'utf8'),
     });
     const first = snapshot();
 
@@ -1278,6 +1312,189 @@ describe('packet: пакет evidence/', () => {
     assert.equal(result.status, 2);
     assert.match(result.stderr, /схема нарушена/);
     assert.equal(existsSync(join(dir, 'evidence', 'diff.patch')), false);
+  });
+});
+
+describe('packet: снимок размера пакета (ADR 0009, #106)', () => {
+  /**
+   * Разобранный `manifest.<n>.json` каталога цикла.
+   * @param {string} dir каталог цикла
+   * @param {number} [iteration]
+   * @returns {Record<string, any>}
+   */
+  function manifest(dir, iteration = 1) {
+    return JSON.parse(readFileSync(join(dir, `manifest.${iteration}.json`), 'utf8'));
+  }
+
+  /**
+   * Ожидаемый размер файла пакета — из того, что реально легло на диск: манифест
+   * обязан совпадать с пакетом, а не с тем, что хотел записать вызывающий код.
+   * @param {string} dir
+   * @param {string} path путь относительно каталога цикла
+   * @returns {{ path: string, bytes: number, lines: number }}
+   */
+  function expectedEntry(dir, path) {
+    const text = readFileSync(join(dir, path), 'utf8');
+    const lines = text === '' ? 0 : text.replace(/\n$/, '').split('\n').length;
+    return { path, bytes: Buffer.byteLength(text, 'utf8'), lines };
+  }
+
+  test('снимок лежит в каталоге цикла, а не в evidence/, и виден в stdout', (t) => {
+    const { root, baseSha } = makeRepo(t);
+    writeFileSync(join(root, 'tracked.txt'), 'base\nchanged\n');
+    const dir = makeCycleDir(root, { baseSha });
+
+    const result = runCli(root, ['packet', '--dir', dir]);
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(existsSync(join(dir, 'manifest.1.json')), true);
+    assert.equal(readdirSync(join(dir, 'evidence')).includes('manifest.1.json'), false);
+    assert.equal(stdoutJson(result).manifest, 'manifest.1.json');
+  });
+
+  test('размеры файлов пакета, totals и порядок путей', (t) => {
+    const { root, baseSha } = makeRepo(t);
+    writeFileSync(join(root, 'tracked.txt'), 'base\nchanged\n');
+    const dir = makeCycleDir(root, {
+      baseSha,
+      gates: gatesDoc(baseSha, [gate('lint', 'fail', { log: 'gates/lint.1.log' })]),
+      logs: { 'gates/lint.1.log': 'падение линтера\nвторая строка\n' },
+    });
+
+    const result = runCli(root, ['packet', '--dir', dir]);
+    assert.equal(result.status, 0, result.stderr);
+
+    const doc = manifest(dir);
+    const paths = [
+      'evidence/criteria.md',
+      'evidence/diff.patch',
+      'evidence/gates.json',
+      'evidence/gates/lint.1.log',
+    ];
+    assert.deepEqual(
+      doc.files.map((/** @type {Record<string, any>} */ entry) => entry.path),
+      paths,
+      'порядок — сортировка по строке',
+    );
+    assert.deepEqual(
+      doc.files,
+      paths.map((path) => expectedEntry(dir, path)),
+    );
+    assert.deepEqual(doc.totals, {
+      files: paths.length,
+      bytes: doc.files.reduce((sum, entry) => sum + entry.bytes, 0),
+      lines: doc.files.reduce((sum, entry) => sum + entry.lines, 0),
+    });
+  });
+
+  test('issue.md из этапа criteria тоже измеряется', (t) => {
+    const { root, baseSha } = makeRepo(t);
+    writeFileSync(join(root, 'tracked.txt'), 'base\nchanged\n');
+    const dir = makeCycleDir(root, { baseSha });
+    writeFileSync(join(dir, 'evidence', 'issue.md'), '# 155: тема\n\nтело issue\n');
+
+    assert.equal(runCli(root, ['packet', '--dir', dir]).status, 0);
+
+    const doc = manifest(dir);
+    const entry = doc.files.find(
+      (/** @type {Record<string, any>} */ item) => item.path === 'evidence/issue.md',
+    );
+    assert.deepEqual(entry, expectedEntry(dir, 'evidence/issue.md'));
+  });
+
+  test('в снимке только path, bytes и lines', (t) => {
+    const { root, baseSha } = makeRepo(t);
+    writeFileSync(join(root, 'tracked.txt'), 'base\nchanged\n');
+    const dir = makeCycleDir(root, {
+      baseSha,
+      gates: gatesDoc(baseSha, [gate('lint', 'fail', { log: 'gates/lint.1.log' })]),
+      logs: { 'gates/lint.1.log': 'падение линтера\n' },
+    });
+
+    assert.equal(runCli(root, ['packet', '--dir', dir]).status, 0);
+
+    const doc = manifest(dir);
+    assert.deepEqual(Object.keys(doc), ['iteration', 'base_sha', 'files', 'totals']);
+    assert.deepEqual(Object.keys(doc.totals), ['files', 'bytes', 'lines']);
+    for (const entry of doc.files) {
+      assert.deepEqual(Object.keys(entry), ['path', 'bytes', 'lines']);
+    }
+  });
+
+  test('секретов не печатаем: строк диффа и логов в снимке нет', (t) => {
+    const { root, baseSha } = makeRepo(t);
+    // Маркеры уникальны: substring-проверка должна ловить именно содержимое, а не
+    // случайное совпадение с именем поля (`base_sha`, `lines`, `files`).
+    const markers = [
+      'маркер-диффа-155-уникальный',
+      'маркер-лога-155-уникальный',
+      'маркер-гейтов-155-уникальный',
+    ];
+    const [diffMarker, logMarker, gatesMarker] = markers;
+    writeFileSync(
+      join(root, 'tracked.txt'),
+      ['base', `${diffMarker ?? ''}`, `contact: ${FAKE.email}`, `phone ${FAKE.phone}`, ''].join(
+        '\n',
+      ),
+    );
+    const dir = makeCycleDir(root, {
+      baseSha,
+      // Маркер — в `cmd` гейта: это свободная строка, схема её принимает.
+      gates: gatesDoc(baseSha, [
+        { ...gate('lint', 'fail', { log: 'gates/lint.1.log' }), cmd: gatesMarker },
+      ]),
+      logs: { 'gates/lint.1.log': `${logMarker ?? ''}\nпадение линтера\n` },
+    });
+
+    assert.equal(runCli(root, ['packet', '--dir', dir]).status, 0);
+
+    const text = readFileSync(join(dir, 'manifest.1.json'), 'utf8');
+    for (const marker of markers) {
+      // Санити: маркер действительно попал в пакет — иначе проверка ниже бессмысленна.
+      const sources = `${evidence(dir, 'diff.patch')}${evidence(dir, 'gates.json')}${evidence(dir, join('gates', 'lint.1.log'))}`;
+      assert.equal(sources.includes(marker), true, `маркер не попал в пакет: ${marker}`);
+      assert.equal(text.includes(marker), false, `содержимое пакета попало в снимок: ${marker}`);
+    }
+    // Даже маскированные значения — уже содержимое: их в снимке быть не должно.
+    assert.match(evidence(dir, 'diff.patch'), /\[email\]/);
+    assert.equal(text.includes('[email]'), false);
+    assert.equal(text.includes(FAKE.email), false);
+  });
+
+  test('нет содержимого и в файлах без завершающего перевода строки', (t) => {
+    const { root, baseSha } = makeRepo(t);
+    writeFileSync(join(root, 'tracked.txt'), 'base\nchanged\n');
+    const dir = makeCycleDir(root, { baseSha });
+
+    assert.equal(runCli(root, ['packet', '--dir', dir]).status, 0);
+
+    const doc = manifest(dir);
+    for (const entry of doc.files) {
+      assert.deepEqual(entry, expectedEntry(dir, entry.path));
+    }
+  });
+
+  test('diff_too_large — снимка нет', (t) => {
+    const { root, baseSha } = makeRepo(t);
+    writeFileSync(join(root, 'big.txt'), `${'строка\n'.repeat(2001)}`);
+    const dir = makeCycleDir(root, { baseSha });
+
+    const result = runCli(root, ['packet', '--dir', dir]);
+
+    assert.equal(result.status, 4, result.stderr);
+    assert.equal(existsSync(join(dir, 'manifest.1.json')), false);
+    assert.equal(stdoutJson(result).manifest, undefined);
+  });
+
+  test('ошибка сборки — снимка нет', (t) => {
+    const { root, baseSha } = makeRepo(t);
+    writeFileSync(join(root, 'tracked.txt'), 'base\nchanged\n');
+    const dir = makeCycleDir(root, { baseSha, qaWeb: '{"status":' });
+
+    const result = runCli(root, ['packet', '--dir', dir]);
+
+    assert.equal(result.status, 2, result.stderr);
+    assert.equal(existsSync(join(dir, 'manifest.1.json')), false);
   });
 });
 
