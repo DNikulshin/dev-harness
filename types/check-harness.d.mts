@@ -118,6 +118,7 @@ export declare function formatViolation(violation: Violation): string;
 export declare function formatWarning(warning: Warning): string;
 /**
  * Разбирает аргументы CLI: единственный необязательный — `--root <dir>`.
+ * Без него проверяется текущий каталог (см. `DEFAULT_ROOT`).
  * @param {string[]} argv
  * @returns {{ root: string }}
  */

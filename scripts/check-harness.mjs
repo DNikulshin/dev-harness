@@ -4,13 +4,15 @@
  *
  * Вход: `.pi/agents/{plan,code,review,evaluate}.md` (frontmatter), `.pi/settings.json`,
  * `.pi/prompts/cycle.md`, `AGENTS.md`. Выход: строки `H<n>: <файл> — <что не так>`
- * в stdout, диагностика чтения — в stderr. Аргументов нет: проверяется корень репозитория.
+ * в stdout, диагностика чтения — в stderr. Аргументов может не быть: тогда проверяется
+ * **текущий каталог** — проект, в котором стоит потребитель (bin `harness-check-layout`),
+ * и корень репозитория ядра, когда команда запущена из него (#42).
  *
  * Диагностика чтения состоит из относительного пути и человекочитаемой причины. Системный
  * текст ошибки (`error.message`) не печатается: Node подставляет в него абсолютный путь
  * (`ENOENT: no such file or directory, open '/abs/path'`), из-за чего вывод зависел бы от
  * расположения дерева. Вместо него используется `error.code` (§5.9).
- * `--root <dir>` подменяет корень — так тесты проверяют фикстурные деревья и не зависят
+ * `--root <dir>` подменяет корень: так тесты проверяют фикстурные деревья и не зависят
  * от реальных `.pi/**` и `AGENTS.md` (§5.10: никаких обращений к сети и `pnpm`).
  *
  * Правила H1–H6 (§5.9):
@@ -65,13 +67,16 @@
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import { isDirectRun } from './lib/cycle/cli.mjs';
 import { DEFAULTS, loadConfig } from './lib/cycle/config.mjs';
 
-/** Корень репозитория по умолчанию: родитель каталога `scripts/`. */
-const DEFAULT_ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
+/**
+ * Корень по умолчанию — текущий каталог, а не каталог пакета (#42): у потребителя bin лежит
+ * в `node_modules/@dnikulshin/harness/`, и проверять оттуда сам пакет — не то, чего ждёт
+ * человек; в репозитории ядра cwd и есть его корень, так что самопроверка не меняется.
+ */
+const DEFAULT_ROOT = process.cwd();
 
 /**
  * Имя роли в `.pi/agents/`. Один список — один тип: расширение ролей идёт правкой
@@ -647,6 +652,7 @@ export function formatWarning(warning) {
 
 /**
  * Разбирает аргументы CLI: единственный необязательный — `--root <dir>`.
+ * Без него проверяется текущий каталог (см. `DEFAULT_ROOT`).
  * @param {string[]} argv
  * @returns {{ root: string }}
  */
