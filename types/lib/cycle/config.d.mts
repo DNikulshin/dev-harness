@@ -151,9 +151,10 @@ export declare function takeConfigOption(argv?: readonly string[], env?: Record<
  * Загружает конфигурацию проекта. Отсутствующий файл даёт `DEFAULTS`; частичные секции
  * дополняются дефолтами. Результат заморожен.
  * @param {string} root корень проекта
- * @param {{ file?: string|null }} [options] `file` — путь конфига из `--config`/
- *   `HARNESS_CONFIG` (`null` — умолчание); относительный путь считается от `root`, как и
- *   все остальные пути ядра
+ * @param {{ file?: string|null, allowMissing?: boolean }} [options] `file` — путь конфига из
+ *   `--config`/`HARNESS_CONFIG` (`null` — умолчание); относительный путь считается от `root`,
+ *   как и все остальные пути ядра. `allowMissing` — вызывающий сам создаёт файл по этому пути
+ *   (`harness-init` ставит пример конфига): отсутствие тогда даёт дефолты, а не ошибку
  * @returns {Readonly<{
  *   gates: ReadonlyArray<LoadedGate>,
  *   limits: Limits,
@@ -170,8 +171,9 @@ export declare function takeConfigOption(argv?: readonly string[], env?: Record<
  *   `configFile` — метка фактического пути конфига для сообщений (относительно корня или
  *   абсолютная, если конфиг вне дерева), `configPath` — абсолютный путь.
  */
-export declare function loadConfig(root: string, { file }?: {
+export declare function loadConfig(root: string, { file, allowMissing }?: {
     file?: string | null;
+    allowMissing?: boolean;
 }): Readonly<{
     gates: ReadonlyArray<LoadedGate>;
     limits: Limits;

@@ -268,11 +268,12 @@ function deepFreeze(value) {
  * как «настройки применились».
  * @param {string} file абсолютный путь к конфигу
  * @param {boolean} explicit путь задан снаружи (флаг или окружение)
+ * @param {boolean} allowMissing вызывающий создаёт файл по этому пути (`harness-init`)
  * @returns {unknown}
  */
-function readConfigFile(file, explicit) {
+function readConfigFile(file, explicit, allowMissing) {
   if (!existsSync(file)) {
-    if (!explicit) return null;
+    if (!explicit || allowMissing) return null;
     throw new ConfigError(evalLabel('файл конфига не найден'));
   }
   const text = readFileSync(file, 'utf8');
@@ -735,9 +736,10 @@ function parseGateTimeouts(value, gateIds) {
  * Загружает конфигурацию проекта. Отсутствующий файл даёт `DEFAULTS`; частичные секции
  * дополняются дефолтами. Результат заморожен.
  * @param {string} root корень проекта
- * @param {{ file?: string|null }} [options] `file` — путь конфига из `--config`/
- *   `HARNESS_CONFIG` (`null` — умолчание); относительный путь считается от `root`, как и
- *   все остальные пути ядра
+ * @param {{ file?: string|null, allowMissing?: boolean }} [options] `file` — путь конфига из
+ *   `--config`/`HARNESS_CONFIG` (`null` — умолчание); относительный путь считается от `root`,
+ *   как и все остальные пути ядра. `allowMissing` — вызывающий сам создаёт файл по этому пути
+ *   (`harness-init` ставит пример конфига): отсутствие тогда даёт дефолты, а не ошибку
  * @returns {Readonly<{
  *   gates: ReadonlyArray<LoadedGate>,
  *   limits: Limits,
@@ -754,12 +756,12 @@ function parseGateTimeouts(value, gateIds) {
  *   `configFile` — метка фактического пути конфига для сообщений (относительно корня или
  *   абсолютная, если конфиг вне дерева), `configPath` — абсолютный путь.
  */
-export function loadConfig(root, { file = null } = {}) {
+export function loadConfig(root, { file = null, allowMissing = false } = {}) {
   const resolved = resolveConfigPath(root, file);
   const previous = activeLabel;
   activeLabel = resolved.label;
   try {
-    const doc = readConfigFile(resolved.file, file !== null);
+    const doc = readConfigFile(resolved.file, file !== null, allowMissing);
     const positions = { configFile: resolved.label, configPath: resolved.file };
     // Файла нет: все лимиты — дефолты ядра, явно заданных ключей нет.
     if (doc === null) return deepFreeze({ ...DEFAULTS, limitsExplicit: [], ...positions });

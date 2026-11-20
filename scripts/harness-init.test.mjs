@@ -14,20 +14,27 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, test } from 'node:test';
 
+import { DEFAULTS, loadConfig } from './lib/cycle/config.mjs';
 import {
   buildVersionDoc,
   collectTemplates,
+  defaultLayout,
   digest,
+  installLayout,
   minimalSettings,
   parseArgs,
   planInstall,
   readSettingsState,
   readVersionFile,
   runInit,
+  targetFor,
 } from './harness-init.mjs';
 
 /** Путь к CLI: тесты запускают его как отдельный процесс. */
 const SCRIPT = fileURLToPath(new URL('./harness-init.mjs', import.meta.url));
+
+/** Проверка раскладки: установка и `check-harness` обязаны видеть одно дерево (#81). */
+const CHECK_SCRIPT = fileURLToPath(new URL('./check-harness.mjs', import.meta.url));
 
 /** Настоящие шаблоны пакета: установка по умолчанию берёт их. */
 const TEMPLATES = fileURLToPath(new URL('../templates/', import.meta.url));
@@ -62,6 +69,18 @@ function templatesCopy(t) {
  */
 function runCli(args) {
   const result = spawnSync(process.execPath, [SCRIPT, ...args], { encoding: 'utf8' });
+  assert.equal(result.error, undefined);
+  return { code: result.status ?? -1, stdout: result.stdout, stderr: result.stderr };
+}
+
+/**
+ * Запускает произвольный скрипт ядра.
+ * @param {string} script
+ * @param {string[]} args
+ * @returns {{ code: number, stdout: string, stderr: string }}
+ */
+function runScript(script, args) {
+  const result = spawnSync(process.execPath, [script, ...args], { encoding: 'utf8' });
   assert.equal(result.error, undefined);
   return { code: result.status ?? -1, stdout: result.stdout, stderr: result.stderr };
 }
@@ -634,5 +653,175 @@ describe('CLI на временном проекте', () => {
     assert.equal(unknown.code, 2);
     assert.match(unknown.stderr, /неизвестный аргумент/);
     assert.equal(existsSync(join(root, '.pi/agents')), false, 'отказы ничего не создают');
+  });
+});
+
+/**
+ * Профиль `harness/**`: конфиг лежит там же, где роли, промпт и настройки.
+ * @param {import('node:test').TestContext} t
+ * @returns {string} корень проекта
+ */
+function profileProject(t) {
+  return makeProject(t, {
+    'AGENTS.md': 'Роли описаны в `harness/agents/`, гейты — в `harness/harness.config.json`.\n',
+    'harness/harness.config.json': `${JSON.stringify(
+      {
+        provider: 'polza-ai/',
+        paths: {
+          agentsDir: 'harness/agents',
+          settings: 'harness/settings.json',
+          cyclePrompt: 'harness/cycle.md',
+        },
+      },
+      null,
+      2,
+    )}\n`,
+  });
+}
+
+/** Конфиг профиля `harness/**` в терминах раскладки установки. */
+const PROFILE_LAYOUT = Object.freeze({
+  agentsDir: 'harness/agents',
+  settings: 'harness/settings.json',
+  cyclePrompt: 'harness/cycle.md',
+  config: 'harness/harness.config.json',
+  version: 'harness/harness.version',
+});
+
+describe('раскладка установки: профиль вместо литерала (ADR 0005, г)', () => {
+  test('installLayout переводит пути конфига в пути установки', (t) => {
+    const root = profileProject(t);
+    const config = loadConfig(root, { file: 'harness/harness.config.json' });
+
+    assert.deepEqual(installLayout(config, root), { ...PROFILE_LAYOUT });
+  });
+
+  test('умолчания установки совпадают с путями по умолчанию', () => {
+    assert.deepEqual(defaultLayout(), {
+      agentsDir: DEFAULTS.paths.agentsDir,
+      settings: DEFAULTS.paths.settings,
+      cyclePrompt: DEFAULTS.paths.cyclePrompt,
+      config: '.pi/harness.config.json',
+      version: '.pi/harness.version',
+    });
+  });
+
+  test('collectTemplates раскладывает шаблоны по профилю', () => {
+    const targets = collectTemplates(TEMPLATES, { ...PROFILE_LAYOUT }).map(
+      (template) => template.target,
+    );
+
+    assert.deepEqual(targets, [
+      'harness/agents/code.md',
+      'harness/agents/evaluate.md',
+      'harness/agents/plan.md',
+      'harness/agents/review.md',
+      'harness/cycle.md',
+      'harness/harness.config.json',
+    ]);
+  });
+
+  test('неизвестный шаблон — ошибка: профиль не знает, куда его ставить', () => {
+    assert.equal(targetFor('agents/plan.md', { ...PROFILE_LAYOUT }), 'harness/agents/plan.md');
+    assert.throws(
+      () => targetFor('hooks/post-check.md', { ...PROFILE_LAYOUT }),
+      /профиль раскладки не знает/u,
+    );
+  });
+
+  test('конфиг вне корня проекта — ошибка установки', (t) => {
+    const root = makeProject(t);
+    const outside = join(tempDir(t), 'shared-harness.json');
+    writeFileSync(outside, '{}\n');
+    const config = loadConfig(root, { file: outside });
+
+    assert.throws(() => installLayout(config, root), /конфиг вне корня проекта/u);
+  });
+});
+
+describe('CLI: установка по профилю (#81)', () => {
+  test('шаблоны ложатся по путям профиля, каталога умолчаний не появляется', (t) => {
+    const root = profileProject(t);
+    const configBefore = read(root, 'harness/harness.config.json');
+
+    const result = runCli(['--root', root, '--config', 'harness/harness.config.json']);
+
+    assert.equal(result.code, 0, result.stderr);
+    for (const path of [
+      'harness/agents/plan.md',
+      'harness/agents/code.md',
+      'harness/agents/review.md',
+      'harness/agents/evaluate.md',
+      'harness/cycle.md',
+      'harness/settings.json',
+      'harness/harness.version',
+    ]) {
+      assert.ok(existsSync(join(root, ...path.split('/'))), `${path} создан`);
+    }
+    assert.equal(existsSync(join(root, '.pi')), false, 'пути умолчаний не используются');
+    assert.equal(read(root, 'harness/harness.config.json'), configBefore, 'конфиг — политика');
+    assert.deepEqual(JSON.parse(read(root, 'harness/settings.json')), minimalSettings());
+    // Конфиг существовал до установки и принадлежит проекту: провенанс не наш, в версию не
+    // попадает — иначе `--force` однажды объявил бы чужие настройки шаблоном.
+    assert.deepEqual(Object.keys(JSON.parse(read(root, 'harness/harness.version')).templates), [
+      'harness/agents/code.md',
+      'harness/agents/evaluate.md',
+      'harness/agents/plan.md',
+      'harness/agents/review.md',
+      'harness/cycle.md',
+    ]);
+  });
+
+  test('повторный запуск идемпотентен, --check согласован', (t) => {
+    const root = profileProject(t);
+    assert.equal(runCli(['--root', root, '--config', 'harness/harness.config.json']).code, 0);
+    const versionBefore = read(root, 'harness/harness.version');
+
+    const second = runCli(['--root', root, '--config', 'harness/harness.config.json']);
+    assert.equal(second.code, 0, second.stderr);
+    assert.equal(read(root, 'harness/harness.version'), versionBefore, 'версия не перезаписана');
+
+    const check = runCli(['--root', root, '--config', 'harness/harness.config.json', '--check']);
+    assert.equal(check.code, 0, check.stdout);
+    assert.deepEqual(lines(check.stdout), ['шаблоны актуальны']);
+  });
+
+  test('check-harness видит то же дерево, что установила команда', (t) => {
+    const root = profileProject(t);
+    assert.equal(runCli(['--root', root, '--config', 'harness/harness.config.json']).code, 0);
+
+    const check = runScript(CHECK_SCRIPT, [
+      '--root',
+      root,
+      '--config',
+      'harness/harness.config.json',
+    ]);
+
+    assert.equal(check.code, 0, `${check.stdout}${check.stderr}`);
+    assert.equal(check.stdout, '', 'нарушений нет');
+  });
+
+  test('конфига ещё нет: он создаётся по --config, версия ложится рядом с ним', (t) => {
+    const root = makeProject(t);
+
+    const result = runCli(['--root', root, '--config', 'config/harness.config.json']);
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.ok(existsSync(join(root, 'config/harness.config.json')), 'конфиг создан по флагу');
+    assert.ok(existsSync(join(root, 'config/harness.version')), 'версия рядом с конфигом');
+    // Пример конфига задаёт пути умолчаний: шаблоны едут туда, куда указывает сам конфиг.
+    assert.ok(existsSync(join(root, '.pi/agents/plan.md')));
+
+    const check = runCli(['--root', root, '--config', 'config/harness.config.json', '--check']);
+    assert.equal(check.code, 0, check.stdout);
+  });
+
+  test('--config без значения — код 2', (t) => {
+    const root = makeProject(t);
+
+    const result = runCli(['--root', root, '--config']);
+
+    assert.equal(result.code, 2);
+    assert.match(result.stderr, /--config: ожидается путь к файлу конфига/u);
   });
 });
