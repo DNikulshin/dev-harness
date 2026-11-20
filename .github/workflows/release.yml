@@ -1,0 +1,63 @@
+name: Release
+
+# Публикация в npm по тегу `vX.Y.Z` (issue #72, docs/release.md).
+#
+# Публикуется **собранный архив**, а не репозиторий: между `pnpm pack` и `npm publish` стоит
+# проверка состава (`tooling/check-package.mjs`) — что `files` не забыл `LICENSE`, шаблоны и типы,
+# что файлы из `bin`/`exports` на месте и что версия в `package.json` совпадает с тегом. Версию в
+# npm перезаписать нельзя: ошибка в составе достаётся потребителю первой.
+#
+# `--provenance` (публикация с аттестацией сборки) требует `id-token: write`. Токен публикации —
+# секрет `NPM_TOKEN` (scope `@dnikulshin`), его ставит владелец; в код и логи он не попадает.
+#
+# Тег ставится на `main` после мержа релизного PR; `ci.yml` прогоняется на том же теге, а ruleset
+# `release-tags` запрещает перезапись и удаление тегов `v*` (docs/workflow.md).
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # npm provenance
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Установка зависимостей
+        run: pnpm install --frozen-lockfile
+
+      # `ci.yml` прогоняется на том же теге, но два workflow независимы: публикация не должна
+      # ждать порядка запуска. Поэтому гейт повторяется здесь — 45 секунд против пакета с
+      # красными тестами в реестре.
+      - name: Проверки ядра
+        run: pnpm check
+
+      # Тег — контракт потребителя: по нему ставится пакет. Расхождение с package.json означает,
+      # что под тегом лежит другой код, и проверка состава поймает это до публикации.
+      - name: Сборка архива
+        run: pnpm pack --pack-destination dist
+
+      - name: Состав архива и версия
+        run: node tooling/check-package.mjs dist/*.tgz --tag "$GITHUB_REF_NAME"
+
+      - name: Публикация в npm
+        run: npm publish dist/*.tgz --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

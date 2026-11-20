@@ -24,35 +24,15 @@ import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { after, before, describe, test } from 'node:test';
 
+import { archiveProblems, packageProblems } from './lib/package-contract.mjs';
+
 /** Корень репозитория ядра: родитель каталога `scripts/`. */
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 
 /** Компилятор для проверки типов: инструмент ядра, не зависимость потребителя. */
 const TSC = join(ROOT, 'node_modules', 'typescript', 'lib', 'tsc.js');
 
-/** Что обязано быть в архиве, чтобы потребитель заработал (контракт `files`). */
-const REQUIRED_ENTRIES = Object.freeze([
-  'LICENSE',
-  'README.md',
-  'package.json',
-  'scripts/cycle-state.mjs',
-  'scripts/check-harness.mjs',
-  'scripts/selftest.mjs',
-  'scripts/fixtures/cycle/project/.pi/harness.config.json',
-  'types/cycle-state.d.mts',
-  'templates/.pi/agents/plan.md',
-  'docs/adr/README.md',
-]);
-
-/** Чего в архиве быть не должно: локальные артефакты и инфраструктура репозитория. */
-const FORBIDDEN_ENTRIES = Object.freeze([
-  '.pi/artifacts/',
-  'node_modules/',
-  'evals/',
-  'tooling/',
-  '.github/',
-  '.githooks/',
-]);
+/** Корень репозитория ядра: родитель каталога `scripts/`. */
 
 /**
  * Запуск команды с захватом вывода: тесты не должны сыпать логами `pnpm` в отчёт `node --test`.
@@ -112,22 +92,40 @@ describe('package: внешний потребитель', () => {
 
   test('архив содержит контракт пакета и не тащит инфраструктуру репозитория', () => {
     const entries = archiveEntries(state.pack);
-
-    for (const path of REQUIRED_ENTRIES) {
-      assert.ok(entries.has(path), `в архиве нет ${path} — сломан files или шаблоны не поехали`);
-    }
-    for (const prefix of FORBIDDEN_ENTRIES) {
-      const leaked = [...entries].filter((entry) => entry.startsWith(prefix));
-      assert.deepEqual(leaked, [], `в архив попало лишнее: ${prefix}`);
-    }
+    // Список и правила — общие с релизной проверкой (`lib/package-contract.mjs`): тест и
+    // публикация не должны расходиться в том, что считается полным архивом.
+    assert.deepEqual(archiveProblems(entries), [], 'контракт состава архива');
     assert.ok(entries.has('types/cycle-state.d.mts'), 'типы потребителя едут в архиве');
+  });
+
+  test('package.json архива выполняет свои обещания: bin и exports на месте', () => {
+    const entries = archiveEntries(state.pack);
+    const pkg = archivePackage(state.pack);
+
+    assert.deepEqual(
+      packageProblems({ pkg, entries, expected: { name: '@dnikulshin/harness' } }),
+      [],
+      'обещания package.json',
+    );
   });
 
   test('bin-шимы установлены и запускаются из node_modules', () => {
     const names = readdirSync(join(state.proj, 'node_modules', '.bin')).sort();
-    for (const expected of ['harness-cycle-state', 'harness-check-layout', 'harness-init']) {
+    for (const expected of [
+      'harness',
+      'harness-cycle-state',
+      'harness-check-layout',
+      'harness-init',
+    ]) {
       assert.ok(names.includes(expected), `нет bin ${expected}: ${names.join(', ')}`);
     }
+
+    // `harness` — точка входа `npx @dnikulshin/harness init`: бин с именем пакета и есть
+    // причина, по которой диспетчер существует.
+    const dispatcher = run(bin('harness'), ['--help'], { cwd: state.proj });
+    assert.equal(dispatcher.status, 0, dispatcher.stderr);
+    assert.match(dispatcher.stdout, /использование: harness <команда>/u);
+    assert.match(dispatcher.stdout, /init/u);
 
     const usage = run(bin('harness-cycle-state'), [], { cwd: state.proj });
     assert.equal(usage.status, 2, 'без подкоманды — код 2, как в контракте CLI');
@@ -286,6 +284,19 @@ function packTo(dir) {
   const archive = archives[0];
   assert.ok(archive !== undefined, 'архив найден');
   return join(dir, archive);
+}
+
+/**
+ * `package.json` из архива: то, что потребитель получит, а не то, что лежит в репозитории.
+ * @param {string} file путь к архиву
+ * @returns {Record<string, any>}
+ */
+function archivePackage(file) {
+  const text = execFileSync('tar', ['-xOzf', file, 'package/package.json'], {
+    encoding: 'utf8',
+    maxBuffer: 32 * 1024 * 1024,
+  });
+  return JSON.parse(text);
 }
 
 /**
