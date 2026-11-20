@@ -311,7 +311,9 @@ export const TRANSITIONS = Object.freeze({
   EVALUATE: Object.freeze(['REVIEW', 'DECIDE']),
   DECIDE: Object.freeze(['REWORK', 'ACQUIRE_EVIDENCE', 'REVIEW', 'EVALUATE', 'PR', 'ESCALATED']),
   REWORK: Object.freeze(['CODE']),
-  ACQUIRE_EVIDENCE: Object.freeze(['GATES', 'QA_WEB']),
+  // `REVIEW` (#47): `acquire: integrity` — повтор ревью с вопросом «не ослаблены ли проверки»,
+  // исполнимого шага у него нет (§5.6). Без этого ребра добор целостности упирался в тупик.
+  ACQUIRE_EVIDENCE: Object.freeze(['GATES', 'QA_WEB', 'REVIEW']),
   PR: Object.freeze(['DONE']),
 });
 

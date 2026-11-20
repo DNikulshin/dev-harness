@@ -69,7 +69,7 @@ const EXPECTED_TRANSITIONS = Object.freeze({
   EVALUATE: Object.freeze(['REVIEW', 'DECIDE']),
   DECIDE: Object.freeze(['REWORK', 'ACQUIRE_EVIDENCE', 'REVIEW', 'EVALUATE', 'PR', 'ESCALATED']),
   REWORK: Object.freeze(['CODE']),
-  ACQUIRE_EVIDENCE: Object.freeze(['GATES', 'QA_WEB']),
+  ACQUIRE_EVIDENCE: Object.freeze(['GATES', 'QA_WEB', 'REVIEW']),
   PR: Object.freeze(['DONE']),
 });
 
@@ -748,9 +748,18 @@ describe('cycle-state: переходы §5.3', () => {
 
     // Таблица §5.3 без переходов в ESCALATED (они только через `escalate`):
     // INIT 1 + PLAN 1 + CODE 1 + GATES 2 + QA_WEB 1 + REVIEW 2 + EVALUATE 2 + DECIDE 5 +
-    // REWORK 1 + ACQUIRE_EVIDENCE 2 + PR 1 = 19.
-    assert.equal(allowed, 19, 'в таблице §5.3 девятнадцать рёбер advance');
+    // REWORK 1 + ACQUIRE_EVIDENCE 3 + PR 1 = 20.
+    assert.equal(allowed, 20, 'в таблице §5.3 двадцать рёбер advance');
     assert.equal(forbidden, STAGES.length * STAGES.length - allowed);
+  });
+
+  test('ACQUIRE_EVIDENCE → REVIEW: добор целостности повторяет ревью (#47)', (t) => {
+    const { root, baseSha } = makeRepo(t);
+    const dir = makeCycle(root, { state: stateDoc(baseSha, { stage: 'ACQUIRE_EVIDENCE' }) });
+
+    const review = runCli(root, ['advance', '--dir', dir, '--to', 'REVIEW', '--now', LATER]);
+    assert.equal(review.status, 0, review.stderr);
+    assert.equal(JSON.parse(review.stdout).stage, 'REVIEW');
   });
 
   test('→ ESCALATED через advance запрещён: только escalate', (t) => {
