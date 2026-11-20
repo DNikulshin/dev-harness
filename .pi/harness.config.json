@@ -7,7 +7,8 @@
       "args": ["--test"],
       "required": true,
       "dependsOn": [],
-      "pathPrefixes": []
+      "pathPrefixes": [],
+      "env": {}
     },
     {
       "id": "typecheck",
@@ -15,7 +16,8 @@
       "args": ["exec", "tsc", "-p", "tsconfig.json"],
       "required": true,
       "dependsOn": [],
-      "pathPrefixes": []
+      "pathPrefixes": [],
+      "env": {}
     },
     {
       "id": "format_check",
@@ -23,7 +25,8 @@
       "args": ["exec", "prettier", "--check", "."],
       "required": true,
       "dependsOn": [],
-      "pathPrefixes": []
+      "pathPrefixes": [],
+      "env": {}
     }
   ],
   "limits": {
