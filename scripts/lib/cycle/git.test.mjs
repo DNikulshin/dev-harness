@@ -176,6 +176,83 @@ describe('git', () => {
     assert.deepEqual(intentToAddUntracked({ cwd: dir }), []);
   });
 
+  test('заранее staged правки не теряются: дифф один и тот же при двух прогонах', (t) => {
+    const { dir } = makeRepo(t);
+    writeFileSync(join(dir, 'other.txt'), 'other base\n');
+    git(['add', 'other.txt'], dir);
+    git(['commit', '-m', 'второй файл в базе'], dir);
+    const sha = baseSha({ branch: 'main', cwd: dir });
+
+    // Три состояния индекса сразу: staged правка, unstaged правка и новый файл.
+    appendFileSync(join(dir, 'tracked.txt'), 'staged line\n');
+    git(['add', 'tracked.txt'], dir);
+    appendFileSync(join(dir, 'other.txt'), 'unstaged line\n');
+    writeFileSync(join(dir, 'new.txt'), 'new file\n');
+
+    assert.deepEqual(intentToAddUntracked({ cwd: dir }), ['new.txt']);
+    const first = diffFromBase(sha, { cwd: dir });
+
+    assert.deepEqual(intentToAddUntracked({ cwd: dir }), [], 'повторный прогон — no-op');
+    assert.equal(diffFromBase(sha, { cwd: dir }), first, 'дифф от базы не зависит от повторов');
+
+    assert.match(first, /\+staged line/u, 'staged-правка в диффе');
+    assert.match(first, /\+unstaged line/u, 'unstaged-правка в диффе');
+    assert.match(first, /\+new file/u, 'новый файл в диффе');
+  });
+
+  test('intentToAddUntracked не трогает уже staged записи индекса', (t) => {
+    const { dir } = makeRepo(t);
+    appendFileSync(join(dir, 'tracked.txt'), 'staged line\n');
+    git(['add', 'tracked.txt'], dir);
+    writeFileSync(join(dir, 'new.txt'), 'new content\n');
+
+    const entryBefore = git(['ls-files', '-s', 'tracked.txt'], dir);
+    const stagedBefore = git(['diff', '--cached', '--', 'tracked.txt'], dir);
+    assert.equal(git(['diff', '--cached', '--name-only'], dir).trim(), 'tracked.txt');
+
+    intentToAddUntracked({ cwd: dir });
+
+    assert.equal(git(['ls-files', '-s', 'tracked.txt'], dir), entryBefore, 'запись индекса та же');
+    assert.deepEqual(
+      git(['ls-files'], dir).trim().split('\n'),
+      ['new.txt', 'tracked.txt'],
+      'в индекс добавился только новый путь',
+    );
+    assert.equal(
+      git(['diff', '--cached', '--', 'tracked.txt'], dir),
+      stagedBefore,
+      'staged-содержимое не перезаписано',
+    );
+    assert.equal(
+      git(['diff', '--cached', '--name-only'], dir).trim(),
+      'tracked.txt',
+      'intent-to-add не выдаёт себя за staged-содержимое',
+    );
+    assert.match(git(['diff', '--cached', '--', 'tracked.txt'], dir), /\+staged line/u);
+  });
+
+  test('git reset между прогонами: цикл продолжается, intent-to-add ставится заново', (t) => {
+    const { dir, sha } = makeRepo(t);
+    appendFileSync(join(dir, 'tracked.txt'), 'changed\n');
+    writeFileSync(join(dir, 'new.txt'), 'new content\n');
+
+    intentToAddUntracked({ cwd: dir });
+    const first = diffFromBase(sha, { cwd: dir });
+    assert.match(first, /\+new content/u);
+
+    // Пользователь снял индекс руками. Новые файлы остались на диске — иначе `reset` терял бы работу.
+    git(['reset', '-q'], dir);
+    assert.equal(git(['diff', '--cached', '--name-only'], dir), '', 'индекс пуст');
+    assert.doesNotMatch(
+      diffFromBase(sha, { cwd: dir }),
+      /new\.txt/u,
+      'без intent-to-add новый файл из диффа выпадает — поэтому шаг повторяется на каждом этапе',
+    );
+
+    assert.deepEqual(intentToAddUntracked({ cwd: dir }), ['new.txt'], 'шаг восстанавливается');
+    assert.equal(diffFromBase(sha, { cwd: dir }), first, 'цикл продолжается с тем же диффом');
+  });
+
   test('changedFiles перечисляет изменённые файлы от базы', (t) => {
     const { dir, sha } = makeRepo(t);
     appendFileSync(join(dir, 'tracked.txt'), 'changed\n');
