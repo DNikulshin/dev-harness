@@ -13,7 +13,10 @@
  * - `evidence/gates.json` — пустой список гейтов: на синтетическом дереве они не запускаются,
  *   и честнее сказать это явно, чем оставить файла не было (иначе агент читает отсутствие
  *   как нехватку свидетельств);
- * - `meta.json` — сид, конфигурация, модели, время сборки.
+ * - `meta.json` — сид, конфигурация, модели, план повторов, время сборки.
+ *
+ * Повтор — это тот же `--config` и **другой** `--out`: агрегирует повторы `evals-score`,
+ * а `--repeat N` пишет план (§15: минимум 3), чтобы отчёт видел, сколько прогонов не хватает.
  *
  * `AGENTS.md` копируется в базовый коммит: правила проекта действуют и на синтетическом
  * дереве, иначе агент не смог бы сослаться на них, а дифф не должен их содержать.
@@ -36,7 +39,7 @@ import { loadSeeds, seedCriteriaMarkdown, seedIssueMarkdown } from './lib/evals/
 import { loadConfig } from './lib/cycle/config.mjs';
 import { writeJsonAtomic } from './lib/cycle/io.mjs';
 import { artifactsDir, repoRoot } from './lib/cycle/paths.mjs';
-import { SCORED_STAGES } from './lib/evals/score.mjs';
+import { SCORED_STAGES, DEFAULT_REPEAT } from './lib/evals/score.mjs';
 
 /** Фиксированные даты коммита: sha базового коммита не должен зависеть от запуска. */
 const FIXED_DATE = '2000-01-01T00:00:00Z';
@@ -47,11 +50,19 @@ const BRANCH = 'evals';
 /**
  * Разбирает аргументы командной строки.
  * @param {string[]} argv
- * @returns {{ seed: string|null, config: string, out: string|null, now: string|null, force: boolean, root: string|null }}
+ * @returns {{ seed: string|null, config: string, out: string|null, now: string|null, repeat: number, force: boolean, root: string|null }}
  */
 export function parseArgs(argv) {
-  /** @type {{ seed: string|null, config: string, out: string|null, now: string|null, force: boolean, root: string|null }} */
-  const args = { seed: null, config: 'current', out: null, now: null, force: false, root: null };
+  /** @type {{ seed: string|null, config: string, out: string|null, now: string|null, repeat: number, force: boolean, root: string|null }} */
+  const args = {
+    seed: null,
+    config: 'current',
+    out: null,
+    now: null,
+    repeat: DEFAULT_REPEAT,
+    force: false,
+    root: null,
+  };
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -61,6 +72,15 @@ export function parseArgs(argv) {
       continue;
     }
     const key = arg.startsWith('--') ? arg.slice(2) : null;
+    if (key === 'repeat') {
+      const value = Number(argv[index + 1]);
+      if (!Number.isInteger(value) || value < 1) {
+        throw new Error('--repeat: ожидается целое ≥ 1');
+      }
+      args.repeat = value;
+      index += 1;
+      continue;
+    }
     if (key === 'seed' || key === 'config' || key === 'out' || key === 'now' || key === 'root') {
       const value = argv[index + 1];
       if (typeof value !== 'string' || value.trim() === '' || value.startsWith('--')) {
@@ -220,6 +240,7 @@ function main() {
         config: args.config,
         models: Object.fromEntries(SCORED_STAGES.map((stage) => [stage, models[stage]])),
         stages: [...SCORED_STAGES],
+        repeat: args.repeat,
         created_at: now,
         expect: seed.expect,
       },
@@ -233,6 +254,7 @@ function main() {
         `  сид: ${seed.id} — ${seed.title}`,
         `  ожидание: ${seed.expect.kind === 'clean' ? 'чистый дифф, блокеров нет' : `${seed.expect.severity ?? 'BLOCKER'} в ${seed.expect.file ?? '?'}:${seed.expect.line ?? '?'}`}`,
         `  модели: ${SCORED_STAGES.map((stage) => `${stage}=${models[stage]}`).join(', ')}`,
+        `  повторов: ${args.repeat} (каждый — отдельный --out)`,
         `  дифф: ${diffLines} строк`,
         '',
       ].join('\n'),

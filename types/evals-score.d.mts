@@ -24,6 +24,17 @@ export declare function parseArgs(argv: string[]): {
  */
 export declare function findRuns(dir: string): string[];
 /**
+ * План повторов из `meta.json`.
+ *
+ * Старые каталоги поля не имеют и читаются как один повтор — иначе ретроспективные
+ * отчёты пришлось бы переписывать. Мусор в поле — ошибка данных: молчаливое «пусть
+ * будет один» скрыло бы прогон, который никто не повторял.
+ * @param {Record<string, any>} meta
+ * @param {string} label имя каталога прогона для сообщения
+ * @returns {number}
+ */
+export declare function repeatOf(meta: Record<string, any>, label: string): number;
+/**
  * Отчёт в markdown: его прикладывают к issue и читают без запуска скриптов.
  * @param {Record<string, any>} report
  * @param {Array<Record<string, any>>} runs сырые прогоны: в них есть причины, которых нет в своде
