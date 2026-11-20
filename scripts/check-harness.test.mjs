@@ -42,10 +42,14 @@ const ALL_STAGES_TEXT = STAGES.join(' → ');
 /**
  * Запускает CLI и возвращает код, stdout и stderr.
  * @param {string[]} args
+ * @param {{ cwd?: string }} [options] рабочий каталог — без `--root` проверяется именно он (#42)
  * @returns {{ code: number, stdout: string, stderr: string }}
  */
-function runCli(args) {
-  const result = spawnSync(process.execPath, [SCRIPT, ...args], { encoding: 'utf8' });
+function runCli(args, options = {}) {
+  const result = spawnSync(process.execPath, [SCRIPT, ...args], {
+    encoding: 'utf8',
+    cwd: options.cwd,
+  });
   assert.equal(result.error, undefined);
   return { code: result.status ?? -1, stdout: result.stdout, stderr: result.stderr };
 }
@@ -615,7 +619,7 @@ describe('CLI на фикстурных деревьях', () => {
     assert.equal(runCli(['--root', root]).stdout, runCli(['--root', root]).stdout);
   });
 
-  test('без --root проверяется корень репозитория', REPO_ONLY, () => {
+  test('без --root проверяется текущий каталог: в репозитории — его корень', REPO_ONLY, () => {
     const result = runCli([]);
     assert.ok(result.code === 0 || result.code === 1);
     for (const line of lines(result.stdout)) {
@@ -665,6 +669,32 @@ describe('CLI на фикстурных деревьях', () => {
     const result = runCli(['--root', join(FIXTURES, 'ok')]);
     assert.equal(result.code, 0);
     assert.equal(result.stderr, '');
+  });
+
+  test('без --root проверяется cwd, а не каталог пакета (#42)', (t) => {
+    const ok = copyFixture(t, 'ok');
+    const clean = runCli([], { cwd: ok });
+    assert.equal(clean.code, 0, clean.stderr);
+    assert.equal(clean.stdout, '');
+
+    const broken = copyFixture(t, 'h2-family');
+    const drift = runCli([], { cwd: broken });
+    assert.equal(drift.code, 1);
+    assert.deepEqual(lines(drift.stdout), [
+      'H2: .pi/agents/code.md — семейство модели совпадает с review: beta',
+    ]);
+  });
+
+  test('--root сильнее cwd', (t) => {
+    const ok = copyFixture(t, 'ok');
+    const broken = join(FIXTURES, 'h2-family');
+
+    const result = runCli(['--root', broken], { cwd: ok });
+
+    assert.equal(result.code, 1);
+    assert.deepEqual(lines(result.stdout), [
+      'H2: .pi/agents/code.md — семейство модели совпадает с review: beta',
+    ]);
   });
 
   test('нет файла: код 2 и нет абсолютного пути в stderr', (t) => {
