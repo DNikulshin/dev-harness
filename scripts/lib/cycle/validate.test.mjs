@@ -8,6 +8,7 @@ import {
   validateEvaluation,
   validateGates,
   validateIntegrity,
+  validateManifest,
   validateMetrics,
   validateQaWeb,
   validateReview,
@@ -428,6 +429,40 @@ describe('validateQaWeb', () => {
       'qa-web.status: ожидается одно из done|not_run, получено "maybe"',
       'qa-web.steps: ожидается массив, получено "нет"',
     ]);
+  });
+});
+
+/** Нарушения `manifest.<n>.json`: по одному на файл. */
+const MANIFEST_INVALID = {
+  'manifest.invalid.iteration.json': /manifest\.iteration: ожидается целое ≥ 1/,
+  'manifest.invalid.order.json': /manifest\.files: пути не отсортированы/,
+  'manifest.invalid.duplicate-path.json': /manifest\.files: путь повторяется/,
+  'manifest.invalid.totals.json': /manifest\.totals\.lines: не равен сумме files\[\]/,
+};
+
+describe('validateManifest', () => {
+  test('валидный снимок проходит', () => {
+    assert.deepEqual(validateManifest(fixture('manifest.valid.json')), { ok: true, errors: [] });
+  });
+
+  // Каждый файл — отдельный тест: одна фикстура, одно нарушение Приложения A.
+  checkInvalidFixtures(validateManifest, MANIFEST_INVALID);
+
+  test('пустой пакет — валидный снимок: собирать было нечего', () => {
+    const doc = {
+      iteration: 2,
+      base_sha: '1f0c3d8b7a6e5d4c3b2a190807f6e5d4c3b2a190',
+      files: [],
+      totals: { files: 0, bytes: 0, lines: 0 },
+    };
+    assert.deepEqual(validateManifest(doc), { ok: true, errors: [] });
+  });
+
+  test('запись без размеров — ошибка схемы', () => {
+    // Содержимое файлов в схеме не предусмотрено (ADR 0009): в записи только `path`,
+    // `bytes` и `lines`. Их отсутствие — не «пустой размер», а нарушение схемы.
+    const doc = { ...fixture('manifest.valid.json'), files: [{ path: 'evidence/a.md' }] };
+    assertInvalidWith(validateManifest(doc), /manifest\.files\[0\]\.bytes/);
   });
 });
 

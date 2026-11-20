@@ -78,6 +78,7 @@ export function cycleDirName({ date, issue, slug }) {
  *   evaluationJson: string,
  *   decision: string,
  *   gates: string,
+ *   manifest: string,
  * }}
  */
 export function iterNames(iteration) {
@@ -94,6 +95,9 @@ export function iterNames(iteration) {
     evaluationJson: `evaluation.${iteration}.json`,
     decision: `decision.${iteration}.json`,
     gates: `gates.${iteration}.json`,
+    // Снимок размера пакета `evidence/` (ADR 0009, #106): телеметрия в каталоге цикла, а не
+    // в пакете оценщика — по тому же правилу, что и `driver.jsonl` (#47).
+    manifest: `manifest.${iteration}.json`,
   };
 }
 

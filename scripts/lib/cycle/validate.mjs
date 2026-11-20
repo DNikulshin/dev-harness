@@ -985,6 +985,108 @@ export function validateIntegrity(doc) {
 }
 
 /**
+ * `manifest.<n>.json` — снимок размера пакета `evidence/` (ADR 0009, #106).
+ *
+ * Схема намеренно узкая: только `path`, `bytes` и `lines`. Содержимого файлов, выдержек и
+ * хэшей содержимого в манифесте быть не должно, поэтому лишние поля не проверяются, но и не
+ * поощряются — писатель (`cycle-evidence packet`) их не создаёт.
+ *
+ * Кроме типов проверяются три инварианта писателя: `totals` равны сумме `files[]`, пути
+ * уникальны и отсортированы по строке. Без них повторный прогон давал бы другой файл, а
+ * агрегат в `metrics.json` (#107) — другое число при том же пакете.
+ * @param {unknown} doc
+ * @returns {ValidationResult}
+ */
+export function validateManifest(doc) {
+  /** @type {string[]} */
+  const errors = [];
+  if (!isRecord(doc)) {
+    return { ok: false, errors: [`manifest: ожидается объект, получено ${describe(doc)}`] };
+  }
+
+  reqInt(doc, 'iteration', 'manifest', errors, { min: 1 });
+  reqStr(doc, 'base_sha', 'manifest', errors, { pattern: SHA40_PATTERN });
+
+  /** @type {{ path: string, bytes: number, lines: number }[]} */
+  const entries = [];
+  const filesOk = reqList(doc, 'files', 'manifest', errors, (item, path, errs) => {
+    if (!isRecord(item)) {
+      errors.push(`${path}: ожидается объект, получено ${describe(item)}`);
+      return;
+    }
+    const pathOk = reqStr(item, 'path', path, errs, { allowEmpty: false });
+    const bytesOk = reqInt(item, 'bytes', path, errs, { min: 0 });
+    const linesOk = reqInt(item, 'lines', path, errs, { min: 0 });
+    if (pathOk && bytesOk && linesOk) {
+      entries.push({
+        path: /** @type {string} */ (item.path),
+        bytes: /** @type {number} */ (item.bytes),
+        lines: /** @type {number} */ (item.lines),
+      });
+    }
+  });
+
+  let totalsOk = false;
+  reqRecord(doc, 'totals', 'manifest', errors, (totals, path, errs) => {
+    const filesTotal = reqInt(totals, 'files', path, errs, { min: 0 });
+    const bytesTotal = reqInt(totals, 'bytes', path, errs, { min: 0 });
+    const linesTotal = reqInt(totals, 'lines', path, errs, { min: 0 });
+    totalsOk = filesTotal && bytesTotal && linesTotal;
+  });
+
+  if (filesOk) requireSortedPaths(entries, errors);
+  if (filesOk && totalsOk) requireManifestTotals(doc, entries, errors);
+
+  return { ok: errors.length === 0, errors };
+}
+
+/**
+ * Пути `files[]` уникальны и отсортированы по строке (инвариант писателя манифеста).
+ * @param {{ path: string }[]} entries проверенные записи
+ * @param {string[]} errors накопитель ошибок
+ * @returns {void}
+ */
+function requireSortedPaths(entries, errors) {
+  for (let index = 1; index < entries.length; index += 1) {
+    const previous = entries[index - 1];
+    const current = entries[index];
+    if (previous === undefined || current === undefined) continue;
+    if (previous.path === current.path) {
+      errors.push(`manifest.files: путь повторяется (${current.path})`);
+      continue;
+    }
+    if (previous.path > current.path) {
+      errors.push(`manifest.files: пути не отсортированы (${previous.path} перед ${current.path})`);
+      return;
+    }
+  }
+}
+
+/**
+ * Итоги манифеста равны сумме записей: `files` — число записей, `bytes` и `lines` — суммы.
+ * Сравнение только для полностью проверенных списков: иначе поверх настоящей ошибки
+ * появилось бы шумное расхождение с суммой.
+ * @param {Record<string, unknown>} doc
+ * @param {{ bytes: number, lines: number }[]} entries проверенные записи
+ * @param {string[]} errors накопитель ошибок
+ * @returns {void}
+ */
+function requireManifestTotals(doc, entries, errors) {
+  const totals = /** @type {{ files: number, bytes: number, lines: number }} */ (doc.totals);
+  /** @type {{ files: number, bytes: number, lines: number }} */
+  const sums = {
+    files: entries.length,
+    bytes: entries.reduce((sum, entry) => sum + entry.bytes, 0),
+    lines: entries.reduce((sum, entry) => sum + entry.lines, 0),
+  };
+  for (const key of /** @type {const} */ (['files', 'bytes', 'lines'])) {
+    const actual = totals[key];
+    if (actual === sums[key]) continue;
+    errors.push(`manifest.totals.${key}: не равен сумме files[] (${actual} ≠ ${sums[key]})`);
+  }
+}
+
+/**
  * `decision.<n>.json` (§5.6). Списки — массивы непустых строк: `reasons`, `acquire`,
  * `rework_items`, `unverified`, `downgraded`.
  * @param {unknown} doc

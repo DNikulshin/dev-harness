@@ -106,6 +106,7 @@ followups.md               замечания вне скоупа
 escalation.json            причина эскалации (только при ESCALATED)
 metrics.json               метрики цикла
 driver.jsonl               журнал решений cycle-driver: блок `driver` в метриках
+manifest.<n>.json          снимок размера пакета evidence/: пути, байты, строки (ADR 0009)
 evidence/                  пакет для оценщика (§7)
   issue.md  criteria.md  diff.patch  gates.json  gates/*.log  qa-web.json  integrity.json
 ```

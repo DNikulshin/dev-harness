@@ -1,0 +1,21 @@
+{
+  "iteration": 1,
+  "base_sha": "1f0c3d8b7a6e5d4c3b2a190807f6e5d4c3b2a190",
+  "files": [
+    {
+      "path": "evidence/diff.patch",
+      "bytes": 1024,
+      "lines": 24
+    },
+    {
+      "path": "evidence/diff.patch",
+      "bytes": 24,
+      "lines": 2
+    }
+  ],
+  "totals": {
+    "files": 2,
+    "bytes": 1048,
+    "lines": 26
+  }
+}
