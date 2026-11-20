@@ -1,24 +1,31 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { cpSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, test } from 'node:test';
 
 import { REPO_ONLY } from './lib/testsupport.mjs';
+import { loadConfig } from './lib/cycle/config.mjs';
 import {
   AGENT_NAMES,
   STAGES,
+  analyzeHarness,
   evaluateHarness,
   familyOf,
   findModelIdentifiers,
   formatViolation,
+  formatWarning,
+  harnessWarnings,
   parseFrontmatter,
 } from './check-harness.mjs';
 
 /** Путь к CLI: тесты запускают его как отдельный процесс. */
 const SCRIPT = fileURLToPath(new URL('./check-harness.mjs', import.meta.url));
+
+/** Корень репозитория: `REPO_ONLY`-тест проверяет настоящую раскладку `.pi/`. */
+const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
 
 /** Корень фикстур harness: `scripts/fixtures/harness/`. */
 const FIXTURES = fileURLToPath(new URL('./fixtures/harness/', import.meta.url));
@@ -103,6 +110,20 @@ function harness(overrides = {}) {
 function report(input) {
   return evaluateHarness(input).map(formatViolation);
 }
+
+/**
+ * Предупреждения в виде готовых строк stderr.
+ * @param {HarnessInput} input
+ * @returns {string[]}
+ */
+function warn(input) {
+  return harnessWarnings(input).map(formatWarning);
+}
+
+/** Строка W2 для входа `harness()` с указанной моделью `evaluate`. */
+const W2_PLAN_FAMILY =
+  'W2: .pi/agents/evaluate.md — семейство модели совпадает с plan: plan' +
+  ' (риск I3, docs/orchestrator.md §18 — ребро не проверяется)';
 
 /**
  * Агенты без указанных имён: имитирует отсутствие файлов.
@@ -273,6 +294,73 @@ describe('H2: независимость семейств', () => {
       'H4: .pi/agents/code.md — model не начинается с acme-ai/: code/m-1',
       'H4: .pi/agents/review.md — model не начинается с acme-ai/: code/m-2',
     ]);
+  });
+});
+
+describe('W2: ребро evaluate↔plan не проверяется, но видно', () => {
+  test('соблюдено: evaluate и plan в разных семействах — предупреждения нет', () => {
+    assert.deepEqual(warn(harness()), []);
+  });
+
+  test('предупреждение: evaluate в семействе plan, нарушения нет', () => {
+    const agents = AGENT_NAMES.map((name) =>
+      name === 'evaluate' ? agent('evaluate', { model: 'acme-ai/plan/m-9' }) : agent(name),
+    );
+    const input = harness({ agents });
+    assert.deepEqual(report(input), []);
+    assert.deepEqual(warn(input), [W2_PLAN_FAMILY]);
+  });
+
+  test('предупреждение: plan в семействе evaluate — факт симметричен', () => {
+    const agents = AGENT_NAMES.map((name) =>
+      name === 'plan' ? agent('plan', { model: 'acme-ai/evaluate/m-9' }) : agent(name),
+    );
+    assert.deepEqual(warn(harness({ agents })), [
+      'W2: .pi/agents/evaluate.md — семейство модели совпадает с plan: evaluate' +
+        ' (риск I3, docs/orchestrator.md §18 — ребро не проверяется)',
+    ]);
+  });
+
+  test('одно ребро не даёт двух нарушений H2 по тому же файлу', () => {
+    const agents = AGENT_NAMES.map((name) =>
+      name === 'evaluate'
+        ? agent('evaluate', { model: 'acme-ai/code/m-9' })
+        : name === 'plan'
+          ? agent('plan', { model: 'acme-ai/code/m-9' })
+          : agent(name),
+    );
+    const input = harness({ agents });
+    assert.deepEqual(report(input), [
+      'H2: .pi/agents/evaluate.md — семейство модели совпадает с code: code',
+    ]);
+    assert.equal(warn(input).length, 1);
+  });
+
+  test('невычислимое семейство не даёт ложного W2', () => {
+    const agents = AGENT_NAMES.map((name) => {
+      if (name === 'plan') return agent('plan', { model: 'acme-ai/planz/m-1' });
+      if (name === 'evaluate') return agent('evaluate', { model: 'planz/m-2' });
+      return agent(name);
+    });
+    assert.deepEqual(warn(harness({ agents })), []);
+  });
+
+  test('отсутствующий plan не даёт W2', () => {
+    const agents = AGENT_NAMES.map(without(['plan']));
+    assert.deepEqual(warn(harness({ agents })), []);
+  });
+
+  test('analyzeHarness возвращает нарушения и предупреждения одним проходом', () => {
+    const agents = AGENT_NAMES.map((name) =>
+      name === 'evaluate'
+        ? agent('evaluate', { model: 'acme-ai/plan/m-9', tools: ['read', 'write'] })
+        : agent(name),
+    );
+    const result = analyzeHarness(harness({ agents }));
+    assert.deepEqual(result.violations.map(formatViolation), [
+      'H3: .pi/agents/evaluate.md — запрещённые инструменты: write',
+    ]);
+    assert.deepEqual(result.warnings.map(formatWarning), [W2_PLAN_FAMILY]);
   });
 });
 
@@ -529,11 +617,54 @@ describe('CLI на фикстурных деревьях', () => {
 
   test('без --root проверяется корень репозитория', REPO_ONLY, () => {
     const result = runCli([]);
-    assert.equal(result.stderr, '');
     assert.ok(result.code === 0 || result.code === 1);
     for (const line of lines(result.stdout)) {
       assert.match(line, /^H[1-6]: \S+/);
     }
+    // Действующая конфигурация держит evaluate и plan в одном семействе (риск I3):
+    // проверка это видит, печатает предупреждением и не падает.
+    const provider = loadConfig(REPO_ROOT).provider;
+    /** @param {string} agent имя роли */
+    const family = (agent) =>
+      familyOf(
+        /^model: (\S+)$/mu.exec(
+          readFileSync(join(REPO_ROOT, '.pi/agents', `${agent}.md`), 'utf8'),
+        )?.[1],
+        provider,
+      );
+    if (family('evaluate') === family('plan')) {
+      assert.match(result.stderr, /^W2: \.pi\/agents\/evaluate\.md — /mu);
+    } else {
+      assert.equal(result.stderr, '');
+    }
+  });
+
+  test('W2 на фикстуре: код 0, пустой stdout, предупреждение в stderr', (t) => {
+    const root = copyFixture(t, 'ok');
+    const evaluateFile = join(root, '.pi', 'agents', 'evaluate.md');
+    const planModel = /^model: (\S+)$/mu.exec(
+      readFileSync(join(root, '.pi', 'agents', 'plan.md'), 'utf8'),
+    )?.[1];
+    assert.ok(planModel !== undefined, 'в фикстуре ok у plan есть model');
+    writeFileSync(
+      evaluateFile,
+      readFileSync(evaluateFile, 'utf8').replace(/^model: \S+$/mu, `model: ${planModel}`),
+    );
+
+    const result = runCli(['--root', root]);
+    assert.equal(result.code, 0);
+    assert.equal(result.stdout, '');
+    assert.equal(
+      result.stderr,
+      'W2: .pi/agents/evaluate.md — семейство модели совпадает с plan: alpha' +
+        ' (риск I3, docs/orchestrator.md §18 — ребро не проверяется)\n',
+    );
+  });
+
+  test('на фикстуре без совпадения ребра stderr пуст', () => {
+    const result = runCli(['--root', join(FIXTURES, 'ok')]);
+    assert.equal(result.code, 0);
+    assert.equal(result.stderr, '');
   });
 
   test('нет файла: код 2 и нет абсолютного пути в stderr', (t) => {

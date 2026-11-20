@@ -33,6 +33,14 @@
  * независимость семейств у тех агентов, где семейство действительно известно.
  * Пары H2 проверяются по одной: `code`↔`review`, `evaluate`↔`code`, `evaluate`↔`review`.
  *
+ * Ребро `evaluate`↔`plan` H2 **намеренно не проверяет**: совпадение их семейств — принятый
+ * риск I3 (`docs/orchestrator.md` §18), компенсация — слепота оценщика к плану (§7). Но
+ * пока ребро не проверяется, дрейф не виден: стоит `evaluate` и `plan` съехаться в одно
+ * семейство, и никто этого не заметит. Поэтому совпадение печатается предупреждением `W2`
+ * в stderr (`W2: <файл> — <что не так>`), а код выхода остаётся `0`: действующая
+ * конфигурация законна, наблюдать нужно сам факт дрейфа. Нарушением пара станет только
+ * после смены модели оценщика (жёсткое правило H7, issue #31 вариант 2).
+ *
  * H6 по `cycle.md` ищет имена этапов без учёта регистра и по границам слов: до T7 промпт
  * называет этапы в нижнем регистре (`plan`, `code`, `review`), и требовать верхний регистр
  * значило бы ловить оформление, а не состав этапов.
@@ -42,7 +50,8 @@
  * `AGENTS.md`). Несколько замечаний одного правила по одному файлу склеиваются в одну
  * строку через `; `.
  *
- * Коды выхода (§5.9): `0` — всё соответствует; `1` — есть нарушения; `2` — ошибка чтения
+ * Коды выхода (§5.9): `0` — всё соответствует (возможны предупреждения `W2` в stderr);
+ * `1` — есть нарушения; `2` — ошибка чтения
  * (нет файла, битый JSON/frontmatter, неизвестный аргумент). Frontmatter без обрамляющих
  * `---` или со строкой не вида `key: value` — ошибка чтения, а не нарушение правил:
  * разобрать такой файл нельзя, и «поля не заданы» были бы догадкой. Отсутствие файла
@@ -115,8 +124,11 @@ const MODEL_ID_PATTERNS = Object.freeze([
   /claude-(opus|sonnet|haiku|fable)/iu,
 ]);
 
-/** Порядок правил в выводе. */
-const RULE_ORDER = Object.freeze(['H1', 'H2', 'H3', 'H4', 'H5', 'H6']);
+/**
+ * Порядок правил в выводе. `W2` стоит после H6: предупреждения не меняют код выхода, но
+ * при общем списке шли бы после нарушений.
+ */
+const RULE_ORDER = Object.freeze(['H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'W2']);
 
 /** Порядок файлов в выводе внутри правила. */
 const FILE_ORDER = Object.freeze([
@@ -141,7 +153,18 @@ const FILE_ORDER = Object.freeze([
  * }} HarnessInput
  * @typedef {{ rule: string, file: string, messages: string[] }} Violation
  *   Одно нарушение = одна строка вывода: правило + файл + склеенные сообщения.
+ * @typedef {{ rule: string, file: string, message: string }} Warning
+ *   Одно предупреждение = одна строка stderr: правило + файл + сообщение. Не влияет на код
+ *   выхода: предупреждать нужно именно о допустимой конфигурации, которую стоит заметить.
  */
+
+/**
+ * Ребро независимости, которое H2 намеренно не проверяет, но отслеживает предупреждением
+ * `W2`: совпадение семейств `evaluate` и `plan` — принятый риск I3 (`docs/orchestrator.md`
+ * §4, §18).
+ * @type {{ left: AgentName, right: AgentName }}
+ */
+const UNCHECKED_EDGE = Object.freeze({ left: 'evaluate', right: 'plan' });
 
 /**
  * Разбирает frontmatter агента: блок между строками `---`, строки `key: value`,
@@ -352,10 +375,11 @@ export function familyOf(model, provider = DEFAULTS.provider) {
 /**
  * Применяет правила H1–H6 к уже прочитанным входам. Чистая функция: файлов не читает,
  * порядок вывода не зависит от порядка ключей объектов.
+ * Возвращает и нарушения (влияют на код выхода), и предупреждения `W2` (только видимость).
  * @param {HarnessInput} input
- * @returns {Violation[]}
+ * @returns {{ violations: Violation[], warnings: Warning[] }}
  */
-export function evaluateHarness(input) {
+export function analyzeHarness(input) {
   /** @type {Map<string, Violation>} */
   const buckets = new Map();
   /**
@@ -424,6 +448,25 @@ export function evaluateHarness(input) {
     add('H2', agent.file, `семейство модели совпадает с ${right}: ${leftFamily}`);
   }
 
+  // W2: ребро evaluate↔plan не проверяется (принятый риск I3), но совпадение семейств
+  // видно: иначе дрейф остался бы только в тексте §18.
+  /** @type {Warning[]} */
+  const warnings = [];
+  const uncheckedLeft = family.get(UNCHECKED_EDGE.left);
+  const uncheckedRight = family.get(UNCHECKED_EDGE.right);
+  if (uncheckedLeft !== null && uncheckedLeft !== undefined && uncheckedLeft === uncheckedRight) {
+    const agent = byName.get(UNCHECKED_EDGE.left);
+    if (agent !== undefined) {
+      warnings.push({
+        rule: 'W2',
+        file: agent.file,
+        message:
+          `семейство модели совпадает с ${UNCHECKED_EDGE.right}: ${uncheckedLeft}` +
+          ' (риск I3, docs/orchestrator.md §18 — ребро не проверяется)',
+      });
+    }
+  }
+
   // H3: у plan нет bash/edit/write; у review и evaluate нет edit/write.
   for (const name of AGENT_NAMES) {
     const agent = byName.get(name);
@@ -486,7 +529,25 @@ export function evaluateHarness(input) {
     add('H6', 'AGENTS.md', `идентификаторы моделей: ${identifiers.join(', ')}`);
   }
 
-  return [...buckets.values()].sort(compareViolations);
+  return { violations: [...buckets.values()].sort(compareViolations), warnings };
+}
+
+/**
+ * Нарушения раскладки: то, из-за чего проверка падает (код выхода 1).
+ * @param {HarnessInput} input
+ * @returns {Violation[]}
+ */
+export function evaluateHarness(input) {
+  return analyzeHarness(input).violations;
+}
+
+/**
+ * Предупреждения `W2`: допустимые конфигурации, которые нужно видеть, но не ломать.
+ * @param {HarnessInput} input
+ * @returns {Warning[]}
+ */
+export function harnessWarnings(input) {
+  return analyzeHarness(input).warnings;
 }
 
 /**
@@ -576,6 +637,15 @@ export function formatViolation(violation) {
 }
 
 /**
+ * Строка предупреждения одной строкой: `W2: <файл> — <что не так>`.
+ * @param {Warning} warning
+ * @returns {string}
+ */
+export function formatWarning(warning) {
+  return `${warning.rule}: ${warning.file} — ${warning.message}`;
+}
+
+/**
  * Разбирает аргументы CLI: единственный необязательный — `--root <dir>`.
  * @param {string[]} argv
  * @returns {{ root: string }}
@@ -601,11 +671,14 @@ export function parseArgs(argv) {
   return { root: root === null ? DEFAULT_ROOT : resolve(root) };
 }
 
-/** Тонкий CLI: печать нарушений в stdout, диагностика — в stderr. */
+/** Тонкий CLI: нарушения — в stdout, предупреждения и диагностика — в stderr. */
 function main() {
   try {
     const { root } = parseArgs(process.argv.slice(2));
-    const violations = evaluateHarness(readHarness(root, loadConfig(root)));
+    const { violations, warnings } = analyzeHarness(readHarness(root, loadConfig(root)));
+    if (warnings.length > 0) {
+      process.stderr.write(`${warnings.map(formatWarning).join('\n')}\n`);
+    }
     if (violations.length > 0) {
       process.stdout.write(`${violations.map(formatViolation).join('\n')}\n`);
       process.exitCode = 1;
