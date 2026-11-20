@@ -135,6 +135,15 @@ export const DEFAULTS = deepFreeze({
  * @property {readonly string[]} dependsOn
  * @property {readonly string[]} pathPrefixes
  * @property {boolean} dbGate класс отказа по логу: нет базы → `not_run` с `no_database`
+ * @property {GateEnv|null} env объявленное окружение гейта (`null` — полное наследование)
+ */
+
+/**
+ * Объявленное окружение гейта (ADR 0007): объявил `env` — наследование выключается, гейт получает
+ * только `allow`-переменные, литеральные `set` и служебные; не объявил — наследует всё, как раньше.
+ * @typedef {object} GateEnv
+ * @property {readonly string[]} allow имена переменных, наследуемых из окружения вызывающего
+ * @property {Readonly<Record<string, string>>} set литеральные значения (не секреты: конфиг в git)
  */
 
 /**
@@ -226,6 +235,7 @@ const GATE_FIELDS = Object.freeze([
   'dependsOn',
   'pathPrefixes',
   'dbGate',
+  'env',
 ]);
 
 /** Уже напечатанные предупреждения: один и тот же конфиг не спамит при каждом вызове. */
@@ -555,6 +565,75 @@ function parseEvals(value) {
 }
 
 /**
+ * Подполя `env` у гейта: список полон, `inherit`/`except` и прочие догадки — ошибка (ADR 0007, г).
+ */
+const GATE_ENV_FIELDS = Object.freeze(['allow', 'set']);
+
+/**
+ * Объявленное окружение гейта (ADR 0007, б). Пустой объект — валидное объявление: гейт получает
+ * только служебные переменные. `env` у `builtin` — ошибка: встроенная проверка идёт в процессе
+ * ядра и окружения не получает (ADR 0007, г).
+ * @param {unknown} value
+ * @param {string} path путь гейта для сообщения (`gates[<n>]`)
+ * @param {string|null} builtin встроенная проверка (если задана — `env` запрещён)
+ * @returns {GateEnv}
+ */
+function parseGateEnv(value, path, builtin) {
+  if (builtin !== null) {
+    throw new ConfigError(`${label()}: ${path}.env — builtin-гейт окружения не получает`);
+  }
+  if (!isRecord(value)) {
+    throw new ConfigError(`${label()}: ${path}.env — ожидается объект`);
+  }
+  for (const key of Object.keys(value)) {
+    if (!GATE_ENV_FIELDS.includes(key)) {
+      throw new ConfigError(`${label()}: ${path}.env — неизвестное поле env.${key}`);
+    }
+  }
+
+  /** @type {string[]} */
+  const allow = [];
+  if (value.allow !== undefined) {
+    if (!Array.isArray(value.allow)) {
+      throw new ConfigError(`${label()}: ${path}.env.allow — ожидается массив имён`);
+    }
+    for (const [index, name] of value.allow.entries()) {
+      const where = `${path}.env.allow[${index}]`;
+      if (!isText(name)) {
+        throw new ConfigError(`${label()}: ${where} — ожидается непустое имя переменной`);
+      }
+      const trimmed = name.trim();
+      if (allow.includes(trimmed)) {
+        throw new ConfigError(`${label()}: ${where} — дубль ${JSON.stringify(trimmed)}`);
+      }
+      allow.push(trimmed);
+    }
+  }
+
+  /** @type {Record<string, string>} */
+  const set = {};
+  if (value.set !== undefined) {
+    if (!isRecord(value.set)) {
+      throw new ConfigError(`${label()}: ${path}.env.set — ожидается объект`);
+    }
+    for (const [name, literal] of Object.entries(value.set)) {
+      // Пустое имя переменной окружения не работает: `PATH=` задаётся именем, а не пустотой.
+      if (!isText(name)) {
+        throw new ConfigError(`${label()}: ${path}.env.set — пустое имя переменной`);
+      }
+      if (typeof literal !== 'string') {
+        throw new ConfigError(
+          `${label()}: ${path}.env.set.${name} — ожидается строка (значения — литералы, не числа)`,
+        );
+      }
+      set[name] = literal;
+    }
+  }
+
+  return { allow, set };
+}
+
+/**
  * Нормализует гейт: старый `cmd` разбирается по пробелам с предупреждением, новый формат —
  * `executable` + `args`. Выходная форма всегда содержит `cmd` для совместимости с
  * `gates.<n>.json` (`null` — встроенная проверка).
@@ -571,6 +650,7 @@ function parseEvals(value) {
  *   dependsOn: string[],
  *   pathPrefixes: string[],
  *   dbGate: boolean,
+ *   env: GateEnv|null,
  * }}
  */
 function parseGate(value, index, ids) {
@@ -649,7 +729,20 @@ function parseGate(value, index, ids) {
     throw new ConfigError(`${label()}: ${path}.dbGate — ожидается boolean`);
   }
 
-  return { id, executable, args, cmd, builtin, required, dependsOn, pathPrefixes, dbGate };
+  const gateEnv = value.env === undefined ? null : parseGateEnv(value.env, path, builtin);
+
+  return {
+    id,
+    executable,
+    args,
+    cmd,
+    builtin,
+    required,
+    dependsOn,
+    pathPrefixes,
+    dbGate,
+    env: gateEnv,
+  };
 }
 
 /**

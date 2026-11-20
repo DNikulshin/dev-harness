@@ -559,3 +559,69 @@ describe('takeConfigOption: флаг и переменная окружения'
     });
   }
 });
+
+describe('config: окружение гейта (ADR 0007)', () => {
+  test('env читается как allow + set и заморожен', (t) => {
+    const root = makeRoot(t);
+    writeConfig(root, {
+      gates: [
+        {
+          ...GATE,
+          env: { allow: ['npm_config_cache', 'npm_config_user_agent'], set: { CI: '1' } },
+        },
+      ],
+    });
+
+    const gate = gateAt(loadConfig(root).gates, 0);
+
+    assert.deepEqual(gate.env, {
+      allow: ['npm_config_cache', 'npm_config_user_agent'],
+      set: { CI: '1' },
+    });
+    assert.ok(Object.isFrozen(gate.env), 'объявление заморожено вместе с конфигом');
+  });
+
+  test('без env — наследование: null, а не пустое объявление', (t) => {
+    const root = makeRoot(t);
+    writeConfig(root, { gates: [GATE] });
+
+    assert.equal(gateAt(loadConfig(root).gates, 0).env, null);
+  });
+
+  test('пустой env — валидное объявление: только служебные переменные', (t) => {
+    const root = makeRoot(t);
+    writeConfig(root, { gates: [{ ...GATE, env: {} }] });
+
+    assert.deepEqual(gateAt(loadConfig(root).gates, 0).env, { allow: [], set: {} });
+  });
+
+  /** @type {[string, unknown, RegExp][]} */
+  const invalid = [
+    ['env не объект', [], /env — ожидается объект/u],
+    ['неизвестное подполе env', { inherit: true }, /неизвестное поле env\.inherit/u],
+    ['allow не массив', { allow: 'PATH' }, /env\.allow — ожидается массив/u],
+    ['пустое имя в allow', { allow: [''] }, /непустое имя переменной/u],
+    ['нестрока в allow', { allow: [7] }, /непустое имя переменной/u],
+    ['дубль имени в allow', { allow: ['PATH', 'PATH'] }, /дубль "PATH"/u],
+    ['set не объект', { set: 'CI=1' }, /env\.set — ожидается объект/u],
+    ['нестрока в set', { set: { CI: 1 } }, /env\.set\.CI — ожидается строка/u],
+    ['пустое имя в set', { set: { '': 'x' } }, /env\.set — пустое имя переменной/u],
+  ];
+
+  for (const [name, env, pattern] of invalid) {
+    test(`${name} — ошибка конфига с кодом 2`, (t) => {
+      const root = makeRoot(t);
+      writeConfig(root, { gates: [{ ...GATE, env }] });
+      throwsConfig(() => loadConfig(root), pattern);
+    });
+  }
+
+  test('env у builtin-гейта — ошибка: встроенная проверка окружения не получает', (t) => {
+    const root = makeRoot(t);
+    writeConfig(root, {
+      gates: [{ id: 'secrets_scan', builtin: 'secrets_scan', env: { allow: ['PATH'] } }],
+    });
+
+    throwsConfig(() => loadConfig(root), /builtin-гейт окружения не получает/u);
+  });
+});

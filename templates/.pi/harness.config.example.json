@@ -48,7 +48,13 @@
       "args": ["format:check"],
       "required": true,
       "dependsOn": [],
-      "pathPrefixes": []
+      "pathPrefixes": [],
+      "env": {
+        "allow": ["npm_config_cache", "npm_config_user_agent"],
+        "set": {
+          "CI": "1"
+        }
+      }
     },
     {
       "id": "secrets_scan",
