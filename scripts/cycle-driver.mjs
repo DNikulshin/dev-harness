@@ -37,7 +37,7 @@
  * Shebang нужен: файл запускается как `node scripts/cycle-driver.mjs`.
  */
 import { execFileSync } from 'node:child_process';
-import { appendFileSync, existsSync, readFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, realpathSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -336,13 +336,34 @@ function execute(command, root) {
 }
 
 /**
+ * Корень репозитория, переданный флагом `--root`: канонизируется `realpathSync`.
+ *
+ * Пути скриптов в командах считаются относительно корня (`relative(root, …)`), а исполняются
+ * в процессе с `cwd: root`. ОС разрешает символические ссылки в `cwd`, поэтому для `--root`
+ * через ссылку («`/var` → `/private/var`» на macOS, ссылка на дерево проекта) относительный
+ * путь и фактический `cwd` расходятся на число сегментов: команда `node ../…/cycle-state.mjs`
+ * превращается в `node /private/Users/…` и падает с `MODULE_NOT_FOUND` (issue #68). Корень
+ * загружается один раз и канонизируется до первого относительного пути.
+ * @param {string} value значение `--root`
+ * @returns {string}
+ */
+function resolveRoot(value) {
+  const absolute = resolve(value);
+  try {
+    return realpathSync(absolute);
+  } catch {
+    throw new UsageError(`--root: каталог не найден: ${absolute}`);
+  }
+}
+
+/**
  * Точка входа CLI.
  * @returns {number} код выхода
  */
 function main() {
   const cli = takeConfigOption(process.argv.slice(2));
   const args = parseArgs(cli.argv);
-  const root = args.root === null ? repoRoot() : resolve(args.root);
+  const root = args.root === null ? repoRoot() : resolveRoot(args.root);
   const config = loadConfig(root, { file: cli.file });
 
   /** @type {string} */

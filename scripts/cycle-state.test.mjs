@@ -7,6 +7,7 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   renameSync,
   rmSync,
   statSync,
@@ -136,7 +137,9 @@ const CYCLE_BRANCH = 'chore/157-cycle-state';
  * @returns {{ root: string, baseSha: string }}
  */
 function makeRepo(t) {
-  const root = mkdtempSync(join(tmpdir(), 'harness-state-'));
+  // Канонический путь: на macOS `mkdtemp` отдаёт `/var/...`, а `git rev-parse --show-toplevel`
+  // и вывод CLI — `/private/var/...`; без сверки путей ожидание и факт расходятся (#68).
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'harness-state-')));
   t.after(() => rmSync(root, { recursive: true, force: true }));
 
   const init = spawnSync('git', ['-c', 'init.defaultBranch=main', 'init', '--quiet'], {

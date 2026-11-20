@@ -1,6 +1,14 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
@@ -50,13 +58,12 @@ function parseRun(stdout) {
 }
 
 /**
- * Временный репозиторий с одним коммитом: драйверу нужны `git diff` и корень.
- * @param {import('node:test').TestContext} t
+ * Git-репозиторий с одним коммитом по указанному пути: драйверу нужны `git diff` и корень.
+ * @param {string} dir
  * @returns {string}
  */
-function makeRepo(t) {
-  const dir = mkdtempSync(join(tmpdir(), 'harness-driver-'));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
+function initRepo(dir) {
+  mkdirSync(dir, { recursive: true });
   /** @param {string[]} args */
   const git = (...args) => {
     const result = spawnSync('git', args, { cwd: dir, encoding: 'utf8' });
@@ -70,6 +77,17 @@ function makeRepo(t) {
   git('add', '.');
   git('commit', '-q', '-m', 'init');
   return dir;
+}
+
+/**
+ * Временный репозиторий с одним коммитом: драйверу нужны `git diff` и корень.
+ * @param {import('node:test').TestContext} t
+ * @returns {string}
+ */
+function makeRepo(t) {
+  const dir = mkdtempSync(join(tmpdir(), 'harness-driver-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  return initRepo(dir);
 }
 
 /**
@@ -271,6 +289,37 @@ describe('cycle-driver: отказы', () => {
     const result = runCli(['next', '--dir', dir, '--root', repo]);
     assert.equal(result.code, 2);
     assert.match(result.stderr, /base_sha/u);
+  });
+
+  test('--root через символическую ссылку: команды исполняются, а не падают на пути', (t) => {
+    const outer = mkdtempSync(join(tmpdir(), 'harness-link-'));
+    t.after(() => rmSync(outer, { recursive: true, force: true }));
+    // Физический корень глубже ссылки: ОС разрешает ссылку в `cwd`, а `relative()` считает
+    // от переданного пути — число `..` расходится. На macOS так ведёт себя `/var` → `/private/var`.
+    const repo = initRepo(join(outer, 'a', 'b', 'repo'));
+    const link = join(outer, 'root-link');
+    symlinkSync(repo, link);
+
+    const { dir } = writeCycle(repo, { stage: 'INIT', stage_status: 'done' });
+    mkdirSync(join(dir, 'evidence'), { recursive: true });
+    writeFileSync(join(dir, 'evidence', 'criteria.md'), '# критерии\n');
+
+    const run = runCli(['run', '--dir', dir, '--root', link, '--max-steps', '1']);
+
+    assert.equal(run.code, 0, run.stdout);
+    const report = parseRun(run.stdout);
+    assert.equal(report.executed.length, 1);
+    const first = report.executed[0];
+    assert.equal(first?.code, 0, first?.output ?? '');
+    assert.match(/** @type {string} */ (first?.command), /cycle-state\.mjs/u);
+  });
+
+  test('--root на несуществующий каталог — код 2', (t) => {
+    const repo = makeRepo(t);
+    const result = runCli(['next', '--root', join(repo, 'nope')]);
+
+    assert.equal(result.code, 2);
+    assert.match(result.stderr, /--root: каталог не найден/u);
   });
 });
 

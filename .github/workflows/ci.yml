@@ -17,7 +17,13 @@ permissions:
 
 jobs:
   checks:
-    runs-on: ubuntu-latest
+    # Матрица ОС — заявленное обещание `os: ["linux", "darwin"]` в package.json (#68):
+    # процесс-группы в cycle-gates POSIX-ориентированы, Windows не поддерживается.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
 

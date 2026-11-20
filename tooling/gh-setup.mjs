@@ -63,9 +63,17 @@ export const MERGE_SETTINGS = Object.freeze({
 
 /**
  * Обязательные проверки ветки `main`: имена job из workflows.
- * `checks` — `.github/workflows/ci.yml`, `pr-references` — `pr-checks.yml` (ссылка `Closes #N` в теле PR).
+ * `checks (ubuntu-latest)` и `checks (macos-latest)` — матрица job `checks` в `ci.yml` (issue #68:
+ * пакет объявляет `os: linux, darwin`, поэтому обе платформы обязательны),
+ * `pr-references` — `pr-checks.yml` (ссылка `Closes #N` в теле PR).
+ * При смене матрицы имена меняются вместе с ней: иначе required check никогда не появится
+ * и merge встанет навсегда.
  */
-export const REQUIRED_CHECKS = Object.freeze(['checks', 'pr-references']);
+export const REQUIRED_CHECKS = Object.freeze([
+  'checks (ubuntu-latest)',
+  'checks (macos-latest)',
+  'pr-references',
+]);
 
 /** Имя ruleset защиты релизных тегов. */
 export const TAG_RULESET = 'release-tags';
