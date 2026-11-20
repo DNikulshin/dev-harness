@@ -96,6 +96,7 @@ describe('evals-pack', () => {
       review: 'openai/gpt-6-luna-pro',
     });
     assert.equal(meta.created_at, '2026-01-02T03:04:05Z');
+    assert.equal(meta.repeat, 1, 'без --repeat план повторов — один');
 
     const patch = readFileSync(join(runDir, 'evidence', 'diff.patch'), 'utf8');
     assert.match(patch, /^-log\(mask\(phone\)\);$/mu);
@@ -185,5 +186,37 @@ describe('evals-pack', () => {
     const root = fixtureRoot();
     assert.match(run(['--root', root, '--seed', 'E99']).stderr, /не найден/u);
     assert.match(run(['--root', root]).stderr, /--seed: обязателен/u);
+  });
+
+  test('--repeat пишет план повторов в meta.json, повтор — отдельный --out', () => {
+    const root = fixtureRoot();
+    const first = run([
+      '--root',
+      root,
+      '--seed',
+      'E5',
+      '--repeat',
+      '3',
+      '--out',
+      join(root, '.pi', 'artifacts', 'evals', 'r1'),
+      '--now',
+      '2026-01-02T00:00:00Z',
+    ]);
+    assert.equal(first.status, 0, first.stderr);
+    assert.match(first.stdout, /повторов: 3/u);
+
+    const meta = JSON.parse(
+      readFileSync(join(root, '.pi', 'artifacts', 'evals', 'r1', 'meta.json'), 'utf8'),
+    );
+    assert.equal(meta.repeat, 3);
+  });
+
+  test('--repeat без целого ≥ 1 — ошибка использования', () => {
+    const root = fixtureRoot();
+    for (const value of ['0', '-1', '1.5', 'три']) {
+      const result = run(['--root', root, '--seed', 'E5', '--repeat', value]);
+      assert.equal(result.status, 2, value);
+      assert.match(result.stderr, /целое ≥ 1/u);
+    }
   });
 });

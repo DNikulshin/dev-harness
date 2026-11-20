@@ -5,7 +5,7 @@
  * Вход — каталог прогонов (`.pi/artifacts/evals/<...>/`), собранный `evals-pack.mjs`
  * и заполненный ответами этапов:
  *
- * - `meta.json` — сид, конфигурация, модели, время (пишет `evals-pack`);
+ * - `meta.json` — сид, конфигурация, модели, план повторов (`repeat`), время (пишет `evals-pack`);
  * - `review.md` / `evaluate.md` — ответ агента целиком, с блоком ```json в конце
  *   (пишет супервизор: у этих агентов нет прав на запись файлов);
  * - `usage.json` — необязательные фактические токены по стадиям
@@ -13,6 +13,11 @@
  *   Без него стоимость в отчёте `null`: выдумывать её из профилей нельзя, это уже не факт.
  *
  * Выход: `report.json` и `report.md` в том же каталоге, таблица в stdout.
+ *
+ * Повторы одного сида не затирают друг друга: ячейка «сид + стадия + конфигурация» получает
+ * агрегат по большинству (при равенстве — худший статус), а полнота считается уже по нему
+ * (`buildReport`). Отчёт показывает число прогонов, распределение и согласие повторов, а нехватку
+ * повторов против плана `--repeat` — в `warnings` (код выхода она не меняет).
  *
  * Пороги §15 — допущения, а не измеренная истина: вердикт `ok` значит «данные не
  * противоречат порогам», а `below_threshold` — повод посмотреть прогоны, а не приговор модели.
@@ -22,12 +27,12 @@
  * Shebang нужен: файл запускается напрямую.
  */
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { basename, join, resolve } from 'node:path';
 
 import { normalizeDoc } from './cycle-decide.mjs';
 import { isDirectRun } from './lib/cycle/cli.mjs';
 import { priceStage, readPrices, roundRub } from './lib/evals/cost.mjs';
-import { SCORED_STAGES, buildReport, scoreRun } from './lib/evals/score.mjs';
+import { SCORED_STAGES, DEFAULT_REPEAT, buildReport, scoreRun } from './lib/evals/score.mjs';
 import { loadSeeds } from './lib/evals/seeds.mjs';
 import { writeJsonAtomic, writeTextAtomic } from './lib/cycle/io.mjs';
 import { loadConfig } from './lib/cycle/config.mjs';
@@ -113,6 +118,25 @@ export function findRuns(dir) {
 }
 
 /**
+ * План повторов из `meta.json`.
+ *
+ * Старые каталоги поля не имеют и читаются как один повтор — иначе ретроспективные
+ * отчёты пришлось бы переписывать. Мусор в поле — ошибка данных: молчаливое «пусть
+ * будет один» скрыло бы прогон, который никто не повторял.
+ * @param {Record<string, any>} meta
+ * @param {string} label имя каталога прогона для сообщения
+ * @returns {number}
+ */
+export function repeatOf(meta, label) {
+  const value = meta.repeat;
+  if (value === undefined) return DEFAULT_REPEAT;
+  if (!Number.isInteger(value) || value < 1) {
+    throw new Error(`${label}/meta.json: repeat должен быть целым ≥ 1`);
+  }
+  return value;
+}
+
+/**
  * Точка входа CLI.
  * @returns {void}
  */
@@ -133,7 +157,7 @@ function main() {
     const runDirs = findRuns(runsDir);
     if (runDirs.length === 0) throw new Error(`${runsDir}: прогонов нет (сначала evals-pack)`);
 
-    /** @type {Array<{ config: string, seed: string, stage: string, status: string, reason?: string, cost_rub?: number|null }>} */
+    /** @type {Array<{ config: string, seed: string, stage: string, status: string, reason?: string, cost_rub?: number|null, repeat?: number }>} */
     const runs = [];
     const skipped = [];
 
@@ -141,6 +165,7 @@ function main() {
       const meta = /** @type {Record<string, any>} */ (
         readJsonFile(join(runDir, 'meta.json'), 'meta.json')
       );
+      const repeat = repeatOf(meta, basename(runDir));
       const seed = seedById.get(meta.seed);
       if (seed === undefined) {
         skipped.push(`${meta.seed}: сида нет в каталоге`);
@@ -178,6 +203,7 @@ function main() {
           status: result.status,
           reason: result.reason,
           cost_rub: cost,
+          repeat,
         });
         stageRuns += 1;
       }
@@ -210,6 +236,19 @@ function main() {
 }
 
 /**
+ * Распределение статусов ячейки строкой: `hit 2/3, miss 1/3` — без него «по большинству»
+ * остаётся словом, а не видимым числом.
+ * @param {Record<string, any>} cell
+ * @returns {string}
+ */
+function distributionText(cell) {
+  const total = Number(cell.count ?? 0);
+  return Object.entries(cell.distribution ?? {})
+    .map(([status, count]) => `${status} ${count}/${total}`)
+    .join(', ');
+}
+
+/**
  * Строки таблицы для человека.
  * @param {Record<string, any>} report
  * @param {string[]} skipped
@@ -229,15 +268,24 @@ function renderLines(report, skipped) {
       lines.push(
         `${config.name.padEnd(20)}${seedId.padEnd(6)}${cells.join('')}${String(seedEntry.union).padStart(12)}`,
       );
+      for (const stage of SCORED_STAGES) {
+        const cell = seedEntry.runs?.[stage];
+        if (cell?.disagreement === true) {
+          lines.push(`  повторы ${seedId}/${stage}: ${distributionText(cell)} → ${cell.aggregate}`);
+        }
+      }
     }
     const summary = config.summary;
     const completeness = summary.completeness === null ? '—' : summary.completeness.toFixed(2);
     const fp = summary.false_positive_rate === null ? '—' : summary.false_positive_rate.toFixed(2);
     const cost = summary.avg_cost_rub === null ? '—' : `${roundRub(summary.avg_cost_rub)} ₽`;
+    const disagreement = summary.disagreement === null ? '—' : summary.disagreement.toFixed(2);
     lines.push(
-      `  итог: полнота ${completeness} · ложные блокировки ${fp} · ₽/прогон ${cost} · уникальных попаданий review ${summary.exclusive.review}, evaluate ${summary.exclusive.evaluate}`,
+      `  итог: полнота ${completeness} · ложные блокировки ${fp} · ₽/прогон ${cost} · уникальных попаданий review ${summary.exclusive.review}, evaluate ${summary.exclusive.evaluate} · повторов ${summary.repeats} · расхождение повторов ${disagreement}`,
     );
   }
+
+  for (const warning of report.warnings) lines.push(`  не хватает повторов: ${warning}`);
 
   for (const item of skipped) lines.push(`  пропущено: ${item}`);
   lines.push(
@@ -287,6 +335,32 @@ export function renderMarkdown(report, runs, skipped) {
     lines.push(
       `- стоимость прогона: ${summary.avg_cost_rub === null ? '—' : `${roundRub(summary.avg_cost_rub)} ₽`} (по ${config.cost_known} прогонам с usage)`,
     );
+    lines.push(
+      `- повторы: ${summary.repeats} на ячейку → расхождение ${summary.disagreement === null ? '—' : summary.disagreement.toFixed(2)}`,
+    );
+    lines.push('');
+
+    const repeated = Object.entries(config.by_seed).flatMap(([seedId, seedEntry]) =>
+      SCORED_STAGES.map((stage) => [seedId, stage, seedEntry.runs?.[stage]]).filter(
+        ([, , cell]) => cell !== undefined && cell.count > 1,
+      ),
+    );
+    if (repeated.length > 0) {
+      lines.push('### Повторы', '');
+      lines.push('| сид | стадия | прогонов | план | распределение | агрегат | согласие |');
+      lines.push('| --- | --- | --- | --- | --- | --- | --- |');
+      for (const [seedId, stage, cell] of repeated) {
+        lines.push(
+          `| ${seedId} | ${stage} | ${cell.count} | ${cell.planned} | ${distributionText(cell)} | ${cell.aggregate} | ${Number(cell.agreement ?? 0).toFixed(2)} |`,
+        );
+      }
+      lines.push('');
+    }
+  }
+
+  if (report.warnings.length > 0) {
+    lines.push('## Повторов меньше плана', '');
+    for (const warning of report.warnings) lines.push(`- ${warning}`);
     lines.push('');
   }
 

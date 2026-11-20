@@ -7,6 +7,8 @@ export type ScoredStage = 'review' | 'evaluate';
 export declare const SCORED_STAGES: readonly ScoredStage[];
 /** Итог прогона по сиду. `invalid` — ответ не разобрался, его нельзя считать ни попаданием, ни промахом. */
 export declare const RUN_STATUSES: readonly string[];
+/** План повторов, если `meta.json` его не задаёт: старые каталоги — один прогон. */
+export declare const DEFAULT_REPEAT = 1;
 /**
  * Все блоки `json` из markdown, в порядке появления. Блок с битым JSON пропускается:
  * агент мог показать пример схемы, а не результат.
@@ -57,16 +59,39 @@ export declare function scoreRun(seed: {
     reason: string;
 };
 /**
+ * Агрегат повторов одной ячейки «сид + стадия + конфигурация» (§15: по большинству,
+ * при равенстве — худший статус). Последний прогон не побеждает: именно на этом
+ * ошибалась прежняя схема `stages[stage] = status`.
+ * @param {string[]} statuses статусы повторов в порядке прогонов
+ * @param {'clean'|'defect'} kind вид сида: от него зависит, какой статус «хуже»
+ * @returns {{
+ *   aggregate: string,
+ *   count: number,
+ *   distribution: Record<string, number>,
+ *   agreement: number|null,
+ *   disagreement: boolean,
+ * }|null} `null`, если повторов нет
+ */
+export declare function aggregateStatuses(statuses: string[], kind: 'clean' | 'defect'): {
+    aggregate: string;
+    count: number;
+    distribution: Record<string, number>;
+    agreement: number | null;
+    disagreement: boolean;
+} | null;
+/**
  * Свод по прогонам.
  *
- * Прогоны группируются по конфигурации, внутри — по сиду и этапу. По сиду считается
- * объединение этапов (union), как в §15: полнота меряется на «поймал хоть кто-то»,
- * а раздельно этапы нужны, чтобы увидеть, окупается ли каждый из них.
+ * Прогоны группируются по конфигурации, внутри — по сиду и этапу. Повторы одного сида
+ * не затирают друг друга: ячейка «сид + стадия» собирает все наблюдения и получает
+ * агрегат по большинству (`aggregateStatuses`), а полнота считается уже по агрегату.
+ * По сиду считается объединение этапов (union), как в §15: полнота меряется на «поймал
+ * хоть кто-то», а раздельно этапы нужны, чтобы увидеть, окупается ли каждый из них.
  *
  * Сид-дефект без единого попадания — промах; сид, где все ответы не разобрались, —
  * не промах и не попадание: он выпадает из полноты, но виден в `counts.invalid`.
  * @param {{
- *   runs: Array<{ config: string, seed: string, stage: string, status: string, reason?: string, cost_rub?: number|null }>,
+ *   runs: Array<{ config: string, seed: string, stage: string, status: string, reason?: string, cost_rub?: number|null, repeat?: number }>,
  *   seeds: Record<string, 'clean'|'defect'>,
  *   thresholds: { completeness: number, false_positive_max: number },
  * }} input
@@ -80,6 +105,7 @@ export declare function buildReport({ runs, seeds, thresholds }: {
         status: string;
         reason?: string;
         cost_rub?: number | null;
+        repeat?: number;
     }>;
     seeds: Record<string, 'clean' | 'defect'>;
     thresholds: {

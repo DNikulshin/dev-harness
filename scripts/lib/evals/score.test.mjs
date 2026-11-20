@@ -3,6 +3,7 @@ import { describe, test } from 'node:test';
 
 import {
   SCORED_STAGES,
+  aggregateStatuses,
   buildReport,
   extractJsonBlocks,
   positionsOf,
@@ -313,5 +314,109 @@ describe('buildReport', () => {
       report.failures.map((/** @type {string} */ item) => item.split(':')[0]),
       ['b'],
     );
+  });
+
+  test('три повтора дают один агрегат по большинству, а не последний статус', () => {
+    const report = buildReport({
+      seeds,
+      thresholds,
+      runs: [
+        { config: 'a', seed: 'E5', stage: 'review', status: 'hit', repeat: 3 },
+        { config: 'a', seed: 'E5', stage: 'review', status: 'hit', repeat: 3 },
+        { config: 'a', seed: 'E5', stage: 'review', status: 'miss', repeat: 3 },
+      ],
+    });
+
+    const cell = report.configs.a.by_seed.E5.runs.review;
+    assert.equal(cell.count, 3);
+    assert.equal(cell.planned, 3);
+    assert.equal(cell.aggregate, 'hit');
+    assert.equal(cell.agreement, 0.67);
+    assert.equal(cell.disagreement, true);
+    assert.deepEqual(cell.distribution, { hit: 2, miss: 1 });
+    assert.equal(report.configs.a.by_seed.E5.stages.review, 'hit');
+    assert.equal(report.configs.a.summary.completeness, 1);
+    assert.equal(report.configs.a.summary.repeats, 3);
+    assert.equal(report.configs.a.summary.disagreement, 1);
+    assert.deepEqual(report.warnings, []);
+  });
+
+  test('большинство промахов — промах, даже если один повтор попал', () => {
+    const report = buildReport({
+      seeds,
+      thresholds,
+      runs: [
+        { config: 'a', seed: 'E5', stage: 'review', status: 'miss' },
+        { config: 'a', seed: 'E5', stage: 'review', status: 'hit' },
+        { config: 'a', seed: 'E5', stage: 'review', status: 'miss' },
+      ],
+    });
+    assert.equal(report.configs.a.by_seed.E5.stages.review, 'miss');
+    assert.equal(report.configs.a.by_seed.E5.union, 'miss');
+    assert.equal(report.configs.a.summary.misses, 1);
+    assert.equal(report.configs.a.summary.hits, 0);
+    assert.equal(report.verdict, 'below_threshold');
+  });
+
+  test('ничья повторов — худший статус: invalid > miss > hit', () => {
+    const report = buildReport({
+      seeds,
+      thresholds,
+      runs: [
+        { config: 'a', seed: 'E5', stage: 'review', status: 'hit' },
+        { config: 'a', seed: 'E5', stage: 'review', status: 'miss' },
+        { config: 'a', seed: 'E6', stage: 'review', status: 'invalid' },
+        { config: 'a', seed: 'E6', stage: 'review', status: 'hit' },
+      ],
+    });
+    assert.equal(report.configs.a.by_seed.E5.stages.review, 'miss');
+    assert.equal(report.configs.a.by_seed.E6.stages.review, 'invalid');
+  });
+
+  test('ничья на чистом сиде: ложная блокировка хуже чистого прогона', () => {
+    const report = buildReport({
+      seeds,
+      thresholds,
+      runs: [
+        { config: 'a', seed: 'E10', stage: 'review', status: 'clean' },
+        { config: 'a', seed: 'E10', stage: 'review', status: 'false_positive' },
+      ],
+    });
+    assert.equal(report.configs.a.by_seed.E10.stages.review, 'false_positive');
+    assert.equal(report.configs.a.summary.false_positives, 1);
+    assert.equal(report.configs.a.summary.disagreement, 1);
+  });
+
+  test('единственный прогон — агрегат равен его статусу, повторов 1', () => {
+    const report = buildReport({
+      seeds,
+      thresholds,
+      runs: [{ config: 'a', seed: 'E5', stage: 'review', status: 'hit' }],
+    });
+    const cell = report.configs.a.by_seed.E5.runs.review;
+    assert.equal(cell.count, 1);
+    assert.equal(cell.planned, 1);
+    assert.equal(cell.agreement, 1);
+    assert.equal(cell.disagreement, false);
+    assert.equal(report.configs.a.summary.repeats, 1);
+    assert.equal(report.configs.a.summary.disagreement, 0);
+    assert.deepEqual(report.warnings, []);
+  });
+
+  test('план повторов больше факта — предупреждение, а не молчание', () => {
+    const report = buildReport({
+      seeds,
+      thresholds,
+      runs: [{ config: 'a', seed: 'E5', stage: 'review', status: 'hit', repeat: 3 }],
+    });
+    assert.deepEqual(report.warnings, ['a: E5/review — 1 из 3 повторов']);
+    assert.equal(report.configs.a.summary.repeats, 3);
+  });
+
+  test('aggregateStatuses: пустой список — null, порядок статусов в распределении фиксирован', () => {
+    assert.equal(aggregateStatuses([], 'defect'), null);
+    const result = aggregateStatuses(['miss', 'hit', 'miss'], 'defect');
+    assert.notEqual(result, null);
+    assert.deepEqual(Object.keys(result?.distribution ?? {}), ['hit', 'miss']);
   });
 });

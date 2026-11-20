@@ -15,6 +15,10 @@
  * (правило §5.6, общее с `cycle-metrics`). У оценщика нет собственных `file`/`line`,
  * поэтому позиция берётся из `evidence[]` вида `path:line` — как в метриках.
  *
+ * Повторы одного сида (§15: минимум 3) не затирают друг друга: ячейка «сид + стадия +
+ * конфигурация» собирает все наблюдения, статус ячейки — большинство, при равенстве —
+ * худший (`aggregateStatuses`). Доля согласия и расхождение видны в отчёте.
+ *
  * Shebang не нужен: модуль подключается из CLI-скрипта `evals-score.mjs`.
  */
 import { LINE_TOLERANCE } from '../../cycle-metrics.mjs';
@@ -36,6 +40,18 @@ const SEVERITY_RANK = Object.freeze({ MAJOR: 1, BLOCKER: 2 });
 
 /** Итог прогона по сиду. `invalid` — ответ не разобрался, его нельзя считать ни попаданием, ни промахом. */
 export const RUN_STATUSES = Object.freeze(['hit', 'miss', 'clean', 'false_positive', 'invalid']);
+
+/**
+ * Порядок «худший первым» для ничьей в агрегате повторов (§15: при равенстве голосов
+ * побеждает худший статус). У чистого сида дефекта нет, поэтому худший — ложная блокировка.
+ */
+const WORST_FIRST = Object.freeze({
+  defect: Object.freeze(['invalid', 'miss', 'hit']),
+  clean: Object.freeze(['invalid', 'false_positive', 'clean']),
+});
+
+/** План повторов, если `meta.json` его не задаёт: старые каталоги — один прогон. */
+export const DEFAULT_REPEAT = 1;
 
 /** Ссылка `path:line` из `evidence[]` оценщика. */
 const REF_PATTERN = /^(.+):([1-9]\d*)$/u;
@@ -226,16 +242,75 @@ export function scoreRun(seed, stage, markdown) {
 }
 
 /**
+ * Доля в сотых: отчёт читают глазами, а не сравнивают побитово, поэтому 2/3 → 0.67.
+ * @param {number} part
+ * @param {number} total
+ * @returns {number|null} `null`, если делить не на что
+ */
+function share(part, total) {
+  if (total === 0) return null;
+  return Math.round((part / total) * 100) / 100;
+}
+
+/**
+ * Агрегат повторов одной ячейки «сид + стадия + конфигурация» (§15: по большинству,
+ * при равенстве — худший статус). Последний прогон не побеждает: именно на этом
+ * ошибалась прежняя схема `stages[stage] = status`.
+ * @param {string[]} statuses статусы повторов в порядке прогонов
+ * @param {'clean'|'defect'} kind вид сида: от него зависит, какой статус «хуже»
+ * @returns {{
+ *   aggregate: string,
+ *   count: number,
+ *   distribution: Record<string, number>,
+ *   agreement: number|null,
+ *   disagreement: boolean,
+ * }|null} `null`, если повторов нет
+ */
+export function aggregateStatuses(statuses, kind) {
+  if (statuses.length === 0) return null;
+
+  /** @type {Record<string, number>} */
+  const counted = {};
+  for (const status of statuses) counted[status] = (counted[status] ?? 0) + 1;
+
+  const distribution = /** @type {Record<string, number>} */ ({});
+  for (const status of RUN_STATUSES)
+    if (counted[status] !== undefined) distribution[status] = counted[status];
+
+  const present = Object.keys(distribution);
+  const majority = Math.max(...Object.values(distribution));
+  const tied = present.filter((status) => distribution[status] === majority);
+  const order = WORST_FIRST[kind === 'clean' ? 'clean' : 'defect'];
+  /** @param {string} status @returns {number} */
+  const rank = (status) => {
+    const index = order.indexOf(status);
+    return index === -1 ? order.length : index;
+  };
+
+  const aggregate = [...tied].sort((left, right) => rank(left) - rank(right))[0];
+
+  return {
+    aggregate: aggregate ?? 'invalid',
+    count: statuses.length,
+    distribution,
+    agreement: share(majority, statuses.length),
+    disagreement: present.length > 1,
+  };
+}
+
+/**
  * Свод по прогонам.
  *
- * Прогоны группируются по конфигурации, внутри — по сиду и этапу. По сиду считается
- * объединение этапов (union), как в §15: полнота меряется на «поймал хоть кто-то»,
- * а раздельно этапы нужны, чтобы увидеть, окупается ли каждый из них.
+ * Прогоны группируются по конфигурации, внутри — по сиду и этапу. Повторы одного сида
+ * не затирают друг друга: ячейка «сид + стадия» собирает все наблюдения и получает
+ * агрегат по большинству (`aggregateStatuses`), а полнота считается уже по агрегату.
+ * По сиду считается объединение этапов (union), как в §15: полнота меряется на «поймал
+ * хоть кто-то», а раздельно этапы нужны, чтобы увидеть, окупается ли каждый из них.
  *
  * Сид-дефект без единого попадания — промах; сид, где все ответы не разобрались, —
  * не промах и не попадание: он выпадает из полноты, но виден в `counts.invalid`.
  * @param {{
- *   runs: Array<{ config: string, seed: string, stage: string, status: string, reason?: string, cost_rub?: number|null }>,
+ *   runs: Array<{ config: string, seed: string, stage: string, status: string, reason?: string, cost_rub?: number|null, repeat?: number }>,
  *   seeds: Record<string, 'clean'|'defect'>,
  *   thresholds: { completeness: number, false_positive_max: number },
  * }} input
@@ -256,8 +331,11 @@ export function buildReport({ runs, seeds, thresholds }) {
     });
 
     config.runs += 1;
-    const seedEntry = (config.by_seed[run.seed] ??= { stages: {}, union: 'miss' });
-    seedEntry.stages[run.stage] = run.status;
+    const seedEntry = (config.by_seed[run.seed] ??= { stages: {}, runs: {}, union: 'miss' });
+    const cell = (seedEntry.runs[run.stage] ??= { statuses: [], planned: DEFAULT_REPEAT });
+    cell.statuses.push(run.status);
+    if (Number.isInteger(run.repeat) && /** @type {number} */ (run.repeat) >= 1)
+      cell.planned = Math.max(cell.planned, /** @type {number} */ (run.repeat));
     const stageEntry = (config.by_stage[run.stage] ??= {
       counts: Object.fromEntries(RUN_STATUSES.map((status) => [status, 0])),
     });
@@ -270,6 +348,12 @@ export function buildReport({ runs, seeds, thresholds }) {
     }
   }
 
+  /** @type {string[]} */
+  const warnings = [];
+  let repeatsPlan = DEFAULT_REPEAT;
+  let cells = 0;
+  let disagreements = 0;
+
   for (const [name, config] of Object.entries(configs)) {
     let hits = 0;
     let misses = 0;
@@ -279,6 +363,31 @@ export function buildReport({ runs, seeds, thresholds }) {
     const exclusive = { review: 0, evaluate: 0 };
 
     for (const [seedId, seedEntry] of Object.entries(config.by_seed)) {
+      const kind = seeds[seedId] === 'clean' ? 'clean' : 'defect';
+      // Агрегат считается до union: в `stages` лежит уже результат повторов, а не
+      // последнее наблюдение.
+      for (const stage of SCORED_STAGES) {
+        const cell = seedEntry.runs[stage];
+        if (cell === undefined) continue;
+        const aggregate = aggregateStatuses(cell.statuses, kind);
+        if (aggregate === null) continue;
+        cell.aggregate = aggregate.aggregate;
+        cell.count = aggregate.count;
+        cell.distribution = aggregate.distribution;
+        cell.agreement = aggregate.agreement;
+        cell.disagreement = aggregate.disagreement;
+        seedEntry.stages[stage] = aggregate.aggregate;
+
+        cells += 1;
+        if (aggregate.disagreement) disagreements += 1;
+        repeatsPlan = Math.max(repeatsPlan, cell.planned);
+        if (aggregate.count < cell.planned) {
+          warnings.push(
+            `${name}: ${seedId}/${stage} — ${aggregate.count} из ${cell.planned} повторов`,
+          );
+        }
+      }
+
       const statuses = SCORED_STAGES.map((stage) => seedEntry.stages[stage]).filter(
         (status) => typeof status === 'string',
       );
@@ -332,8 +441,20 @@ export function buildReport({ runs, seeds, thresholds }) {
       false_positive_rate: falsePositiveRate,
       exclusive,
       avg_cost_rub: config.cost_known === 0 ? null : config.cost_rub / config.cost_known,
+      repeats: DEFAULT_REPEAT,
+      disagreement: null,
     };
     config.name = name;
+  }
+
+  for (const config of Object.values(configs)) {
+    const own = Object.values(config.by_seed).flatMap((seedEntry) =>
+      SCORED_STAGES.map((stage) => seedEntry.runs[stage]).filter((cell) => cell !== undefined),
+    );
+    if (own.length === 0) continue;
+    config.summary.repeats = own.reduce((max, cell) => Math.max(max, cell.planned ?? 1), 1);
+    const disagreed = own.filter((cell) => cell.disagreement === true).length;
+    config.summary.disagreement = share(disagreed, own.length);
   }
 
   /** @type {string[]} */
@@ -363,6 +484,10 @@ export function buildReport({ runs, seeds, thresholds }) {
     },
     configs,
     failures,
+    warnings,
+    // Доля ячеек, где повторы разошлись: разброс — главный повод повторять сид.
+    disagreement: share(disagreements, cells),
+    repeats: repeatsPlan,
     verdict: failures.length === 0 ? 'ok' : 'below_threshold',
   };
 }

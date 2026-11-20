@@ -122,22 +122,22 @@ function fixtureRoot() {
 /**
  * Каталог прогона с meta и ответами этапов.
  * @param {string} root
- * @param {{ name: string, seed: string, review: string, evaluate?: string, usage?: unknown }} params
+ * @param {{ name: string, seed: string, review: string, evaluate?: string, usage?: unknown, repeat?: number }} params
  * @returns {string}
  */
-function writeRun(root, { name, seed, review, evaluate, usage }) {
+function writeRun(root, { name, seed, review, evaluate, usage, repeat }) {
   const dir = join(root, '.pi', 'artifacts', 'evals', name);
   mkdirSync(dir, { recursive: true });
-  writeFileSync(
-    join(dir, 'meta.json'),
-    JSON.stringify({
-      seed,
-      config: 'current',
-      models: { review: 'openai/gpt-6-luna-pro', evaluate: 'z-ai/glm-5.3' },
-      stages: ['review', 'evaluate'],
-      created_at: '2026-01-02T00:00:00Z',
-    }),
-  );
+  /** @type {Record<string, unknown>} */
+  const meta = {
+    seed,
+    config: 'current',
+    models: { review: 'openai/gpt-6-luna-pro', evaluate: 'z-ai/glm-5.3' },
+    stages: ['review', 'evaluate'],
+    created_at: '2026-01-02T00:00:00Z',
+  };
+  if (repeat !== undefined) meta.repeat = repeat;
+  writeFileSync(join(dir, 'meta.json'), JSON.stringify(meta));
   writeFileSync(join(dir, 'review.md'), review);
   if (evaluate !== undefined) writeFileSync(join(dir, 'evaluate.md'), evaluate);
   if (usage !== undefined) writeFileSync(join(dir, 'usage.json'), JSON.stringify(usage));
@@ -245,6 +245,95 @@ describe('evals-score', () => {
     const root = fixtureRoot();
     assert.match(run(['--root', root, '--completeness', '2']).stderr, /от 0 до 1/u);
     assert.match(run(['--root', root, '--nope']).stderr, /неизвестный аргумент/u);
+  });
+
+  test('три повтора того же сида не затирают друг друга: агрегат и расхождение в отчёте', () => {
+    const root = fixtureRoot();
+    const runsDir = join(root, '.pi', 'artifacts', 'evals');
+    writeRun(root, {
+      name: '2026-01-02-E5-current-r1',
+      seed: 'E5',
+      review: reviewAnswer(true),
+      repeat: 3,
+    });
+    writeRun(root, {
+      name: '2026-01-02-E5-current-r2',
+      seed: 'E5',
+      review: reviewAnswer(true),
+      repeat: 3,
+    });
+    writeRun(root, {
+      name: '2026-01-02-E5-current-r3',
+      seed: 'E5',
+      review: reviewAnswer(false),
+      repeat: 3,
+    });
+
+    const result = run(['--root', root]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /повторы E5\/review: hit 2\/3, miss 1\/3 → hit/u);
+    assert.match(result.stdout, /повторов 3/u);
+
+    const report = JSON.parse(readFileSync(join(runsDir, 'report.json'), 'utf8'));
+    const cell = report.configs.current.by_seed.E5.runs.review;
+    assert.equal(cell.count, 3);
+    assert.equal(cell.planned, 3);
+    assert.equal(cell.aggregate, 'hit');
+    assert.equal(cell.agreement, 0.67);
+    assert.equal(report.configs.current.by_seed.E5.union, 'hit');
+    assert.equal(report.configs.current.summary.repeats, 3);
+
+    const markdown = readFileSync(join(runsDir, 'report.md'), 'utf8');
+    assert.match(markdown, /### Повторы/u);
+    assert.match(markdown, /\| E5 \| review \| 3 \| 3 \| hit 2\/3, miss 1\/3 \| hit \| 0\.67 \|/u);
+  });
+
+  test('каталог без repeat читается как один повтор', () => {
+    const root = fixtureRoot();
+    writeRun(root, { name: '2026-01-02-E5-current', seed: 'E5', review: reviewAnswer(true) });
+
+    const result = run(['--root', root]);
+    assert.equal(result.status, 0, result.stderr);
+
+    const report = JSON.parse(
+      readFileSync(join(root, '.pi', 'artifacts', 'evals', 'report.json'), 'utf8'),
+    );
+    assert.equal(report.configs.current.by_seed.E5.runs.review.planned, 1);
+    assert.equal(report.configs.current.summary.repeats, 1);
+    assert.deepEqual(report.warnings, []);
+  });
+
+  test('план повторов больше факта — предупреждение в отчёте, код не меняется', () => {
+    const root = fixtureRoot();
+    const runsDir = join(root, '.pi', 'artifacts', 'evals');
+    writeRun(root, {
+      name: '2026-01-02-E5-current',
+      seed: 'E5',
+      review: reviewAnswer(true),
+      repeat: 3,
+    });
+
+    const result = run(['--root', root]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /не хватает повторов: current: E5\/review — 1 из 3/u);
+    assert.match(readFileSync(join(runsDir, 'report.md'), 'utf8'), /Повторов меньше плана/u);
+  });
+
+  test('repeat в meta.json не целое ≥ 1 — ошибка данных, код 2', () => {
+    const root = fixtureRoot();
+    writeRun(root, {
+      name: '2026-01-02-E5-current',
+      seed: 'E5',
+      review: reviewAnswer(true),
+    });
+    const metaFile = join(root, '.pi', 'artifacts', 'evals', '2026-01-02-E5-current', 'meta.json');
+    const meta = JSON.parse(readFileSync(metaFile, 'utf8'));
+    meta.repeat = 0;
+    writeFileSync(metaFile, JSON.stringify(meta));
+
+    const result = run(['--root', root]);
+    assert.equal(result.status, 2);
+    assert.match(result.stderr, /repeat должен быть целым ≥ 1/u);
   });
 
   test('каталог прогонов вне .pi/artifacts читается только по --runs', () => {

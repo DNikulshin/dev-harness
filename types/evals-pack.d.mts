@@ -2,13 +2,14 @@
 /**
  * Разбирает аргументы командной строки.
  * @param {string[]} argv
- * @returns {{ seed: string|null, config: string, out: string|null, now: string|null, force: boolean, root: string|null }}
+ * @returns {{ seed: string|null, config: string, out: string|null, now: string|null, repeat: number, force: boolean, root: string|null }}
  */
 export declare function parseArgs(argv: string[]): {
     seed: string | null;
     config: string;
     out: string | null;
     now: string | null;
+    repeat: number;
     force: boolean;
     root: string | null;
 };
