@@ -20,10 +20,20 @@
  * Ширина полоски расхода — доля от максимума в отчёте, число подписано рядом; всё считается
  * из данных, поэтому два запуска дают побайтно одинаковую страницу.
  *
- * **Что попадает в отчёт.** Каталоги без `metrics.json` пропускаются (цикл не завершён или
- * метрики не собирались) — их число печатается отдельно, чтобы «нет данных» не выглядело
- * как «ноль». Битый или не проходящий схему `metrics.json` — отказ (код 2): молча
- * пропустить испорченный артефакт значило бы занизить расход.
+ * **Наблюдаемый минимум (#85, ADR [0006](./adr/0006-ui-presentation.md)).** Отчёт отвечает на
+ * вопрос «почему цикл встал», а не только «сколько стоил»: каталоги с `state.json` без
+ * `metrics.json` перечисляются блоком «Незавершённые циклы» (стадия, статус, итерация,
+ * `updated_at`, повторы) вместо счётчика, а блок «Почему остановились» показывает вердикт
+ * `decision.<n>.json` с причинами, эскалацию, критерии оценки не в статусе `met` и исходы
+ * гейтов последней итерации. `fail` и `not_run` разведены по разным строкам, у `not_run` видна
+ * причина (`no_database`, `tool_missing`, `blocked_by:<id>`); когда объяснять нечем (нет ни
+ * решения, ни эскалации), печатается `insufficient_data`, а не догадка.
+ *
+ * **Что попадает в отчёт.** Каталоги с `state.json` и `metrics.json` — циклы с метриками;
+ * каталоги без `metrics.json`, но со `state.json` — незавершённые. Каталоги без того и другого
+ * считаются отдельно, чтобы «нет данных» не выглядело как «ноль». Битый или не проходящий схему
+ * артефакт (метрики, состояние, решение, гейты, оценка, эскалация) — отказ (код 2): молча
+ * пропустить испорченный артефакт значило бы занизить расход или выдумать причину.
  *
  * **Детерминизм.** Каталоги сортируются по имени, гейты — по порядку таблицы §5.5
  * (`gates` конфига проекта), неизвестные id — после них по алфавиту; время и случайность
@@ -41,7 +51,14 @@ import { isDirectRun } from './lib/cycle/cli.mjs';
 import { loadConfig, takeConfigOption } from './lib/cycle/config.mjs';
 import { readJson } from './lib/cycle/io.mjs';
 import { FIXED_NAMES, artifactsDir, repoRoot } from './lib/cycle/paths.mjs';
-import { validateMetrics } from './lib/cycle/validate.mjs';
+import {
+  validateDecision,
+  validateEscalation,
+  validateEvaluation,
+  validateGates,
+  validateMetrics,
+  validateState,
+} from './lib/cycle/validate.mjs';
 
 /** Серьёзности дефектов оценщика (Приложение A). */
 const DEFECT_SEVERITIES = Object.freeze(['BLOCKER', 'MAJOR', 'MINOR']);
@@ -69,9 +86,48 @@ const NO_VALUE = '—';
  */
 
 /**
+ * @typedef {object} PendingCycle
+ * @property {string} name имя каталога цикла
+ * @property {string} stage этап, на котором цикл остановился
+ * @property {string} stage_status статус этапа (`running`, `error`, …)
+ * @property {number} iteration текущая итерация
+ * @property {number} max_iterations лимит итераций
+ * @property {string} updated_at время последнего изменения состояния (ISO)
+ * @property {{ REVIEW: number, EVALUATE: number, evidence: number }} retries повторы
+ */
+
+/**
+ * @typedef {object} StopGate
+ * @property {string} id
+ * @property {'fail'|'not_run'} status
+ * @property {string|null} reason причина `not_run` (`no_database`, `tool_missing`, …)
+ */
+
+/**
+ * @typedef {object} StopCriterion
+ * @property {string} id
+ * @property {string} status `partial`, `unmet` или `unverified`
+ */
+
+/**
+ * @typedef {object} Stop
+ * @property {string} name имя каталога цикла
+ * @property {string|null} action вердикт `decision.<n>.json` (`REWORK`, `ESCALATE`, …)
+ * @property {string[]} reasons причины решения, как их записал `cycle-decide`
+ * @property {string[]} unverified непроверенное из решения
+ * @property {{ reason: string, detail: string|null }|null} escalation
+ * @property {StopCriterion[]} criteria критерии оценки, кроме `met`
+ * @property {StopGate[]} gates гейты последней итерации: `fail` и `not_run`
+ * @property {string[]} missing каких артефактов нет (`decision`, `escalation`, `gates`)
+ * @property {boolean} insufficient данных не хватает, чтобы назвать причину
+ */
+
+/**
  * @typedef {object} Report
  * @property {CycleSummary[]} cycles
- * @property {number} skipped каталоги без `metrics.json`
+ * @property {PendingCycle[]} pending каталоги со `state.json` без `metrics.json`
+ * @property {Stop[]} stops почему остановились циклы (завершённые и эскалированные)
+ * @property {number} skipped каталоги без `state.json` и без `metrics.json`
  * @property {{ measured: number, total: number, sum: number|null, median: number|null }} cost
  * @property {{ evaluator_only: number, total: number, percent: number|null }} findings
  * @property {{ id: string, pass: number, fail: number, skipped: number, not_run: number }[]} gates
@@ -141,29 +197,38 @@ function percentText(value) {
 }
 
 /**
+ * Подкаталоги каталога артефактов, отсортированные по имени: и циклы, и всё, что рядом с ними.
+ * @param {string} dir каталог артефактов
+ * @returns {string[]} имена каталогов
+ */
+export function listArtifactDirs(dir) {
+  if (!existsSync(dir)) throw new Error(`${dir}: каталог артефактов не найден`);
+  return readdirSync(dir)
+    .filter((name) => statSync(join(dir, name)).isDirectory())
+    .sort();
+}
+
+/**
  * Каталоги циклов с `metrics.json` в каталоге артефактов, отсортированные по имени.
  * @param {string} dir каталог артефактов
  * @returns {string[]} имена каталогов
  */
 export function listCycleDirs(dir) {
-  if (!existsSync(dir)) throw new Error(`${dir}: каталог артефактов не найден`);
-  return readdirSync(dir)
-    .filter((name) => {
-      const path = join(dir, name);
-      return statSync(path).isDirectory() && existsSync(join(path, FIXED_NAMES.metrics));
-    })
-    .sort();
+  return listArtifactDirs(dir).filter((name) => existsSync(join(dir, name, FIXED_NAMES.metrics)));
 }
 
 /**
- * Читает и проверяет `metrics.json` одного цикла. Сообщение содержит имя каталога, а не
- * абсолютный путь: отчёт можно вставлять в issue.
- * @param {string} dir каталог артефактов
- * @param {string} name имя каталога цикла
+ * Читает и проверяет артефакт цикла. Сообщение содержит имя каталога и файла, а не
+ * абсолютный путь: отчёт можно вставлять в issue. Битый или не прошедший схему артефакт —
+ * отказ, а не тихий пропуск: «файла нет» и «файл испорчен» — разные факты.
+ * @param {string} cycleDir каталог цикла
+ * @param {string} cycleName имя каталога цикла
+ * @param {string} fileName имя файла внутри каталога
+ * @param {(doc: unknown) => { ok: boolean, errors: string[] }} validate валидатор схемы
  * @returns {Record<string, any>}
  */
-function readMetrics(dir, name) {
-  const file = join(dir, name, FIXED_NAMES.metrics);
+function readArtifact(cycleDir, cycleName, fileName, validate) {
+  const file = join(cycleDir, fileName);
 
   /** @type {unknown} */
   let doc;
@@ -171,14 +236,34 @@ function readMetrics(dir, name) {
     doc = readJson(file);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`${name}/${FIXED_NAMES.metrics}: не читается (${message})`, { cause: error });
+    throw new Error(`${cycleName}/${fileName}: не читается (${message})`, { cause: error });
   }
 
-  const check = validateMetrics(doc);
+  const check = validate(doc);
   if (!check.ok) {
-    throw new Error(`${name}/${FIXED_NAMES.metrics}: схема нарушена:\n${check.errors.join('\n')}`);
+    throw new Error(`${cycleName}/${fileName}: схема нарушена:\n${check.errors.join('\n')}`);
   }
   return /** @type {Record<string, any>} */ (doc);
+}
+
+/**
+ * Последний по номеру файл итерации `base.<n>.json` в каталоге цикла. Перебор каталога не
+ * зависит от порядка `readdir`: выбирается максимум номера.
+ * @param {string} cycleDir каталог цикла
+ * @param {string} base имя без номера и расширения (`decision`, `gates`, `evaluation`)
+ * @returns {{ iteration: number, fileName: string }|null}
+ */
+export function lastIterationFile(cycleDir, base) {
+  const pattern = new RegExp(`^${base}\\.(\\d+)\\.json$`, 'u');
+  /** @type {{ iteration: number, fileName: string }|null} */
+  let latest = null;
+  for (const fileName of readdirSync(cycleDir)) {
+    const match = pattern.exec(fileName);
+    if (match === null) continue;
+    const iteration = Number(match[1]);
+    if (latest === null || iteration > latest.iteration) latest = { iteration, fileName };
+  }
+  return latest;
 }
 
 /**
@@ -212,6 +297,121 @@ export function summarizeCycle(name, metrics) {
     unresolved_refs: count(metrics.unresolved_refs),
     unclosed_stages: count(metrics.unclosed_stages),
     gate_outcomes: metrics.gate_outcomes ?? {},
+  };
+}
+
+/**
+ * Сводка незавершённого цикла: только `state.json`, без вычислений и догадок.
+ * @param {string} name имя каталога
+ * @param {Record<string, any>} state проверенное состояние
+ * @returns {PendingCycle}
+ */
+export function summarizePending(name, state) {
+  const retries = state.retries ?? {};
+  return {
+    name,
+    stage: state.stage,
+    stage_status: state.stage_status,
+    iteration: count(state.iteration),
+    max_iterations: count(state.max_iterations),
+    updated_at: state.updated_at,
+    retries: {
+      REVIEW: count(retries.REVIEW),
+      EVALUATE: count(retries.EVALUATE),
+      evidence: count(retries.evidence),
+    },
+  };
+}
+
+/**
+ * Читает артефакты «почему встал» из каталога цикла. Критерии оценки берутся только из
+ * `evaluation.<n>.json` той итерации, на которую ссылается решение: чужие критерии выдали бы
+ * вердикт за свидетельство.
+ * @param {string} cycleDir каталог цикла
+ * @param {string} cycleName имя каталога цикла
+ * @param {{ state?: Record<string, any>|null }} [options] уже прочитанное состояние
+ * @returns {{
+ *   decision: Record<string, any>|null,
+ *   evaluation: Record<string, any>|null,
+ *   escalation: Record<string, any>|null,
+ *   gates: Record<string, any>|null,
+ * }}
+ */
+export function collectStopArtifacts(cycleDir, cycleName, { state = null } = {}) {
+  const decisionFile = lastIterationFile(cycleDir, 'decision');
+  const decision =
+    decisionFile === null
+      ? null
+      : readArtifact(cycleDir, cycleName, decisionFile.fileName, validateDecision);
+
+  const evaluationName = decision === null ? null : `evaluation.${decision.iteration}.json`;
+  const evaluation =
+    evaluationName !== null && existsSync(join(cycleDir, evaluationName))
+      ? readArtifact(cycleDir, cycleName, evaluationName, validateEvaluation)
+      : null;
+
+  const gatesFile = lastIterationFile(cycleDir, 'gates');
+  const gates =
+    gatesFile === null
+      ? null
+      : readArtifact(cycleDir, cycleName, gatesFile.fileName, validateGates);
+
+  /** `escalate` пишет и `escalation.json`, и `state.escalation`: когда файла нет (цикл
+   * эскалирован раньше появления файла или файл удалён), причина из состояния всё равно
+   * остаётся фактом, а не поводом для `insufficient_data`. */
+  const escalation = existsSync(join(cycleDir, FIXED_NAMES.escalation))
+    ? readArtifact(cycleDir, cycleName, FIXED_NAMES.escalation, validateEscalation)
+    : (state?.escalation ?? null);
+
+  return { decision, evaluation, escalation, gates };
+}
+
+/**
+ * Причина остановки цикла. Чистая функция: файлов не читает.
+ *
+ * `insufficient` — не догадка, а факт «объяснять нечем»: нет ни решения, ни эскалации. Гейты
+ * сами по себе остановку не объясняют (их `pass` — свидетельство проверки), поэтому в это
+ * условие не входят.
+ * @param {string} name имя каталога цикла
+ * @param {ReturnType<typeof collectStopArtifacts>} artifacts
+ * @returns {Stop}
+ */
+export function summarizeStop(name, artifacts) {
+  const { decision, evaluation, escalation, gates } = artifacts;
+
+  /** @type {string[]} */
+  const missing = [];
+  if (decision === null) missing.push('decision');
+  if (escalation === null) missing.push('escalation');
+  if (gates === null) missing.push('gates');
+
+  /** @type {{ id: string, status: string, reason: string|null }[]} */
+  const gateRows = gates === null ? [] : gates.gates;
+  const stopGates = /** @type {StopGate[]} */ (
+    gateRows
+      .filter((gate) => gate.status === 'fail' || gate.status === 'not_run')
+      .map((gate) => ({ id: gate.id, status: gate.status, reason: gate.reason ?? null }))
+  );
+
+  /** @type {{ id: string, status: string }[]} */
+  const criterionRows = evaluation === null ? [] : evaluation.criteria;
+  const criteria = /** @type {StopCriterion[]} */ (
+    criterionRows
+      .filter((criterion) => criterion.status !== 'met')
+      .map((criterion) => ({ id: criterion.id, status: criterion.status }))
+  );
+
+  return {
+    name,
+    action: decision === null ? null : decision.action,
+    reasons: decision === null ? [] : [...decision.reasons],
+    unverified: decision === null ? [] : [...decision.unverified],
+    escalation:
+      escalation === null ? null : { reason: escalation.reason, detail: escalation.detail ?? null },
+    criteria,
+    gates: stopGates,
+    missing,
+    insufficient: decision === null && escalation === null,
   };
 }
 
@@ -254,12 +454,17 @@ export function aggregateGates(cycles, gateIds = []) {
 }
 
 /**
- * Собирает отчёт из прочитанных метрик. Чистая функция: файлов не читает.
+ * Собирает отчёт из прочитанных артефактов. Чистая функция: файлов не читает.
  * @param {CycleSummary[]} cycles сводки по циклам (в порядке отчёта)
- * @param {{ skipped?: number, gateIds?: readonly string[] }} [options]
+ * @param {{
+ *   skipped?: number,
+ *   gateIds?: readonly string[],
+ *   pending?: PendingCycle[],
+ *   stops?: Stop[],
+ * }} [options]
  * @returns {Report}
  */
-export function buildReport(cycles, { skipped = 0, gateIds = [] } = {}) {
+export function buildReport(cycles, { skipped = 0, gateIds = [], pending = [], stops = [] } = {}) {
   const costs = cycles.map((cycle) => cycle.cost_rub).filter((value) => value !== null);
   const evaluatorOnly = cycles.reduce((sum, cycle) => sum + cycle.findings.only_evaluator, 0);
   const totalFindings = cycles.reduce(
@@ -270,6 +475,8 @@ export function buildReport(cycles, { skipped = 0, gateIds = [] } = {}) {
 
   return {
     cycles,
+    pending,
+    stops,
     skipped,
     cost: {
       measured: costs.length,
@@ -287,61 +494,162 @@ export function buildReport(cycles, { skipped = 0, gateIds = [] } = {}) {
 }
 
 /**
- * Отчёт в markdown: шапка с итогами, таблица циклов, таблица гейтов.
- * @param {Report} report
+ * Чего не хватает, чтобы объяснить остановку: имена файлов, а не внутренние ключи.
+ * @param {string[]} missing
  * @returns {string}
  */
-export function renderMarkdown(report) {
-  const { cycles, cost, findings, skipped, gates } = report;
-  /** @type {string[]} */
-  const lines = ['# Отчёт по циклам', ''];
+function missingText(missing) {
+  const names = missing.map((kind) =>
+    kind === 'decision'
+      ? 'decision.<n>.json'
+      : kind === 'gates'
+        ? 'gates.<n>.json'
+        : FIXED_NAMES.escalation,
+  );
+  return `нет ${names.join(', ')}`;
+}
 
-  if (cycles.length === 0) {
+/**
+ * Блок «Незавершённые циклы» в markdown: стадия, статус, итерация, время, повторы.
+ * @param {PendingCycle[]} pending
+ * @returns {string[]}
+ */
+function pendingMarkdown(pending) {
+  /** @type {string[]} */
+  const lines = ['## Незавершённые циклы', ''];
+
+  if (pending.length === 0) {
     lines.push(
-      'Циклов с `metrics.json` нет: собирать нечего.',
-      '',
-      `Пропущено каталогов без \`${FIXED_NAMES.metrics}\`: ${skipped}.`,
+      `Незавершённых циклов нет: у каждого каталога со \`${FIXED_NAMES.state}\`` +
+        ` есть \`${FIXED_NAMES.metrics}\`.`,
       '',
     );
-    return lines.join('\n');
+    return lines;
   }
 
   lines.push(
-    `Циклов: ${cost.total}, с расходом: ${cost.measured}.` +
-      ` Расход: ${rub(cost.sum)} ₽, медиана: ${rub(cost.median)} ₽.`,
-    '',
-    `Находок только у оценщика: ${findings.evaluator_only} из ${findings.total}` +
-      ` (${percentText(findings.percent)}).`,
-    '',
-    `Пропущено каталогов без \`${FIXED_NAMES.metrics}\`: ${skipped}.`,
-    '',
-    '| Цикл | Стадия | Итераций | Время, с | Расход, ₽ | Только оценщик | Только ревью | Оба | Дефекты оценщика B/M/m | Неразрешённые ссылки | Незакрытые этапы |',
-    '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
+    '| Цикл | Стадия | Статус | Итерация | Обновлён | Повторы REVIEW/EVALUATE/evidence |',
+    '| --- | --- | --- | --- | --- | --- |',
   );
-
-  for (const cycle of cycles) {
-    const defects = cycle.evaluator_defects;
+  for (const cycle of pending) {
     lines.push(
-      `| ${cycle.name} | ${cycle.final_stage} | ${cycle.iterations}/${cycle.max_iterations}` +
-        ` | ${Math.round(cycle.duration_s)} | ${rub(cycle.cost_rub)}` +
-        ` | ${cycle.findings.only_evaluator} | ${cycle.findings.only_review} | ${cycle.findings.both}` +
-        ` | ${defects.BLOCKER}/${defects.MAJOR}/${defects.MINOR}` +
-        ` | ${cycle.unresolved_refs} | ${cycle.unclosed_stages} |`,
+      `| ${cycle.name} | ${cycle.stage} | ${cycle.stage_status}` +
+        ` | ${cycle.iteration}/${cycle.max_iterations} | ${cycle.updated_at}` +
+        ` | ${cycle.retries.REVIEW}/${cycle.retries.EVALUATE}/${cycle.retries.evidence} |`,
     );
   }
+  lines.push('');
+  return lines;
+}
 
-  lines.push('', '## Исходы гейтов', '');
-  if (gates.length === 0) {
-    lines.push('Гейты в метриках не зафиксированы.', '');
-  } else {
-    lines.push('| Гейт | pass | fail | skipped | not_run |', '| --- | --- | --- | --- | --- |');
-    for (const gate of gates) {
+/**
+ * Блок «Почему остановились» в markdown. `fail`, `not_run` и `insufficient_data` — разные
+ * строки: слить их в одну значило бы потерять причину.
+ * @param {Stop[]} stops
+ * @returns {string[]}
+ */
+function stopsMarkdown(stops) {
+  /** @type {string[]} */
+  const lines = ['## Почему остановились', ''];
+
+  if (stops.length === 0) {
+    lines.push('Циклов с решением или эскалацией нет: объяснять нечего.', '');
+    return lines;
+  }
+
+  for (const stop of stops) {
+    lines.push(`### ${stop.name}`, '', `- Вердикт: ${stop.action ?? NO_VALUE}`);
+    if (stop.reasons.length > 0) lines.push(`- Причины: ${stop.reasons.join('; ')}`);
+    if (stop.escalation !== null) {
+      const detail = stop.escalation.detail === null ? '' : ` — ${stop.escalation.detail}`;
+      lines.push(`- Эскалация: ${stop.escalation.reason}${detail}`);
+    }
+    if (stop.unverified.length > 0) lines.push(`- Непроверенное: ${stop.unverified.join('; ')}`);
+    if (stop.criteria.length > 0) {
       lines.push(
-        `| ${gate.id} | ${gate.pass} | ${gate.fail} | ${gate.skipped} | ${gate.not_run} |`,
+        `- Критерии не met: ${stop.criteria.map((item) => `${item.id} ${item.status}`).join('; ')}`,
+      );
+    }
+
+    const failed = stop.gates.filter((gate) => gate.status === 'fail');
+    if (failed.length > 0) lines.push(`- Гейты fail: ${failed.map((gate) => gate.id).join(', ')}`);
+
+    const notRun = stop.gates.filter((gate) => gate.status === 'not_run');
+    if (notRun.length > 0) {
+      lines.push(
+        `- Гейты not_run: ${notRun
+          .map((gate) => `${gate.id} (${gate.reason ?? 'причина не записана'})`)
+          .join(', ')}`,
+      );
+    }
+
+    if (stop.insufficient) {
+      lines.push(
+        `- insufficient_data: ${missingText(stop.missing)} — причину остановки взять не из чего`,
       );
     }
     lines.push('');
   }
+
+  return lines;
+}
+
+/**
+ * Отчёт в markdown: шапка с итогами, таблица циклов, таблица гейтов, незавершённые циклы
+ * и причины остановки.
+ * @param {Report} report
+ * @returns {string}
+ */
+export function renderMarkdown(report) {
+  const { cycles, pending, stops, cost, findings, skipped, gates } = report;
+  /** @type {string[]} */
+  const lines = ['# Отчёт по циклам', ''];
+
+  lines.push(
+    `Пропущено каталогов без \`${FIXED_NAMES.state}\` и \`${FIXED_NAMES.metrics}\`: ${skipped}.`,
+    '',
+  );
+
+  if (cycles.length === 0) {
+    lines.push('Циклов с `metrics.json` нет: собирать нечего.', '');
+  } else {
+    lines.push(
+      `Циклов: ${cost.total}, с расходом: ${cost.measured}.` +
+        ` Расход: ${rub(cost.sum)} ₽, медиана: ${rub(cost.median)} ₽.`,
+      '',
+      `Находок только у оценщика: ${findings.evaluator_only} из ${findings.total}` +
+        ` (${percentText(findings.percent)}).`,
+      '',
+      '| Цикл | Стадия | Итераций | Время, с | Расход, ₽ | Только оценщик | Только ревью | Оба | Дефекты оценщика B/M/m | Неразрешённые ссылки | Незакрытые этапы |',
+      '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
+    );
+
+    for (const cycle of cycles) {
+      const defects = cycle.evaluator_defects;
+      lines.push(
+        `| ${cycle.name} | ${cycle.final_stage} | ${cycle.iterations}/${cycle.max_iterations}` +
+          ` | ${Math.round(cycle.duration_s)} | ${rub(cycle.cost_rub)}` +
+          ` | ${cycle.findings.only_evaluator} | ${cycle.findings.only_review} | ${cycle.findings.both}` +
+          ` | ${defects.BLOCKER}/${defects.MAJOR}/${defects.MINOR}` +
+          ` | ${cycle.unresolved_refs} | ${cycle.unclosed_stages} |`,
+      );
+    }
+
+    lines.push('', '## Исходы гейтов', '');
+    if (gates.length === 0) {
+      lines.push('Гейты в метриках не зафиксированы.', '');
+    } else {
+      lines.push('| Гейт | pass | fail | skipped | not_run |', '| --- | --- | --- | --- | --- |');
+      for (const gate of gates) {
+        lines.push(
+          `| ${gate.id} | ${gate.pass} | ${gate.fail} | ${gate.skipped} | ${gate.not_run} |`,
+        );
+      }
+      lines.push('');
+    }
+  }
+
+  lines.push(...pendingMarkdown(pending), ...stopsMarkdown(stops));
 
   return lines.join('\n');
 }
@@ -397,6 +705,11 @@ tbody tr:nth-child(even) { background: #fafafa; }
 .track { background: #f3f4f6; border-radius: 3px; overflow: hidden; }
 .fill { height: 1.1rem; background: #2563eb; min-width: 1px; }
 .bars .value { grid-column: 2; font-size: 12px; color: #6b7280; margin: -.2rem 0 .3rem; }
+.stop { margin: 0 0 1.25rem; padding: .1rem 0 .1rem .9rem; border-left: 3px solid #d1d5db; }
+.stop h3 { margin: .4rem 0 .35rem; font-size: 1rem; }
+.stop ul { margin: 0; padding-left: 1.1rem; }
+.stop li { margin: .15rem 0; }
+.insufficient { color: #b45309; font-weight: 600; }
 @media (prefers-color-scheme: dark) {
   body { background: #111827; color: #e5e7eb; }
   th, td { border-color: #374151; }
@@ -404,7 +717,132 @@ tbody tr:nth-child(even) { background: #fafafa; }
   tbody tr:nth-child(even) { background: #0f172a; }
   .fill { background: #60a5fa; }
   .muted, .bars .value, caption { color: #9ca3af; }
+  .stop { border-color: #374151; }
+  .insufficient { color: #fbbf24; }
 }`;
+
+/**
+ * Блок «Незавершённые циклы» в HTML: таблица или честная фраза, что таких нет.
+ * @param {PendingCycle[]} pending
+ * @returns {string[]}
+ */
+function pendingHtml(pending) {
+  /** @type {string[]} */
+  const body = ['<h2>Незавершённые циклы</h2>'];
+
+  if (pending.length === 0) {
+    body.push(
+      '<p class="muted">Незавершённых циклов нет: у каждого каталога со ' +
+        '<code>state.json</code> есть <code>metrics.json</code>.</p>',
+    );
+    return body;
+  }
+
+  body.push(
+    '<table>',
+    '<caption>Каталоги со <code>state.json</code> без <code>metrics.json</code></caption>',
+    '<thead>',
+    '<tr>',
+  );
+  for (const title of [
+    'Цикл',
+    'Стадия',
+    'Статус',
+    'Итерация',
+    'Обновлён',
+    'Повторы REVIEW/EVALUATE/evidence',
+  ]) {
+    body.push(`<th scope="col">${escapeHtml(title)}</th>`);
+  }
+  body.push('</tr>', '</thead>', '<tbody>');
+  for (const cycle of pending) {
+    const cells = [
+      escapeHtml(cycle.name),
+      escapeHtml(cycle.stage),
+      escapeHtml(cycle.stage_status),
+      `${cycle.iteration}/${cycle.max_iterations}`,
+      escapeHtml(cycle.updated_at),
+      `${cycle.retries.REVIEW}/${cycle.retries.EVALUATE}/${cycle.retries.evidence}`,
+    ];
+    body.push(`<tr>${cells.map((cell) => `<td>${cell}</td>`).join('')}</tr>`);
+  }
+  body.push('</tbody>', '</table>');
+  return body;
+}
+
+/**
+ * Блок «Почему остановились» в HTML. Классы `fail`, `not-run` и `insufficient` — разные
+ * строки списка: слить их в одну значило бы потерять причину.
+ * @param {Stop[]} stops
+ * @returns {string[]}
+ */
+function stopsHtml(stops) {
+  /** @type {string[]} */
+  const body = ['<h2>Почему остановились</h2>'];
+
+  if (stops.length === 0) {
+    body.push('<p class="muted">Циклов с решением или эскалацией нет: объяснять нечего.</p>');
+    return body;
+  }
+
+  for (const stop of stops) {
+    body.push(
+      '<section class="stop">',
+      `<h3>${escapeHtml(stop.name)}</h3>`,
+      '<ul>',
+      `<li><strong>Вердикт:</strong> ${escapeHtml(stop.action ?? NO_VALUE)}</li>`,
+    );
+    if (stop.reasons.length > 0) {
+      body.push(`<li><strong>Причины:</strong> ${escapeHtml(stop.reasons.join('; '))}</li>`);
+    }
+    if (stop.escalation !== null) {
+      const detail = stop.escalation.detail === null ? '' : ` — ${stop.escalation.detail}`;
+      body.push(
+        `<li><strong>Эскалация:</strong> ` +
+          `${escapeHtml(`${stop.escalation.reason}${detail}`)}</li>`,
+      );
+    }
+    if (stop.unverified.length > 0) {
+      body.push(
+        `<li><strong>Непроверенное:</strong> ${escapeHtml(stop.unverified.join('; '))}</li>`,
+      );
+    }
+    if (stop.criteria.length > 0) {
+      body.push(
+        `<li class="criteria"><strong>Критерии не met:</strong> ` +
+          `${escapeHtml(stop.criteria.map((item) => `${item.id} ${item.status}`).join('; '))}</li>`,
+      );
+    }
+
+    const failed = stop.gates.filter((gate) => gate.status === 'fail');
+    if (failed.length > 0) {
+      body.push(
+        `<li class="fail"><strong>Гейты fail:</strong> ` +
+          `${escapeHtml(failed.map((gate) => gate.id).join(', '))}</li>`,
+      );
+    }
+
+    const notRun = stop.gates.filter((gate) => gate.status === 'not_run');
+    if (notRun.length > 0) {
+      body.push(
+        `<li class="not-run"><strong>Гейты not_run:</strong> ` +
+          `${escapeHtml(
+            notRun.map((gate) => `${gate.id} (${gate.reason ?? 'причина не записана'})`).join(', '),
+          )}</li>`,
+      );
+    }
+
+    if (stop.insufficient) {
+      body.push(
+        `<li class="insufficient"><strong>insufficient_data:</strong> ` +
+          `${escapeHtml(missingText(stop.missing))} — причину остановки взять не из чего</li>`,
+      );
+    }
+    body.push('</ul>', '</section>');
+  }
+
+  return body;
+}
 
 /**
  * Отчёт одной самодостаточной HTML-страницей (#45). Чистая функция: те же факты, что в
@@ -413,109 +851,111 @@ tbody tr:nth-child(even) { background: #fafafa; }
  * @returns {string}
  */
 export function renderHtml(report) {
-  const { cycles, cost, findings, skipped, gates } = report;
+  const { cycles, pending, stops, cost, findings, skipped, gates } = report;
   /** @type {string[]} */
   const body = ['<h1>Отчёт по циклам</h1>'];
 
+  body.push(
+    '<p class="muted">Пропущено каталогов без <code>state.json</code> и ' +
+      `<code>${escapeHtml(FIXED_NAMES.metrics)}</code>: ${skipped}.</p>`,
+  );
+
   if (cycles.length === 0) {
-    body.push(
-      '<p>Циклов с <code>metrics.json</code> нет: собирать нечего.</p>',
-      `<p class="muted">Пропущено каталогов без <code>${escapeHtml(FIXED_NAMES.metrics)}</code>: ${skipped}.</p>`,
-    );
-    return htmlPage('Отчёт по циклам', body);
-  }
-
-  body.push(
-    `<p class="lead">Циклов: ${cost.total}, с расходом: ${cost.measured}.` +
-      ` Расход: ${rub(cost.sum)} ₽, медиана: ${rub(cost.median)} ₽.</p>`,
-    `<p>Находок только у оценщика: ${findings.evaluator_only} из ${findings.total}` +
-      ` (${percentText(findings.percent)}).</p>`,
-    `<p class="muted">Пропущено каталогов без <code>${escapeHtml(FIXED_NAMES.metrics)}</code>: ${skipped}.</p>`,
-  );
-
-  const measured = cycles.filter((cycle) => cycle.cost_rub !== null);
-  if (measured.length > 0) {
-    const max = Math.max(...measured.map((cycle) => cycle.cost_rub ?? 0));
-    body.push('<h2>Расход по циклам</h2>', '<div class="bars">');
-    for (const cycle of measured) {
-      const value = cycle.cost_rub ?? 0;
-      body.push(
-        `<div class="label">${escapeHtml(cycle.name)}</div>`,
-        `<div class="track"><div class="fill" style="width: ${barPercent(value, max)}%"></div></div>`,
-        `<div class="value">${rub(value)} ₽</div>`,
-      );
-    }
-    body.push('</div>');
-  }
-
-  body.push(
-    '<h2>Циклы</h2>',
-    '<table>',
-    '<caption>Факты по завершённым циклам</caption>',
-    '<thead>',
-    '<tr>',
-  );
-  for (const title of [
-    'Цикл',
-    'Стадия',
-    'Итераций',
-    'Время, с',
-    'Расход, ₽',
-    'Только оценщик',
-    'Только ревью',
-    'Оба',
-    'Дефекты оценщика B/M/m',
-    'Неразрешённые ссылки',
-    'Незакрытые этапы',
-  ]) {
-    body.push(`<th scope="col">${escapeHtml(title)}</th>`);
-  }
-  body.push('</tr>', '</thead>', '<tbody>');
-  for (const cycle of cycles) {
-    const defects = cycle.evaluator_defects;
-    body.push(
-      '<tr>' +
-        [
-          escapeHtml(cycle.name),
-          escapeHtml(cycle.final_stage),
-          `${cycle.iterations}/${cycle.max_iterations}`,
-          `${Math.round(cycle.duration_s)}`,
-          rub(cycle.cost_rub),
-          `${cycle.findings.only_evaluator}`,
-          `${cycle.findings.only_review}`,
-          `${cycle.findings.both}`,
-          `${defects.BLOCKER}/${defects.MAJOR}/${defects.MINOR}`,
-          `${cycle.unresolved_refs}`,
-          `${cycle.unclosed_stages}`,
-        ]
-          .map((cell) => `<td>${cell}</td>`)
-          .join('') +
-        '</tr>',
-    );
-  }
-  body.push('</tbody>', '</table>');
-
-  body.push('<h2>Исходы гейтов</h2>');
-  if (gates.length === 0) {
-    body.push('<p>Гейты в метриках не зафиксированы.</p>');
+    body.push('<p>Циклов с <code>metrics.json</code> нет: собирать нечего.</p>');
   } else {
     body.push(
-      '<table>',
-      '<caption>Суммы по всем циклам отчёта</caption>',
-      '<thead>',
-      '<tr><th scope="col">Гейт</th><th scope="col">pass</th><th scope="col">fail</th>' +
-        '<th scope="col">skipped</th><th scope="col">not_run</th></tr>',
-      '</thead>',
-      '<tbody>',
+      `<p class="lead">Циклов: ${cost.total}, с расходом: ${cost.measured}.` +
+        ` Расход: ${rub(cost.sum)} ₽, медиана: ${rub(cost.median)} ₽.</p>`,
+      `<p>Находок только у оценщика: ${findings.evaluator_only} из ${findings.total}` +
+        ` (${percentText(findings.percent)}).</p>`,
     );
-    for (const gate of gates) {
+
+    const measured = cycles.filter((cycle) => cycle.cost_rub !== null);
+    if (measured.length > 0) {
+      const max = Math.max(...measured.map((cycle) => cycle.cost_rub ?? 0));
+      body.push('<h2>Расход по циклам</h2>', '<div class="bars">');
+      for (const cycle of measured) {
+        const value = cycle.cost_rub ?? 0;
+        body.push(
+          `<div class="label">${escapeHtml(cycle.name)}</div>`,
+          `<div class="track"><div class="fill" style="width: ${barPercent(value, max)}%"></div></div>`,
+          `<div class="value">${rub(value)} ₽</div>`,
+        );
+      }
+      body.push('</div>');
+    }
+
+    body.push(
+      '<h2>Циклы</h2>',
+      '<table>',
+      '<caption>Факты по завершённым циклам</caption>',
+      '<thead>',
+      '<tr>',
+    );
+    for (const title of [
+      'Цикл',
+      'Стадия',
+      'Итераций',
+      'Время, с',
+      'Расход, ₽',
+      'Только оценщик',
+      'Только ревью',
+      'Оба',
+      'Дефекты оценщика B/M/m',
+      'Неразрешённые ссылки',
+      'Незакрытые этапы',
+    ]) {
+      body.push(`<th scope="col">${escapeHtml(title)}</th>`);
+    }
+    body.push('</tr>', '</thead>', '<tbody>');
+    for (const cycle of cycles) {
+      const defects = cycle.evaluator_defects;
       body.push(
-        `<tr><td>${escapeHtml(gate.id)}</td><td>${gate.pass}</td><td>${gate.fail}</td>` +
-          `<td>${gate.skipped}</td><td>${gate.not_run}</td></tr>`,
+        '<tr>' +
+          [
+            escapeHtml(cycle.name),
+            escapeHtml(cycle.final_stage),
+            `${cycle.iterations}/${cycle.max_iterations}`,
+            `${Math.round(cycle.duration_s)}`,
+            rub(cycle.cost_rub),
+            `${cycle.findings.only_evaluator}`,
+            `${cycle.findings.only_review}`,
+            `${cycle.findings.both}`,
+            `${defects.BLOCKER}/${defects.MAJOR}/${defects.MINOR}`,
+            `${cycle.unresolved_refs}`,
+            `${cycle.unclosed_stages}`,
+          ]
+            .map((cell) => `<td>${cell}</td>`)
+            .join('') +
+          '</tr>',
       );
     }
     body.push('</tbody>', '</table>');
+
+    body.push('<h2>Исходы гейтов</h2>');
+    if (gates.length === 0) {
+      body.push('<p>Гейты в метриках не зафиксированы.</p>');
+    } else {
+      body.push(
+        '<table>',
+        '<caption>Суммы по всем циклам отчёта</caption>',
+        '<thead>',
+        '<tr><th scope="col">Гейт</th><th scope="col">pass</th><th scope="col">fail</th>' +
+          '<th scope="col">skipped</th><th scope="col">not_run</th></tr>',
+        '</thead>',
+        '<tbody>',
+      );
+      for (const gate of gates) {
+        body.push(
+          `<tr><td>${escapeHtml(gate.id)}</td><td>${gate.pass}</td><td>${gate.fail}</td>` +
+            `<td>${gate.skipped}</td><td>${gate.not_run}</td></tr>`,
+        );
+      }
+      body.push('</tbody>', '</table>');
+    }
   }
+
+  body.push(...pendingHtml(pending), ...stopsHtml(stops));
 
   return htmlPage('Отчёт по циклам', body);
 }
@@ -596,15 +1036,59 @@ function main() {
     const config = loadConfig(root, { file: cli.file });
     const dir = args.dir === null ? artifactsDir(root, config) : resolve(args.dir);
 
-    const names = listCycleDirs(dir);
-    const cycles = names.map((name) => summarizeCycle(name, readMetrics(dir, name)));
-    const skipped = readdirSync(dir).filter((name) => {
-      const path = join(dir, name);
-      return statSync(path).isDirectory() && !existsSync(join(path, FIXED_NAMES.metrics));
-    }).length;
+    const names = listArtifactDirs(dir);
+    /** @type {CycleSummary[]} */
+    const cycles = [];
+    /** @type {PendingCycle[]} */
+    const pending = [];
+    /** Состояния циклов: нужны как запасной источник причины эскалации. */
+    /** @type {Map<string, Record<string, any>>} */
+    const states = new Map();
+    /** @type {string[]} */
+    const stopNames = [];
+    let skipped = 0;
+
+    for (const name of names) {
+      const cycleDir = join(dir, name);
+      const statePath = join(cycleDir, FIXED_NAMES.state);
+
+      if (existsSync(join(cycleDir, FIXED_NAMES.metrics))) {
+        cycles.push(
+          summarizeCycle(name, readArtifact(cycleDir, name, FIXED_NAMES.metrics, validateMetrics)),
+        );
+        if (existsSync(statePath)) {
+          states.set(name, readArtifact(cycleDir, name, FIXED_NAMES.state, validateState));
+        }
+        stopNames.push(name);
+        continue;
+      }
+
+      if (existsSync(statePath)) {
+        const state = readArtifact(cycleDir, name, FIXED_NAMES.state, validateState);
+        states.set(name, state);
+        pending.push(summarizePending(name, state));
+        // Эскалированный цикл без метрик тоже объясняет остановку: иначе причина живёт
+        // только в `escalation.json`.
+        if (state.stage === 'ESCALATED') stopNames.push(name);
+        continue;
+      }
+
+      skipped += 1;
+    }
+
+    const stops = stopNames
+      .sort()
+      .map((name) =>
+        summarizeStop(
+          name,
+          collectStopArtifacts(join(dir, name), name, { state: states.get(name) ?? null }),
+        ),
+      );
 
     const report = buildReport(cycles, {
       skipped,
+      pending,
+      stops,
       gateIds: config.gates.map((gate) => gate.id),
     });
     const output = args.html

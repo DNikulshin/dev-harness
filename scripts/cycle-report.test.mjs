@@ -10,7 +10,10 @@ import {
   aggregateGates,
   barPercent,
   buildReport,
+  collectStopArtifacts,
   escapeHtml,
+  lastIterationFile,
+  listArtifactDirs,
   listCycleDirs,
   median,
   parseArgs,
@@ -18,6 +21,8 @@ import {
   renderHtml,
   renderMarkdown,
   summarizeCycle,
+  summarizePending,
+  summarizeStop,
 } from './cycle-report.mjs';
 
 /** Путь к CLI: сквозные тесты запускают его отдельным процессом. */
@@ -25,6 +30,18 @@ const SCRIPT = fileURLToPath(new URL('./cycle-report.mjs', import.meta.url));
 
 /** Корень фикстур метрик: `scripts/fixtures/cycle/metrics/`. */
 const METRICS_FIXTURES = fileURLToPath(new URL('./fixtures/cycle/metrics/', import.meta.url));
+
+/** Корень фикстур артефактов цикла: `scripts/fixtures/cycle/`. */
+const CYCLE_FIXTURES = fileURLToPath(new URL('./fixtures/cycle/', import.meta.url));
+
+/**
+ * Фикстура артефакта цикла по имени файла (`decision.valid.json`, `state.valid.json`, …).
+ * @param {string} name
+ * @returns {Record<string, any>}
+ */
+function fixture(name) {
+  return JSON.parse(readFileSync(join(CYCLE_FIXTURES, name), 'utf8'));
+}
 
 /** Валидный `metrics.json` фикстуры: база для вариантов в тестах. */
 function metricsDoc(overrides = {}) {
@@ -182,7 +199,7 @@ describe('cycle-report: markdown', () => {
     const text = renderMarkdown(buildReport([], { skipped: 7 }));
 
     assert.ok(text.includes('Циклов с `metrics.json` нет'));
-    assert.ok(text.includes('Пропущено каталогов без `metrics.json`: 7.'));
+    assert.ok(text.includes('Пропущено каталогов без `state.json` и `metrics.json`: 7.'));
     assert.ok(!text.includes('| Цикл |'));
   });
 });
@@ -234,7 +251,11 @@ describe('cycle-report: html', () => {
     const html = renderHtml(buildReport([], { skipped: 7 }));
 
     assert.ok(html.includes('Циклов с <code>metrics.json</code> нет'));
-    assert.ok(html.includes('Пропущено каталогов без <code>metrics.json</code>: 7.'));
+    assert.ok(
+      html.includes(
+        'Пропущено каталогов без <code>state.json</code> и <code>metrics.json</code>: 7.',
+      ),
+    );
     assert.ok(!html.includes('<table>'), 'пустых таблиц нет');
   });
 
@@ -251,6 +272,235 @@ describe('cycle-report: html', () => {
     assert.equal(barPercent(1, 3), 33.3);
     assert.equal(barPercent(1, 0), 0);
     assert.equal(html, renderHtml(report), 'два вызова дают побайтно равную страницу');
+  });
+});
+
+describe('cycle-report: незавершённые циклы и причины остановки', () => {
+  /** Незавершённый цикл из фикстуры состояния. */
+  function pendingCycle(overrides = {}) {
+    return summarizePending('2026-11-17-108-confirmation-url', {
+      ...fixture('state.valid.json'),
+      stage: 'CODING_WAIT',
+      stage_status: 'running',
+      retries: { REVIEW: 1, EVALUATE: 2, evidence: 0 },
+      updated_at: '2026-11-20T21:00:00Z',
+      ...overrides,
+    });
+  }
+
+  /** Причина остановки из фикстур решения, оценки, эскалации и гейтов. */
+  function stoppedCycle(overrides = {}) {
+    return summarizeStop('2026-11-16-188-health-db', {
+      decision: fixture('decision.valid.json'),
+      evaluation: fixture('evaluation.valid.json'),
+      escalation: fixture('escalation.valid.json'),
+      gates: fixture('gates.valid.json'),
+      ...overrides,
+    });
+  }
+
+  /** Гейты последней итерации, где `contracts_build` упал: нужен для разделения fail и not_run. */
+  function gatesWithFail() {
+    const raw = fixture('gates.valid.json');
+    /** @type {{ id: string }[]} */
+    const rows = raw.gates;
+    return {
+      ...raw,
+      gates: rows.map((gate) =>
+        gate.id === 'contracts_build' ? { ...gate, status: 'fail', exit: 1 } : gate,
+      ),
+    };
+  }
+
+  test('summarizePending берёт стадию, статус, итерацию, время и повторы', () => {
+    assert.deepEqual(pendingCycle(), {
+      name: '2026-11-17-108-confirmation-url',
+      stage: 'CODING_WAIT',
+      stage_status: 'running',
+      iteration: 1,
+      max_iterations: 2,
+      updated_at: '2026-11-20T21:00:00Z',
+      retries: { REVIEW: 1, EVALUATE: 2, evidence: 0 },
+    });
+
+    const bare = summarizePending('x', {
+      stage: 'PLAN',
+      stage_status: 'error',
+      iteration: 1,
+      max_iterations: 2,
+      updated_at: 'T',
+    });
+    assert.deepEqual(bare.retries, { REVIEW: 0, EVALUATE: 0, evidence: 0 }, 'нет счётчиков — нули');
+  });
+
+  test('summarizeStop: вердикт, причины, эскалация, критерии не met и гейты', () => {
+    const stop = stoppedCycle();
+
+    assert.equal(stop.action, 'REWORK');
+    assert.deepEqual(stop.reasons, [
+      'gate:typecheck: fail',
+      'review:BLOCKER R1',
+      'review:MAJOR R2',
+    ]);
+    assert.deepEqual(stop.unverified, ['test_int not_run (no_database)']);
+    assert.deepEqual(stop.escalation, {
+      reason: 'iteration_limit',
+      detail: 'Две итерации исчерпаны, остаётся BLOCKER R1',
+    });
+    assert.deepEqual(stop.criteria, [
+      { id: 'C2', status: 'partial' },
+      { id: 'C3', status: 'unverified' },
+    ]);
+    assert.deepEqual(stop.gates, [
+      { id: 'typecheck', status: 'not_run', reason: 'blocked_by:contracts_build' },
+      { id: 'test_int', status: 'not_run', reason: 'no_database' },
+    ]);
+    assert.deepEqual(stop.missing, []);
+    assert.equal(stop.insufficient, false);
+  });
+
+  test('summarizeStop: ни решения, ни эскалации — insufficient_data, а не догадка', () => {
+    const stop = summarizeStop('z', {
+      decision: null,
+      evaluation: null,
+      escalation: null,
+      gates: null,
+    });
+
+    assert.equal(stop.insufficient, true);
+    assert.equal(stop.action, null);
+    assert.deepEqual(stop.missing, ['decision', 'escalation', 'gates']);
+    assert.deepEqual(stop.gates, []);
+  });
+
+  test('summarizeStop: эскалация без решения объясняет остановку', () => {
+    const stop = stoppedCycle({ decision: null, evaluation: null, gates: null });
+
+    assert.equal(stop.insufficient, false);
+    assert.deepEqual(stop.missing, ['decision', 'gates']);
+    assert.equal(stop.escalation?.reason, 'iteration_limit');
+    assert.deepEqual(stop.criteria, [], 'без решения чужие критерии не подставляются');
+  });
+
+  test('markdown: незавершённые циклы таблицей, а не счётчиком', () => {
+    const text = renderMarkdown(buildReport([], { skipped: 2, pending: [pendingCycle()] }));
+
+    assert.match(text, /## Незавершённые циклы/u);
+    assert.ok(
+      text.includes(
+        '| 2026-11-17-108-confirmation-url | CODING_WAIT | running | 1/2' +
+          ' | 2026-11-20T21:00:00Z | 1/2/0 |',
+      ),
+    );
+    assert.ok(text.includes('Циклов с `metrics.json` нет'), 'блок есть и без циклов с метриками');
+  });
+
+  test('markdown: fail, not_run с причиной и insufficient_data — разные строки', () => {
+    const text = renderMarkdown(
+      buildReport([], { stops: [stoppedCycle({ gates: gatesWithFail() })] }),
+    );
+
+    assert.ok(text.includes('- Гейты fail: contracts_build'), 'fail отдельной строкой');
+    assert.ok(
+      text.includes(
+        '- Гейты not_run: typecheck (blocked_by:contracts_build), test_int (no_database)',
+      ),
+      'у not_run видна причина',
+    );
+    assert.ok(
+      text.includes('- Критерии не met: C2 partial; C3 unverified'),
+      'id критериев на месте',
+    );
+    assert.ok(
+      !text.includes('insufficient_data'),
+      'объяснённый цикл не помечается недостатком данных',
+    );
+
+    const silent = renderMarkdown(
+      buildReport([], {
+        stops: [
+          summarizeStop('z', {
+            decision: null,
+            evaluation: null,
+            escalation: null,
+            gates: null,
+          }),
+        ],
+      }),
+    );
+    assert.ok(
+      silent.includes(
+        '- insufficient_data: нет decision.<n>.json, escalation.json, gates.<n>.json',
+      ),
+      'нет данных — отдельная строка, а не молчание',
+    );
+  });
+
+  test('html: блоки незавершённых и причин остановки, без JS и внешних ресурсов', () => {
+    const report = buildReport([], {
+      pending: [pendingCycle()],
+      stops: [
+        stoppedCycle({ gates: gatesWithFail() }),
+        summarizeStop('silent', {
+          decision: null,
+          evaluation: null,
+          escalation: null,
+          gates: null,
+        }),
+      ],
+    });
+    const html = renderHtml(report);
+
+    assert.ok(html.includes('<h2>Незавершённые циклы</h2>'));
+    assert.ok(html.includes('2026-11-17-108-confirmation-url'));
+    assert.ok(html.includes('<h2>Почему остановились</h2>'));
+    assert.ok(html.includes('<li class="fail">'), 'fail');
+    assert.ok(html.includes('<li class="not-run">'), 'not_run с причиной');
+    assert.ok(html.includes('<li class="insufficient">'), 'insufficient_data');
+    assert.ok(html.includes('test_int (no_database)'));
+    assert.ok(!html.includes('<script'), 'без JS');
+    assert.ok(!html.includes('http://') && !html.includes('https://'), 'ни одного внешнего URL');
+    assert.ok(!html.includes('<link'), 'без внешних стилей и шрифтов');
+    assert.equal(html, renderHtml(report), 'два вызова дают побайтно равную страницу');
+  });
+
+  test('html: имена циклов в новых блоках экранируются', () => {
+    const html = renderHtml(
+      buildReport([], {
+        pending: [summarizePending('<img src=x>', fixture('state.valid.json'))],
+        stops: [
+          summarizeStop('<script>alert(1)</script>', {
+            decision: null,
+            evaluation: null,
+            escalation: null,
+            gates: null,
+          }),
+        ],
+      }),
+    );
+
+    assert.ok(html.includes('&lt;img src=x&gt;'));
+    assert.ok(html.includes('&lt;script&gt;alert(1)&lt;/script&gt;'));
+    assert.ok(!html.includes('<img') && !html.includes('<script'), 'сырой разметки нет');
+  });
+
+  test('lastIterationFile берёт максимальный номер и не путается в мусоре', (t) => {
+    const dir = makeDir(t);
+    mkdirSync(join(dir, 'cycle'), { recursive: true });
+    for (const name of [
+      'decision.1.json',
+      'decision.2.json',
+      'decision.10.json',
+      'decision.json',
+    ]) {
+      writeFileSync(join(dir, 'cycle', name), '{}\n');
+    }
+
+    assert.deepEqual(lastIterationFile(join(dir, 'cycle'), 'decision'), {
+      iteration: 10,
+      fileName: 'decision.10.json',
+    });
+    assert.equal(lastIterationFile(join(dir, 'cycle'), 'gates'), null);
   });
 });
 
@@ -272,7 +522,7 @@ describe('cycle-report: CLI', () => {
     assert.equal(first.status, 0, first.stderr);
     assert.equal(first.stdout, second.stdout, 'два прогона дают побайтно равный отчёт');
     assert.ok(first.stdout.includes('Циклов: 2, с расходом: 1.'));
-    assert.ok(first.stdout.includes('Пропущено каталогов без `metrics.json`: 2.'));
+    assert.ok(first.stdout.includes('Пропущено каталогов без `state.json` и `metrics.json`: 2.'));
     assert.ok(
       first.stdout.indexOf('2026-11-16-188-health-db') <
         first.stdout.indexOf('2026-11-17-108-confirmation-url'),
@@ -372,5 +622,131 @@ describe('cycle-report: CLI', () => {
     writeFileSync(join(dir, 'metrics.json'), '{}\n');
 
     assert.deepEqual(listCycleDirs(dir), ['a', 'b']);
+    assert.deepEqual(listArtifactDirs(dir), ['a', 'b', 'c'], 'все подкаталоги, по имени');
+  });
+
+  test('застрявший цикл: отчёт отвечает «где и почему встал» без заглядывания в JSON', (t) => {
+    const dir = makeDir(t);
+    const done = writeCycle(dir, '2026-11-16-188-health-db', metricsDoc({ cost_rub: 4.72 }));
+    /** @type {[string, Record<string, any>][]} */
+    const artifacts = [
+      ['decision.1.json', fixture('decision.valid.json')],
+      ['evaluation.1.json', fixture('evaluation.valid.json')],
+      ['gates.1.json', fixture('gates.valid.json')],
+      ['escalation.json', fixture('escalation.valid.json')],
+    ];
+    for (const [name, doc] of artifacts) {
+      writeFileSync(join(done, name), `${JSON.stringify(doc, null, 2)}\n`);
+    }
+
+    const stuck = join(dir, '2026-11-17-108-confirmation-url');
+    mkdirSync(stuck, { recursive: true });
+    writeFileSync(
+      join(stuck, 'state.json'),
+      `${JSON.stringify(
+        {
+          ...fixture('state.valid.json'),
+          stage: 'ESCALATED',
+          stage_status: 'done',
+          retries: { REVIEW: 1, EVALUATE: 2, evidence: 0 },
+          escalation: {
+            reason: 'iteration_limit',
+            detail: 'Две итерации исчерпаны',
+            draft_pr_allowed: false,
+          },
+          updated_at: '2026-11-20T21:00:00Z',
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    mkdirSync(join(dir, 'evals'), { recursive: true });
+
+    const first = runCli(['--dir', dir]);
+    const second = runCli(['--dir', dir]);
+
+    assert.equal(first.status, 0, first.stderr);
+    assert.equal(first.stdout, second.stdout, 'два прогона дают побайтно равный отчёт');
+    assert.ok(first.stdout.includes('Пропущено каталогов без `state.json` и `metrics.json`: 1.'));
+    assert.match(first.stdout, /## Незавершённые циклы/u);
+    assert.ok(
+      first.stdout.includes(
+        '| 2026-11-17-108-confirmation-url | ESCALATED | done | 1/2' +
+          ' | 2026-11-20T21:00:00Z | 1/2/0 |',
+      ),
+      'стадия, статус, итерация, время и повторы видны в таблице',
+    );
+    assert.match(first.stdout, /### 2026-11-16-188-health-db/u);
+    assert.ok(first.stdout.includes('- Вердикт: REWORK'));
+    assert.ok(
+      first.stdout.includes('- Причины: gate:typecheck: fail; review:BLOCKER R1; review:MAJOR R2'),
+    );
+    assert.ok(first.stdout.includes('- Гейты not_run: typecheck (blocked_by:contracts_build)'));
+    assert.ok(first.stdout.includes('- Критерии не met: C2 partial; C3 unverified'));
+    assert.ok(
+      first.stdout.includes('- Эскалация: iteration_limit — Две итерации исчерпаны'),
+      'причина из state.escalation, когда escalation.json нет',
+    );
+    assert.ok(
+      first.stdout.indexOf('### 2026-11-16-188-health-db') <
+        first.stdout.indexOf('### 2026-11-17-108-confirmation-url'),
+      'причины идут по имени каталога',
+    );
+  });
+
+  test('--html на дереве с застрявшим циклом: те же факты без JS и сети', (t) => {
+    const dir = makeDir(t);
+    const stuck = join(dir, 'a-stuck');
+    mkdirSync(stuck, { recursive: true });
+    writeFileSync(join(stuck, 'state.json'), `${JSON.stringify(fixture('state.valid.json'))}\n`);
+
+    const first = runCli(['--dir', dir, '--html']);
+    const second = runCli(['--dir', dir, '--html']);
+
+    assert.equal(first.status, 0, first.stderr);
+    assert.equal(first.stdout, second.stdout, 'два прогона дают побайтно равную страницу');
+    assert.ok(first.stdout.includes('<h2>Незавершённые циклы</h2>'));
+    assert.ok(first.stdout.includes('a-stuck'));
+    assert.ok(!first.stdout.includes('<script'), 'без JS');
+    assert.ok(!/\s(?:src|href)="/u.test(first.stdout), 'ни одного внешнего src/href');
+    assert.ok(!first.stdout.includes('http://') && !first.stdout.includes('https://'));
+  });
+
+  test('битый state.json и битый decision — код 2 с именем каталога', (t) => {
+    const dir = makeDir(t);
+    const broken = join(dir, 'broken');
+    mkdirSync(broken, { recursive: true });
+    writeFileSync(join(broken, 'state.json'), '{ "stage": }\n');
+
+    const state = runCli(['--dir', dir]);
+    assert.equal(state.status, 2);
+    assert.match(state.stderr, /^cycle-report: broken\/state\.json: не читается/u);
+
+    writeFileSync(join(broken, 'state.json'), `${JSON.stringify(fixture('state.valid.json'))}\n`);
+    writeFileSync(join(broken, 'decision.1.json'), '{ "action": }\n');
+    writeFileSync(join(broken, 'metrics.json'), `${JSON.stringify(metricsDoc())}\n`);
+
+    const decision = runCli(['--dir', dir]);
+    assert.equal(decision.status, 2);
+    assert.match(decision.stderr, /^cycle-report: broken\/decision\.1\.json: не читается/u);
+    assert.equal(decision.stdout, '');
+  });
+
+  test('collectStopArtifacts: критерии берутся из оценки той же итерации', (t) => {
+    const dir = makeDir(t);
+    writeFileSync(
+      join(dir, 'decision.2.json'),
+      `${JSON.stringify({ ...fixture('decision.valid.json'), iteration: 2 })}\n`,
+    );
+    writeFileSync(
+      join(dir, 'evaluation.1.json'),
+      `${JSON.stringify(fixture('evaluation.valid.json'))}\n`,
+    );
+
+    const artifacts = collectStopArtifacts(dir, 'c');
+
+    assert.equal(artifacts.decision?.iteration, 2);
+    assert.equal(artifacts.evaluation, null, 'чужая итерация не выдаётся за свидетельство');
+    assert.deepEqual(summarizeStop('c', artifacts).criteria, []);
   });
 });
