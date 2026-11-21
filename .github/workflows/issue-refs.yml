@@ -1,0 +1,56 @@
+name: Issue refs
+
+# Проверка «номера issue в репозитории существуют» по сети (issue #147).
+#
+# Зачем отдельный job, а не unit-тест: «номер существует» требует `gh`, а тест обязан работать
+# офлайн — `permissions: contents: read` в ci.yml и есть это ограничение. Снимок в
+# `scripts/dead-issue-refs.test.mjs` держит известные мёртвые номера, но новых не замечает:
+# опечатка в номере проходит `pnpm check` зелёной. Здесь номера из `scripts/` и `docs/`
+# резолвятся в трекере: 404 — красный, недоступность `gh`/сети — тоже не зелёный (код 3, а не 0).
+#
+# Правила сбора ссылок и исключения — те же, что у теста (`scripts/lib/issue-refs.mjs`): hex-цвета,
+# `owner/repo#N`, `docs/research/` и `docs/local/` не проверяются.
+#
+# Кэш резолва между прогонами: суточный прогон и серия PR не должны упираться в rate limit.
+# Срок жизни записи — сутки (в скрипте), поэтому ключ кэша включает run_id, а восстановление идёт
+# по префиксу: всегда берётся последний прогон, и протухшее не считается свежим.
+on:
+  schedule:
+    - cron: '41 4 * * *'
+  workflow_dispatch:
+  pull_request:
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+
+jobs:
+  issue-refs:
+    runs-on: ubuntu-latest
+    # На PR проверка информационная: сеть, rate limit или отсутствие прав не должны красить
+    # нормальный PR. По расписанию и вручную — блокирующая: непроверенный номер, выданный за
+    # проверенный, хуже красного job.
+    continue-on-error: ${{ github.event_name == 'pull_request' }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+
+      - name: Кэш резолва номеров
+        uses: actions/cache@v4
+        with:
+          path: .cache
+          key: issue-refs-${{ github.run_id }}
+          restore-keys: issue-refs-
+
+      # Логика — tooling/check-issue-refs.mjs (чистые функции покрыты node --test, есть тест
+      # снимка): здесь только запуск. Коды: 0 — все номера существуют, 2 — мёртвые номера
+      # (список с адресами `файл:строка`), 3 — проверить не удалось.
+      - name: Ссылки на issues существуют
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: node tooling/check-issue-refs.mjs

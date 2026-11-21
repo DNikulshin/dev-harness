@@ -149,7 +149,9 @@
     "board:sync:dry": "DRY_RUN=1 node tooling/board-sync.mjs",
     "prepare": "git rev-parse --git-dir >/dev/null 2>&1 && git config core.hooksPath .githooks || true",
     "precommit": "node tooling/precommit.mjs",
-    "git:hygiene": "node tooling/git-hygiene.mjs"
+    "git:hygiene": "node tooling/git-hygiene.mjs",
+    "issue-refs": "node tooling/check-issue-refs.mjs",
+    "issue-refs:snapshot": "node tooling/check-issue-refs.mjs --write-snapshot"
   },
   "devDependencies": {
     "@types/node": "^26.6.6",

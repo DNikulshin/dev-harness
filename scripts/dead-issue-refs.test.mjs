@@ -6,20 +6,30 @@
  * Поэтому такие номера сняты, а обоснование осталось формулировкой правила рядом.
  *
  * Проверка без сети — единственный честный вариант: «номер должен существовать» требует `gh`
- * и в тестах не годится. Здесь снимок мёртвых номеров на дату `SNAPSHOT_DATE` (максимальный
- * номер issue/PR в трекере на тот момент — `MAX_REF_AT_SNAPSHOT`). Снимок пополняется вручную,
- * когда мёртвый номер находится; рост нумерации его не старит, потому что новых живых номеров
- * в снимке нет.
+ * и в тестах не годится. Здесь снимок мёртвых номеров на дату `SNAPSHOT_DATE` и максимальный
+ * существующий номер из ссылок репозитория на тот момент — `MAX_REF_AT_SNAPSHOT`.
  *
- * Hex-safe: `#6b7280` и подобные не считаются ссылкой — паттерн требует границу слова после
- * цифр, а буква в hex-литерале её не даёт. Cross-repo ссылки `owner/repo#N` относятся к чужому
- * трекеру и не проверяются: они валидны и по смыслу, и грамматически.
+ * Снимок **генерируется**, а не правится руками: `node tooling/check-issue-refs.mjs
+ * --write-snapshot` (issue #147) обходит те же области, резолвит номера через `gh` и переписывает
+ * `DEAD_REFS`, `SNAPSHOT_DATE` и `MAX_REF_AT_SNAPSHOT` в этом файле. Связка полная: сеть
+ * **находит**, этот файл **фиксирует**, unit-тест **держит** локально и в офлайне. Ручная правка
+ * списка — только осознанное исключение (сеть недоступна), и тогда дата снимка сдвигается вместе
+ * с ним.
+ *
+ * Почему номеров больше `MAX_REF_AT_SNAPSHOT` быть не может: нумерация в трекере общая для issues
+ * и PR и растёт последовательно, поэтому номер выше максимального существующего — опечатка, а не
+ * ссылка на удалённую задачу. Номер не выше максимума, но не существующий, — повод для ручной
+ * проверки: генератор такой снимок не пишет.
+ *
+ * Области и исключения (hex-цвета, `owner/repo#N`, `docs/research/`, `docs/local/`) — в
+ * `scripts/lib/issue-refs.mjs`: те же правила применяет сетевая проверка, иначе два списка
+ * разошлись бы на первой правке.
  */
 import assert from 'node:assert/strict';
-import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { join, relative } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { describe, test } from 'node:test';
+import { fileURLToPath } from 'node:url';
+
+import { collectRefs, deadOccurrences, formatOccurrence } from './lib/issue-refs.mjs';
 
 /** Корень репозитория: родитель каталога `scripts/`. */
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
@@ -28,72 +38,20 @@ const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const SNAPSHOT_DATE = '2026-11-21';
 
 /**
- * Максимальный номер issue/PR в трекере на дату снимка. Номера больше него на момент снимка
- * не существуют; снимок ниже перечисляет те из них, что встречались в репозитории.
+ * Максимальный существующий номер из ссылок репозитория на дату снимка. Номера больше него на
+ * момент снимка не существуют; снимок ниже перечисляет те из них, что встречались в репозитории.
  */
-const MAX_REF_AT_SNAPSHOT = 142;
+const MAX_REF_AT_SNAPSHOT = 147;
 
 /**
- * Номера, которых нет в трекере ни как issue, ни как PR. Записи появляются только ручной
- * проверкой `gh` и только на дату снимка — автоматически список не пополняется.
+ * Номера, которых нет в трекере ни как issue, ни как PR. Записи появляются только прогоном
+ * `node tooling/check-issue-refs.mjs --write-snapshot` и только на дату снимка.
  * @type {readonly number[]}
  */
 const DEAD_REFS = Object.freeze([
   153, 154, 155, 156, 157, 158, 160, 167, 178, 196, 200, 202, 203, 204, 205, 207, 208, 216, 219,
   224, 233, 235, 247, 274,
 ]);
-
-/**
- * Голый номер issue: решётка и цифры (пример — `#N`), но не `owner/repo#N` и не часть
- * hex-литерала.
- * @type {RegExp}
- */
-const BARE_REF = /(?<![\w/])#(\d+)\b/g;
-
-/** Каталоги, в которых ссылки проверяются: код ядра и норматив. */
-const SCOPES = Object.freeze([
-  { dir: 'scripts', ext: '.mjs' },
-  { dir: 'docs', ext: '.md' },
-]);
-
-/**
- * Файлы заданного расширения под каталогом, рекурсивно.
- * @param {string} dir абсолютный путь
- * @param {string} ext
- * @param {string[]} [acc] абсолютные пути
- * @returns {string[]}
- */
-function files(dir, ext, acc = []) {
-  for (const entry of readdirSync(dir)) {
-    const path = join(dir, entry);
-    if (statSync(path).isDirectory()) {
-      files(path, ext, acc);
-      continue;
-    }
-    if (entry.endsWith(ext)) acc.push(path);
-  }
-  return acc;
-}
-
-/**
- * Мёртвые номера в одном файле, с номерами строк.
- * @param {string} file абсолютный путь
- * @returns {string[]} строки вида `путь:строка: #номер`
- */
-function deadRefs(file) {
-  const dead = new Set(DEAD_REFS);
-  /** @type {string[]} */
-  const found = [];
-  const lines = readFileSync(file, 'utf8').split('\n');
-  for (const [index, line] of lines.entries()) {
-    for (const match of line.matchAll(BARE_REF)) {
-      const ref = Number(match[1]);
-      if (!dead.has(ref)) continue;
-      found.push(`${relative(ROOT, file)}:${index + 1}: #${ref}`);
-    }
-  }
-  return found;
-}
 
 describe('ссылки на issues: мёртвые номера', () => {
   test('снимок датирован и не выходит за максимальный номер трекера', () => {
@@ -109,11 +67,7 @@ describe('ссылки на issues: мёртвые номера', () => {
   });
 
   test('в scripts/ и docs/ нет ссылок на мёртвые номера', () => {
-    /** @type {string[]} */
-    const violations = [];
-    for (const { dir, ext } of SCOPES) {
-      for (const file of files(join(ROOT, dir), ext)) violations.push(...deadRefs(file));
-    }
+    const violations = deadOccurrences(collectRefs(ROOT), new Set(DEAD_REFS)).map(formatOccurrence);
     assert.deepEqual(
       violations,
       [],

@@ -25,19 +25,21 @@ evals-слой. Проекты подключают репозиторий ка�
 
 ## Команды
 
-| Команда                | Что делает                                            |
-| ---------------------- | ----------------------------------------------------- |
-| `node --test`          | все тесты репозитория                                 |
-| `pnpm typecheck`       | `tsc --noEmit`: строгая проверка типов (JS + JSDoc)   |
-| `pnpm typecheck:types` | пересобрать `types/` — `.d.ts` для потребителя пакета |
-| `pnpm rag:sync`        | синхронизировать индекс `local-rag` по `docs/`        |
-| `pnpm board:sync`      | сверить доску Projects с issues (`docs/board.md`)     |
-| `pnpm board:sync:dry`  | показать план сверки, ничего не записывая             |
-| `pnpm git:hygiene`     | ветки со смерженными PR, статус текущей ветки         |
-| `pnpm precommit`       | хук вручную: ветка, prettier, check-harness           |
-| `pnpm format:check`    | проверка форматирования (prettier)                    |
-| `pnpm format`          | форматирование                                        |
-| `pnpm check`           | `node --test && tsc --noEmit && prettier --check .`   |
+| Команда                    | Что делает                                            |
+| -------------------------- | ----------------------------------------------------- |
+| `node --test`              | все тесты репозитория                                 |
+| `pnpm typecheck`           | `tsc --noEmit`: строгая проверка типов (JS + JSDoc)   |
+| `pnpm typecheck:types`     | пересобрать `types/` — `.d.ts` для потребителя пакета |
+| `pnpm rag:sync`            | синхронизировать индекс `local-rag` по `docs/`        |
+| `pnpm board:sync`          | сверить доску Projects с issues (`docs/board.md`)     |
+| `pnpm board:sync:dry`      | показать план сверки, ничего не записывая             |
+| `pnpm issue-refs`          | проверить ссылки на issues по сети (`gh`)             |
+| `pnpm issue-refs:snapshot` | переписать снимок мёртвых номеров в тесте             |
+| `pnpm git:hygiene`         | ветки со смерженными PR, статус текущей ветки         |
+| `pnpm precommit`           | хук вручную: ветка, prettier, check-harness           |
+| `pnpm format:check`        | проверка форматирования (prettier)                    |
+| `pnpm format`              | форматирование                                        |
+| `pnpm check`               | `node --test && tsc --noEmit && prettier --check .`   |
 
 Проверки проекта-потребителя задаются в его `.pi/harness.config.json` (секция `gates`) и описываются
 в его `AGENTS.md`; ядро эти команды не знает.
