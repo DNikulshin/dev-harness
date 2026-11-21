@@ -195,4 +195,18 @@ describe('release.yml', () => {
     assert.match(COMMANDS, /--provenance/u);
     assert.match(COMMANDS, /--access public/u);
   });
+
+  test('пустой NPM_TOKEN ловится до работы, а не на публикации', () => {
+    const guardIndex = COMMANDS.indexOf('NODE_AUTH_TOKEN');
+    const checkIndex = COMMANDS.indexOf('pnpm check');
+    const publishIndex = COMMANDS.indexOf('npm publish');
+
+    assert.ok(guardIndex > 0, 'в workflow нет шага проверки NPM_TOKEN (issue #161)');
+    assert.match(COMMANDS, /secrets\.NPM_TOKEN/u, 'проверка читает секрет из secrets.NPM_TOKEN');
+    assert.match(COMMANDS, /Секрет NPM_TOKEN не задан/u, 'отказ называет причину словами');
+    assert.ok(
+      guardIndex < checkIndex && guardIndex < publishIndex,
+      'проверка токена должна стоять до тестов и до публикации',
+    );
+  });
 });

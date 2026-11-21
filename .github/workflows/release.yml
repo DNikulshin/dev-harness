@@ -43,6 +43,19 @@ jobs:
       - name: Установка зависимостей
         run: pnpm install --frozen-lockfile
 
+      # Пустой секрет неотличим от отсутствующего: GitHub подставляет пустую строку, а `secrets`
+      # в `if` не читается. Без этой проверки прогон проходит тесты, сборку и проверку состава, а
+      # падает на публикации с `ENEEDAUTH` — по тексту не видно ни чего не хватает, ни что делать
+      # (релиз 0.2.0, issue #161). Требования к токену — docs/release.md, «Процесс выпуска».
+      - name: Проверить, что NPM_TOKEN задан
+        run: |
+          if [ -z "${NODE_AUTH_TOKEN}" ]; then
+            echo "::error::Секрет NPM_TOKEN не задан. gh secret set NPM_TOKEN — granular-токен, scope @dnikulshin, Read and write (publish and stage), Bypass 2FA (docs/release.md)"
+            exit 1
+          fi
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
       # `ci.yml` прогоняется на том же теге, но два workflow независимы: публикация не должна
       # ждать порядка запуска. Поэтому гейт повторяется здесь — 45 секунд против пакета с
       # красными тестами в реестре.
