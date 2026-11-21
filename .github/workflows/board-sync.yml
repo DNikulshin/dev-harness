@@ -27,18 +27,19 @@ concurrency:
 
 jobs:
   sync:
-    # Полная сверка нужна не на каждую метку: `type:*`, `area:*`, `prio:*`, `size:*`
-    # на колонку не влияют, а событий от них много. Колонку двигают только `status:*`
-    # (их же ставит `board-labels.yml`), поэтому остальные метки прогон не запускают.
+    # Метку не фильтруем: `if` остался бы у последнего выжившего прогона всплеска, а он
+    # может оказаться событием `labeled` с `size:s` — тогда сверка не выполнится и карточка
+    # ждёт `cron` (до суток). Сверка полная и идемпотентная (`planSync`), поэтому лишний
+    # прогон безвреден, а всплеск схлопывает `concurrency` — один pending на группу.
+    # Отдельно: `status:*` от `board-labels.yml` прогонов не запускают вовсе — события от
+    # `GITHUB_TOKEN` не порождают новых workflow; колонка приходит со следующим событием
+    # issue или с ночным `cron` (docs/board.md, «Автоматика»).
     # PR из форка не получает секретов — синк там всё равно не выполнить.
     # Прогоны PR от Dependabot не получают секретов репозитория (у бота свой набор), а карточки
     # на доске у такого PR нет: синк для них пропускаем, доска пересчитается при мерже — тогда
     # workflow запускается уже от владельца.
     if: |
-      (github.event_name != 'issues'
-        || (github.event.action != 'labeled' && github.event.action != 'unlabeled')
-        || startsWith(github.event.label.name, 'status:'))
-      && (github.event_name != 'pull_request'
+      (github.event_name != 'pull_request'
         || github.event.pull_request.head.repo.full_name == github.repository)
       && github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest

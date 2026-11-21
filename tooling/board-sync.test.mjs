@@ -5,10 +5,16 @@
  * `run`: он отдаёт заранее заготовленные ответы и записывает вызовы. Главное свойство,
  * которое проверяется без сети: в режиме `DRY_RUN` ни одна запись (`item-add`, `item-edit`)
  * не выполняется, а чтение идёт постранично и с защитой от усечения выдачи.
+ *
+ * Последний блок читает сам `.github/workflows/board-sync.yml`: правило «на каком событии
+ * сверка выполняется» живёт в job-`if`, а не в скрипте, и без теста оно тихо разъезжается
+ * с замыслом (issue #165).
  */
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import {
   BoardError,
@@ -461,4 +467,50 @@ describe('main: CLI', () => {
 test('скрипт исполняемый: shebang на месте (bin и workflow запускают файл напрямую)', () => {
   const source = readFileSync(new URL('./board-sync.mjs', import.meta.url), 'utf8');
   assert.match(source, /^#!\/usr\/bin\/env node\n/u);
+});
+
+describe('board-sync.yml: на каком событии выполняется сверка (issue #165)', () => {
+  const ROOT = fileURLToPath(new URL('..', import.meta.url));
+  const WORKFLOW = readFileSync(join(ROOT, '.github', 'workflows', 'board-sync.yml'), 'utf8');
+  // Комментарии в workflow обсуждают правила — сравниваем только исполняемые строки.
+  const LINES = WORKFLOW.split('\n').filter((line) => !line.trim().startsWith('#'));
+
+  /**
+   * Тело многострочного `if:` джобы.
+   * @returns {string} строки условия без отступа
+   */
+  function jobIf() {
+    const start = LINES.findIndex((line) => /^\s{4}if: \|$/u.test(line));
+    assert.notEqual(start, -1, 'в workflow нет многострочного job-if');
+    const body = [];
+    for (const line of LINES.slice(start + 1)) {
+      if (line.trim() === '') continue;
+      if (!/^\s{6}/u.test(line)) break;
+      body.push(line.trim());
+    }
+    return body.join('\n');
+  }
+
+  test('по имени метки не фильтрует: выживший прогон всплеска обязан отработать', () => {
+    assert.doesNotMatch(
+      jobIf(),
+      /github\.event\.label\.name/u,
+      'фильтр по метке пропускает последний выживший прогон всплеска — карточка ждёт cron',
+    );
+  });
+
+  test('форк и Dependabot по-прежнему пропускаются: синк там не выполнить', () => {
+    const condition = jobIf();
+
+    assert.match(condition, /head\.repo\.full_name == github\.repository/u);
+    assert.match(condition, /github\.actor != 'dependabot\[bot\]'/u);
+  });
+
+  test('события labeled/unlabeled остаются в on: иначе ручная метка не двигает доску', () => {
+    assert.match(WORKFLOW, /types: \[opened, reopened, closed, labeled, unlabeled\]/u);
+  });
+
+  test('шаг сверки на месте', () => {
+    assert.match(WORKFLOW, /^ *run: node tooling\/board-sync\.mjs$/mu);
+  });
 });
