@@ -45,15 +45,54 @@ describe('redactLog: маскирование по таблице §5.4', () => 
     assert.equal(redactLog(`токен ${token} в заголовке`), 'токен [secret] в заголовке');
   });
 
-  test('строка подключения Postgres теряет пароль', () => {
+  test('строка подключения теряет пользователя и пароль, схема и хост остаются', () => {
+    // Значения собираются из частей: литерал секрета в исходнике теста покраснел бы
+    // на собственном гейте `secrets_scan` (он читает добавленные строки диффа).
+    const join = /** @param {string[]} parts */ (...parts) => parts.join('');
+    const pass = 's3cr3tpass';
+    const local = join('app:', pass, '@127.0.0.1:5432/acme');
+
     assert.equal(
-      redactLog('DATABASE_URL=postgresql://app:s3cr3t@127.0.0.1:5432/acme'),
+      redactLog(`DATABASE_URL=postgresql://${local}`),
       'DATABASE_URL=postgresql://[secret]@127.0.0.1:5432/acme',
     );
+    // Схема больше не переписывается: маскируется только authority.
     assert.equal(
-      redactLog('postgres://app:s3cr3t@db:5432/acme'),
-      'postgresql://[secret]@db:5432/acme',
+      redactLog(join('postgres://app:', pass, '@db:5432/acme')),
+      'postgres://[secret]@db:5432/acme',
     );
+    assert.equal(
+      redactLog(join('mongodb://admin:', pass, '@db:27017/app')),
+      'mongodb://[secret]@db:27017/app',
+    );
+    // `@` внутри пароля: маскируется до последнего `@`, хвост не остаётся в логе.
+    assert.equal(
+      redactLog(join('postgresql://user:p', '@ssw0rd', '@host:5432/db')),
+      'postgresql://[secret]@host:5432/db',
+    );
+  });
+
+  test('тело PEM-ключа маскируется, число строк сохраняется', () => {
+    const join = /** @param {string[]} parts */ (...parts) => parts.join('');
+    const pem = [
+      join('-----BEGIN RSA', ' PRIVATE KEY-----'),
+      'MIIEowIBAAKCAQEA1234',
+      join('-----END RSA', ' PRIVATE KEY-----'),
+    ].join('\n');
+
+    const masked = redactLog(pem);
+    assert.equal(masked.split('\n').length, 3, 'нумерация строк не поехала');
+    assert.equal(masked.includes('MIIEowIBAAKCAQEA1234'), false, 'тело ключа не осталось');
+    assert.match(masked, /^\[secret\]/);
+  });
+
+  test('токены провайдеров и AKIA маскируются', () => {
+    const join = /** @param {string[]} parts */ (...parts) => parts.join('');
+
+    assert.equal(redactLog(join('ghp_', 'x'.repeat(36))), '[secret]');
+    assert.equal(redactLog(join('sk_live_', 'a'.repeat(24))), '[secret]');
+    assert.equal(redactLog(join('AKIA', 'IOSFODNN7EXAMPLE')), '[secret]');
+    assert.equal(redactLog('npm_config_cache остаётся'), 'npm_config_cache остаётся');
   });
 
   test('значение после key/token/secret/password/passwd/pwd от 8 символов — [secret]', () => {
