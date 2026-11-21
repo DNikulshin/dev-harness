@@ -88,6 +88,13 @@ const BEARER_TOKEN =
   /\b(?:proxy-)?authorization[ \t]*[:=][ \t]*(?:bearer|basic)[ \t]+([^\s"',;]{12,})/gi;
 
 /**
+ * Значение-ссылка на код (`process.env.TOKEN`, `config.apiKey`), а не литерал секрета:
+ * секрет в дифф не попадает, поэтому и находки нет. Проверяется только «голое» значение —
+ * значение в кавычках это уже литерал.
+ */
+const CODE_REFERENCE = /^(?:[A-Za-z_$][\w$]*\.)+[A-Za-z_$][\w$]*$/;
+
+/**
  * Явные заглушки: похожи на секрет, но им не являются (§5.5). Проверка идёт по всему
  * значению, а не по подстроке: боевой секрет, внутри которого встречается `example`
  * (`prodexample12345678`), обязан давать находку. Суффикс через `-`/`_` допускается
@@ -223,7 +230,16 @@ function hasAssignedSecret(text) {
     // Группы значения: 1 — двойные кавычки, 2 — одинарные, 3 — без кавычек. Имя ключа
     // в выражении не захватывается: оно не нужно, а захват сдвигал бы индексы.
     const value = match[1] ?? match[2] ?? match[3] ?? '';
-    if (!isPlaceholder(value)) return true;
+    if (isPlaceholder(value)) continue;
+    // Голое значение может оказаться кодом: `token = buildToken(user)`, `secret: config.secret`.
+    // Это не утечка — литерала секрета в строке нет.
+    if (
+      match[3] !== undefined &&
+      (value.includes('(') || value.includes(')') || CODE_REFERENCE.test(value))
+    ) {
+      continue;
+    }
+    return true;
   }
   return false;
 }
