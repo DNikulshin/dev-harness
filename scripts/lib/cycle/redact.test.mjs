@@ -178,7 +178,7 @@ describe('scanSecrets', () => {
       { line: 2, kind: 'private_key' },
       { line: 3, kind: 'aws_access_key' },
       { line: 4, kind: 'jwt' },
-      { line: 5, kind: 'postgres_password' },
+      { line: 5, kind: 'password_url' },
       { line: 6, kind: 'assigned_secret' },
     ]);
   });
@@ -205,7 +205,7 @@ describe('scanSecrets', () => {
       { line: 1, kind: 'assigned_secret' },
     ]);
     assert.deepEqual(scanSecrets(['postgres://user:prodexample123@db:5432/acme']), [
-      { line: 1, kind: 'postgres_password' },
+      { line: 1, kind: 'password_url' },
     ]);
   });
 
@@ -224,8 +224,54 @@ describe('scanSecrets', () => {
   test('пароль Postgres-строки с шаблоном не считается секретом', () => {
     assert.deepEqual(scanSecrets(['postgres://user:{{DB_PASSWORD}}@db:5432/acme']), []);
     assert.deepEqual(scanSecrets(['postgres://user:s3cr3tpass@db:5432/acme']), [
-      { line: 1, kind: 'postgres_password' },
+      { line: 1, kind: 'password_url' },
     ]);
+  });
+
+  // Значения собираются из частей: исходник теста сам попадает в дифф, а гейт `secrets_scan`
+  // читает добавленные строки — литерал токена в тесте сделал бы красным собственный прогон.
+  /** @param {string[]} parts @returns {string} */
+  const join = (...parts) => parts.join('');
+
+  const FORMATS = [
+    ['токен GitHub', join('ghp_', 'x'.repeat(36)), 'provider_token'],
+    ['fine-grained токен GitHub', join('github_pat_', 'x'.repeat(24)), 'provider_token'],
+    ['ключ Stripe', join('sk_live_', 'a'.repeat(24)), 'provider_token'],
+    ['токен Slack', join('xoxb-', '1'.repeat(12), '-', 'b'.repeat(12)), 'provider_token'],
+    ['ключ Google', join('AIza', 'S'.repeat(35)), 'provider_token'],
+    ['ключ SendGrid', join('SG.', 'a'.repeat(20), '.', 'b'.repeat(20)), 'provider_token'],
+    ['токен npm', join('npm_', 'a'.repeat(36)), 'provider_token'],
+    ['токен GitLab', join('glpat-', 'a'.repeat(22)), 'provider_token'],
+    ['MongoDB с паролем', join('mongodb://admin:', 's3cr3tpass', '@db:27017/app'), 'password_url'],
+    ['Redis с паролем', join('redis://default:', 's3cr3tpass', '@cache:6379'), 'password_url'],
+    ['MySQL с паролем', join('mysql://root:', 's3cr3tpass', '@db:3306/app'), 'password_url'],
+    ['заголовок Bearer', join('Authorization: Bearer ', 'a'.repeat(24)), 'bearer_token'],
+    [
+      'ключ в кавычках JSON',
+      join('{"api_key"', ': "', 'abcdef1234567890', '"}'),
+      'assigned_secret',
+    ],
+    [
+      'camelCase с префиксом',
+      join('const dbPassword', ' = "', 'hunter2hunter2', '";'),
+      'assigned_secret',
+    ],
+    ['UPPER_SNAKE DB_PASS', join('DB_PASS=', 'p@ssw0rd123456'), 'assigned_secret'],
+  ];
+
+  for (const [name, line, kind] of FORMATS) {
+    test(`${name}: находка «${kind}»`, () => {
+      assert.deepEqual(scanSecrets([line]), [{ line: 1, kind }]);
+    });
+  }
+
+  test('имена переменных окружения не считаются токенами', () => {
+    assert.deepEqual(scanSecrets(['npm_config_cache', 'npm_config_user_agent=1']), []);
+  });
+
+  test('Bearer с JWT даёт один вид: jwt, а не два', () => {
+    const jwt = fixture('added-lines.secrets.json')[3];
+    assert.deepEqual(scanSecrets([jwt]), [{ line: 1, kind: 'jwt' }]);
   });
 
   test('пустой массив — нет находок', () => {

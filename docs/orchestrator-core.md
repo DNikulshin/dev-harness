@@ -448,11 +448,24 @@ node scripts/cycle-gates.mjs --dir D [--only id,id] [--base SHA]
 | `format_check`    | `pnpm format:check`                       | да       | —                 | всегда                                                                                     |
 | `secrets_scan`    | встроенный (`scanSecrets`)                | да       | —                 | всегда                                                                                     |
 
-`secrets_scan` проверяет только добавленные строки диффа: PEM-заголовки приватных ключей,
-`AKIA[0-9A-Z]{16}`, JWT, `postgres://user:pass@` с непустым не-шаблонным паролем, присвоения
-`secret|token|password|api_key` строковым литералом ≥12 символов, кроме явных заглушек
-(`example`, `changeme`, `xxx`, `<…>`) и файла `.env.example`. Находка → `fail`, `file:line`
-в логе без значения.
+`secrets_scan` проверяет только добавленные строки диффа. Виды находок (`kind` в логе) и формы:
+
+| `kind` | Форма |
+| --- | --- |
+| `private_key` | заголовок любого PEM-ключа (`-----BEGIN [RSA\|OPENSSH\|PGP ]PRIVATE KEY-----`) |
+| `aws_access_key` | `AKIA[0-9A-Z]{16}` |
+| `jwt` | три base64url-сегмента, первый начинается с `eyJ` |
+| `provider_token` | префиксные токены: `ghp_`/`gho_`/`ghu_`/`ghs_`/`ghr_`, `github_pat_`, `sk_live_`/`sk_test_`/`rk_*`, `xox[baprs]-`, `AIza`, `SG.…`, `npm_`, `glpat-` |
+| `password_url` | строка подключения с паролем: `postgres(ql)`, `mongodb(+srv)`, `redis(s)`, `mysql`, `amqp(s)` |
+| `bearer_token` | `Authorization: Bearer/Basic <токен ≥12>` (значение-JWT даёт `jwt`, а не два вида) |
+| `assigned_secret` | присвоение `api[-_]?key\|secret\|token\|password\|passwd\|pass\|pwd\|credential` строковым литералом или «голым» значением ≥12 символов; имя может быть частью другого слова (`dbPassword`, `_authToken`), ключ в кавычках допускается (`"api_key": "…"`) |
+
+Заглушка определяется **по значению, а не по имени файла**: `example`, `sample`, `changeme`,
+`placeholder`, `dummy`, `fake`, `test`, `xxx`, `your_*`, `<…>`, `{{…}}`, `${…}` — целиком, с
+допустимым суффиксом через `-`/`_` (`example-token-value`). Суффикс-слово не спасает боевой
+секрет: `prodexample12345678` — находка. Тестовые префиксы провайдеров (`sk_test_`) находку дают:
+пропущенный боевой ключ дороже ложного срабатывания (решение владельца, #126). Находка → `fail`,
+`file:line` в логе без значения.
 
 Гейты запускаются с `TURBO_FORCE=true` (`gateEnv`): `pass` в `gates.<n>.json` — это живой
 прогон, а не результат из кэша turbo («FULL TURBO»). Кэш turbo адресуется по хешу входов,
