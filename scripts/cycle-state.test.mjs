@@ -124,7 +124,7 @@ function gitRun(cwd, args) {
 }
 
 /**
- * Ветка цикла в тестах: `init` требует, чтобы она существовала и была текущей (#274),
+ * Ветка цикла в тестах: `init` требует, чтобы она существовала и была текущей,
  * поэтому репозиторий создаётся сразу на ней — как это делает человек перед `init`.
  */
 const CYCLE_BRANCH = 'chore/157-cycle-state';
@@ -493,7 +493,7 @@ describe('cycle-state: init', () => {
     assert.equal(state.started_at, NOW);
   });
 
-  test('лимит итераций из окружения и вне диапазона — код 2 (#235)', (t) => {
+  test('лимит итераций из окружения и вне диапазона — код 2', (t) => {
     const { root } = makeRepo(t);
     const base = ['init', '--issue', '157', '--slug', 'cycle-state', '--branch', CYCLE_BRANCH];
 
@@ -619,7 +619,7 @@ describe('cycle-state: переходы §5.3', () => {
     }
   });
 
-  test('ESCALATED → DECIDE: только с --owner-approved (#235)', (t) => {
+  test('ESCALATED → DECIDE: только с --owner-approved', (t) => {
     const { root, baseSha } = makeRepo(t);
     const dir = join(root, '.pi', 'artifacts', CYCLE_NAME);
     mkdirSync(dir, { recursive: true });
@@ -1635,7 +1635,7 @@ describe('cycle-state: escalate и draft_pr_allowed', () => {
     assert.equal(stateText(plan), planBefore);
   });
 
-  test('escalate с QA_WEB (#202): код 0, открытый этап закрыт, unlock работает', (t) => {
+  test('escalate с QA_WEB: код 0, открытый этап закрыт, unlock работает', (t) => {
     const { root, baseSha } = makeRepo(t);
 
     // `advance --to ESCALATED` остаётся запрещён: ребро только через `escalate`.
@@ -1854,7 +1854,7 @@ describe('cycle-state: lock', () => {
     mkdirSync(dirname(lockFile), { recursive: true });
 
     // Гонка восстановления: без сериализатора оба процесса снимали бы lock по очереди и оба
-    // возвращали 0, а второй сносил бы уже свежую блокировку первого (issue #157, ревью 2).
+    // возвращали 0, а второй сносил бы уже свежую блокировку первого (ревью 2).
     for (let round = 0; round < 5; round += 1) {
       writeFileSync(
         lockFile,

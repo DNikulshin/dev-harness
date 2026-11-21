@@ -1666,13 +1666,13 @@ describe('CLI: запись решения', () => {
     assert.equal(second.status, 0, second.stderr);
     const escalated = JSON.parse(second.stdout);
     assert.equal(escalated.action, 'ESCALATE');
-    // #247: рядом с причиной — подсказка, что именно чинить, и полный текст в stderr.
+    // Рядом с причиной — подсказка, что именно чинить, и полный текст в stderr.
     assert.equal(escalated.reasons[0], 'escalate:agent_output_invalid');
     assert.match(escalated.reasons[1], /^invalid:REVIEW review\.1\.md: /u);
     assert.match(second.stderr, /review\.1\.md/u);
   });
 
-  test('предел подсказок по полям и дедупликация (#247)', (t) => {
+  test('предел подсказок по полям и дедупликация', (t) => {
     const repo = makeRepo(t);
     // Шесть нарушений схемы: five-severity-подсказок быть не больше INVALID_OUTPUT_LIMIT.
     const broken = {

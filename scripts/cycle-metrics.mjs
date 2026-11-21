@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Метрики завершённого цикла по docs/orchestrator-core.md §5.8 (issue #160, задача T8).
+ * Метрики завершённого цикла по docs/orchestrator-core.md §5.8 (задача T8).
  *
  * Вход: `state.json` (обязателен), `gates.<n>.json` (обязателен для каждой итерации
  * `1..state.iteration`), `review.<n>.json`, `evaluation.<n>.json`, `decision.<n>.json`
@@ -549,7 +549,7 @@ export function evaluatorSharesFamilyWithPlan(models) {
  *   driver?: { steps: number, executed: number, handed_off: number, mismatch: number }|null,
  *   manifests?: (Record<string, any>|null)[],
  * }} inputs
- *   `appliedLimits` — лимиты с источниками (#235): попав в `metrics.json`, они объясняют,
+ *   `appliedLimits` — лимиты с источниками: попав в `metrics.json`, они объясняют,
  *   по какому порогу считались бюджет и размер диффа. Считает CLI, а не эта функция.
  *   `driver` — сводка журнала `driver.jsonl` (#47): сколько шагов выдал драйвер, сколько
  *   исполнил сам и сколько раз состояние разошлось с его ответом. `null` — журнала нет.
@@ -698,7 +698,7 @@ export function buildMetrics({
     // Блок есть всегда: `null` в полях и список `missing` сообщают «не мерили», а его
     // отсутствие читалось бы как «мерить нечего».
     context: buildContext({ iterationCount, manifests, tokens }),
-    // Применённые лимиты цикла (#235): видно, с каким порогом считали бюджет и дифф.
+    // Применённые лимиты цикла: видно, с каким порогом считали бюджет и дифф.
     ...(appliedLimits === null ? {} : { applied_limits: appliedLimits }),
     // Маршрутизация кодом (#47): `mismatch = 0` — супервизор ни разу не разошёлся с драйвером.
     ...(driver === null ? {} : { driver }),
@@ -874,7 +874,7 @@ function main() {
     const dir = args.dir === null ? resolveCycleDir(root, config) : resolve(args.dir);
 
     const state = readRequiredJson(join(dir, FIXED_NAMES.state), validateState, FIXED_NAMES.state);
-    // Лимиты (#235): env → конфиг → дефолт. Флагов у этого скрипта нет.
+    // Лимиты: env → конфиг → дефолт. Флагов у этого скрипта нет.
     const resolvedLimits = resolveLimits({
       config: config.limits,
       configured: config.limitsExplicit,

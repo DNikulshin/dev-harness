@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Проверка раскладки harness по docs/orchestrator-core.md §5.9 (issue #153, задача T2).
+ * Проверка раскладки harness по docs/orchestrator-core.md §5.9 (задача T2).
  *
  * Вход: `.pi/agents/{plan,code,review,evaluate}.md` (frontmatter), `.pi/settings.json`,
  * `.pi/prompts/cycle.md`, `AGENTS.md`. Выход: строки `H<n>: <файл> — <что не так>`

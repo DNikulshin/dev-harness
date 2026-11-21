@@ -511,7 +511,7 @@ export declare function summarizeStop(name: string, artifacts: ReturnType<typeof
  * Два источника одного списка (§5.6–5.7): `decision.unverified[]` (строки, в том числе
  * `gate:<id> not_run`, `criteria:<id> unverified` и копия `evaluation unverified: <what>`)
  * и `evaluation.unverified[]` (объекты `{what, why}`). Один факт приходит двумя формулировками,
- * поэтому перед счётом они дедуплицируются тем же правилом, что и в теле PR (#204): иначе
+ * поэтому перед счётом они дедуплицируются тем же правилом, что и в теле PR: иначе
  * число «сколько осталось владельцу» было бы больше, чем есть.
  *
  * Нет `decision.<n>.json` — `null`, а не ноль: «нечего считать» и «всё проверено» — разные

@@ -187,7 +187,7 @@ export declare function evaluatorSharesFamilyWithPlan(models: unknown): boolean;
  *   driver?: { steps: number, executed: number, handed_off: number, mismatch: number }|null,
  *   manifests?: (Record<string, any>|null)[],
  * }} inputs
- *   `appliedLimits` — лимиты с источниками (#235): попав в `metrics.json`, они объясняют,
+ *   `appliedLimits` — лимиты с источниками: попав в `metrics.json`, они объясняют,
  *   по какому порогу считались бюджет и размер диффа. Считает CLI, а не эта функция.
  *   `driver` — сводка журнала `driver.jsonl` (#47): сколько шагов выдал драйвер, сколько
  *   исполнил сам и сколько раз состояние разошлось с его ответом. `null` — журнала нет.

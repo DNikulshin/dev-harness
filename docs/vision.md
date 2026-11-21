@@ -21,8 +21,9 @@
   валидация с кодом 2.
 - CLI ядра: `cycle-gates`, `cycle-decide`, `cycle-state`, `cycle-evidence`, `cycle-usage`,
   `cycle-metrics`, `cycle-report`, `cycle-pr-body`.
-- `check-harness` (правила H1–H6) и evals-инструменты (`evals-collect`, `evals-cost`, `evals-pack`,
-  `evals-score`).
+- `harness-init` — установка шаблонов и конфига в проект одной командой (bootstrap), с
+  `harness.version` для проверки «файл наш», и `check-harness` (правила H1–H6) плюс
+  evals-инструменты (`evals-collect`, `evals-cost`, `evals-pack`, `evals-score`).
 - Норматив протокола: `docs/protocol.md`, `docs/orchestrator-core.md`, `docs/orchestrator.md`.
 - Шаблоны `.pi/agents/*`, `.pi/prompts/cycle.md`, пример конфига.
 - Самодостаточность: собственные `.pi/settings.json`, `.pi/agents/*`, `.pi/harness.config.json` и
@@ -30,7 +31,6 @@
 
 ## Что не входит в v0.1
 
-- Bootstrap-скрипт, который сам создаёт `.pi/` и конфиг в проекте.
 - Web UI для просмотра циклов.
 - nginx/прокси и любая серверная обвязка.
 - MCP-сервер и интеграции с внешними трекерами.
