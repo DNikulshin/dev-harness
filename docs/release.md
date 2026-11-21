@@ -82,6 +82,14 @@ release notes), затем отдельный PR читателя. Обратн�
 4. **Публикация** — автоматически, workflow `release.yml`: `pnpm check` → `pnpm pack` →
    `tooling/check-package.mjs` (состав архива, обещания `bin`/`exports`, версия против тега) →
    `npm publish --provenance --access public` с секретом `NPM_TOKEN`.
+
+   Требования к токену (`gh secret set NPM_TOKEN`, ставит владелец): granular-токен со scope
+   `@dnikulshin` в режиме **Read and write (publish and stage)** и с включённым **Bypass 2FA**. Без
+   первого registry отвечает `E_STAGE_REQUIRED`, без второго — `EOTP`; оба отказа стоят одного
+   прогона релиза (так же было у просмотрщика). Незаданный секрет ловится первым шагом workflow — до
+   тестов и сборки — с текстом «Секрет NPM_TOKEN не задан» и командой установки: пустая строка
+   вместо токена иначе выглядит как `ENEEDAUTH` на последнем шаге.
+
 5. **Проверка после публикации** — в чистом каталоге: `npx @dnikulshin/harness init` (создаёт
    шаблоны, конфиг и проверяет раскладку) и `npm view @dnikulshin/harness version`.
 6. **Release notes** на GitHub: что вошло, как обновиться, что ломается — несовместимое изменение
