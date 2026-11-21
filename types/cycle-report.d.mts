@@ -43,6 +43,20 @@ export type ContextSummary = {
      */
     missing: string[];
 };
+export type CycleVerification = {
+    /**
+     * действие `decision.<n>.json`; `null` — решения нет
+     */
+    action: string | null;
+    /**
+     * пунктов «не проверено» после дедупликации; `null` — считать не из чего
+     */
+    items: number | null;
+    /**
+     * из пунктов — гейты `not_run`
+     */
+    gate_not_run: number | null;
+};
 export type CycleSummary = {
     /**
      * имя каталога цикла
@@ -73,6 +87,10 @@ export type CycleSummary = {
      * контекст и кэш (ADR 0009)
      */
     context: ContextSummary;
+    /**
+     * решение и «не проверено» (#115)
+     */
+    verification?: CycleVerification | null;
 };
 export type PendingCycle = {
     /**
@@ -161,6 +179,48 @@ export type Stop = {
      */
     insufficient: boolean;
 };
+export type VerificationSummary = {
+    /**
+     * завершённых циклов (`DONE`/`ESCALATED`)
+     */
+    completed: number;
+    /**
+     * из них с решением
+     */
+    decided: number;
+    /**
+     * циклы без `decision.<n>.json`: вердикт и число пунктов неизвестны
+     */
+    missing: string[];
+    /**
+     * счётчики по действиям §5.6
+     */
+    actions: Record<string, number>;
+    /**
+     * доля принятых без проверки от решений
+     */
+    proceed_with_unverified_share: number | null;
+    /**
+     * циклов с посчитанным числом пунктов
+     */
+    measured: number;
+    /**
+     * пунктов всего
+     */
+    items_total: number | null;
+    /**
+     * медиана пунктов на цикл
+     */
+    items_median: number | null;
+    /**
+     * максимум пунктов на цикл
+     */
+    items_max: number | null;
+    /**
+     * из пунктов — гейты `not_run`
+     */
+    gate_not_run: number;
+};
 export type ReportSource = {
     /**
      * абсолютный каталог артефактов, из которого снят отчёт
@@ -207,6 +267,10 @@ export type Report = {
         total: number;
         percent: number | null;
     };
+    /**
+     * вердикты и «не проверено» (#115)
+     */
+    verification: VerificationSummary;
     gates: {
         id: string;
         pass: number;
@@ -325,6 +389,31 @@ export declare function collectStopArtifacts(cycleDir: string, cycleName: string
  * @returns {Stop}
  */
 export declare function summarizeStop(name: string, artifacts: ReturnType<typeof collectStopArtifacts>): Stop;
+/**
+ * Что осталось непроверенным в цикле (#115). Чистая функция: файлов не читает.
+ *
+ * Два источника одного списка (§5.6–5.7): `decision.unverified[]` (строки, в том числе
+ * `gate:<id> not_run`, `criteria:<id> unverified` и копия `evaluation unverified: <what>`)
+ * и `evaluation.unverified[]` (объекты `{what, why}`). Один факт приходит двумя формулировками,
+ * поэтому перед счётом они дедуплицируются тем же правилом, что и в теле PR (#204): иначе
+ * число «сколько осталось владельцу» было бы больше, чем есть.
+ *
+ * Нет `decision.<n>.json` — `null`, а не ноль: «нечего считать» и «всё проверено» — разные
+ * факты, и решение о пороге (`verification_tax`) не должно опираться на выданный за факт ноль.
+ * @param {ReturnType<typeof collectStopArtifacts>} artifacts артефакты цикла
+ * @returns {CycleVerification}
+ */
+export declare function summarizeVerification(artifacts: ReturnType<typeof collectStopArtifacts>): CycleVerification;
+/**
+ * Вердикты и «не проверено» по всем циклам (#115). Чистая функция.
+ *
+ * Знаменатель доли — **решения**, а не каталоги: цикл без `decision.<n>.json` не голосует
+ * «за», но и не пропадает — он в `missing`. Сумма счётчиков действий равна `decided`, поэтому
+ * подменить одну цифру, не соврав в сумме, нельзя.
+ * @param {CycleSummary[]} cycles
+ * @returns {VerificationSummary}
+ */
+export declare function summarizeVerdicts(cycles: CycleSummary[]): VerificationSummary;
 /**
  * Исходы гейтов по всем циклам: суммы по `id`, порядок — таблица §5.5, затем алфавит.
  * @param {CycleSummary[]} cycles

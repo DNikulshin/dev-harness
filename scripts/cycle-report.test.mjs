@@ -33,6 +33,8 @@ import {
   summarizeCycle,
   summarizePending,
   summarizeStop,
+  summarizeVerdicts,
+  summarizeVerification,
 } from './cycle-report.mjs';
 import { headRevision } from './lib/cycle/git.mjs';
 
@@ -55,7 +57,7 @@ function fixture(name) {
 }
 
 /** Валидный `metrics.json` фикстуры: база для вариантов в тестах. */
-function metricsDoc(overrides = {}) {
+function metricsDoc(/** @type {Record<string, any>} */ overrides = {}) {
   const base = JSON.parse(readFileSync(join(METRICS_FIXTURES, 'metrics.valid.json'), 'utf8'));
   return { ...base, ...overrides };
 }
@@ -1147,5 +1149,346 @@ describe('cycle-report: отчёт как представление прого�
 
     assert.ok(html.includes('artifacts&lt;&amp;&gt;&quot;x'), 'путь в шапке экранирован');
     assert.ok(!html.includes('artifacts<&>'), 'сырого пути в разметке нет');
+  });
+});
+
+describe('cycle-report: вердикты и «не проверено» (#115)', () => {
+  /** Решение из фикстуры с подменённым действием и списком «не проверено». */
+  function decisionDoc(
+    /** @type {{ action: string, unverified: string[], iteration?: number }} */ {
+      action,
+      unverified,
+      iteration = 1,
+    },
+  ) {
+    return { ...fixture('decision.valid.json'), action, unverified, iteration };
+  }
+
+  /**
+   * Оценка из фикстуры с подменённым списком «не проверено».
+   * @param {string[]} items
+   */
+  function evaluationDoc(items) {
+    return {
+      ...fixture('evaluation.valid.json'),
+      unverified: items.map((what) => ({ what, why: 'нет фикстуры', how_to_verify: 'руками' })),
+    };
+  }
+
+  /**
+   * Артефакты цикла в том виде, в каком их отдаёт `collectStopArtifacts`.
+   * @param {{ decision?: Record<string, any>|null, evaluation?: Record<string, any>|null, gates?: Record<string, any>|null }} [parts]
+   */
+  function artifacts({ decision = null, evaluation = null, gates = null } = {}) {
+    return { decision, evaluation, gates, escalation: null };
+  }
+
+  /**
+   * Гейт с нужным статусом: схема требует все поля, а не только `status`.
+   * @param {string} id
+   * @param {string} status
+   * @param {string|null} [reason]
+   */
+  function gate(id, status, reason = null) {
+    return {
+      id,
+      cmd: 'true',
+      required: true,
+      status,
+      exit: status === 'pass' ? 0 : null,
+      duration_s: 0,
+      log: null,
+      reason,
+    };
+  }
+
+  /**
+   * Документ `gates.<n>.json` из списка гейтов.
+   * @param {Record<string, any>[]} gates
+   * @param {number} [iteration]
+   */
+  function gatesDoc(gates, iteration = 1) {
+    return {
+      iteration,
+      base_sha: '0123456789abcdef0123456789abcdef01234567',
+      head: '89abcdef0123456789abcdef0123456789abcdef',
+      started_at: '2026-11-16T09:10:00Z',
+      gates,
+    };
+  }
+
+  test('summarizeVerification: решение и оценка — один список, дубли не считаются', () => {
+    const verification = summarizeVerification(
+      artifacts({
+        decision: decisionDoc({
+          action: 'PROCEED_WITH_UNVERIFIED',
+          unverified: [
+            'gate:test_int not_run (no_database)',
+            'evaluation unverified: Поведение на битом JSON',
+            'criteria:C3 unverified',
+          ],
+        }),
+        evaluation: evaluationDoc(['Поведение на битом JSON']),
+      }),
+    );
+
+    assert.deepEqual(verification, {
+      action: 'PROCEED_WITH_UNVERIFIED',
+      items: 3,
+      gate_not_run: 1,
+    });
+  });
+
+  test('summarizeVerification: только оценка — тоже факт, считается без решения', () => {
+    const verification = summarizeVerification(
+      artifacts({
+        decision: decisionDoc({ action: 'PROCEED', unverified: [] }),
+        evaluation: evaluationDoc(['Поведение на битом JSON', 'Гонка при записи']),
+      }),
+    );
+
+    assert.deepEqual(verification, { action: 'PROCEED', items: 2, gate_not_run: 0 });
+  });
+
+  test('summarizeVerification: нет решения — null, а не ноль', () => {
+    assert.deepEqual(summarizeVerification(artifacts({})), {
+      action: null,
+      items: null,
+      gate_not_run: null,
+    });
+  });
+
+  test('skipped-гейт не становится «не проверено»: считаются только not_run из решения', () => {
+    const skipped = summarizeVerification(
+      artifacts({
+        decision: decisionDoc({ action: 'PROCEED', unverified: [] }),
+        gates: gatesDoc([gate('lint_workflows', 'skipped', 'not_applicable')]),
+      }),
+    );
+    const notRun = summarizeVerification(
+      artifacts({
+        decision: decisionDoc({
+          action: 'PROCEED_WITH_UNVERIFIED',
+          unverified: ['gate:typecheck not_run (blocked_by:contracts_build)'],
+        }),
+        gates: gatesDoc([gate('typecheck', 'not_run', 'blocked_by:contracts_build')]),
+      }),
+    );
+
+    assert.equal(skipped.items, 0, 'условие проекта не применимо — это не долг проверки');
+    assert.equal(notRun.items, 1);
+    assert.equal(notRun.gate_not_run, 1);
+  });
+
+  /**
+   * Цикл с метриками и (необязательно) вердиктом — база для сводки.
+   * @param {string} name
+   * @param {{ final_stage?: string, verification?: import('./cycle-report.mjs').CycleVerification }} [options]
+   */
+  function cycleWith(name, { final_stage = 'DONE', verification } = {}) {
+    const summary = summarizeCycle(name, metricsDoc({ final_stage }));
+    return verification === undefined ? summary : { ...summary, verification };
+  }
+
+  /** Тот же набор, что в тесте сводки ниже: пять решений, одно без решения. */
+  function mixedCycles() {
+    return [
+      cycleWith('a', {
+        verification: { action: 'PROCEED_WITH_UNVERIFIED', items: 3, gate_not_run: 1 },
+      }),
+      cycleWith('b', {
+        verification: { action: 'PROCEED_WITH_UNVERIFIED', items: 0, gate_not_run: 0 },
+      }),
+      cycleWith('c', { verification: { action: 'REWORK', items: 1, gate_not_run: 0 } }),
+      cycleWith('d', { verification: { action: null, items: null, gate_not_run: null } }),
+      cycleWith('e', { verification: { action: 'PROCEED', items: 2, gate_not_run: 0 } }),
+      cycleWith('f', {
+        final_stage: 'ESCALATED',
+        verification: { action: 'PROCEED_WITH_UNVERIFIED', items: 5, gate_not_run: 0 },
+      }),
+      cycleWith('g', { final_stage: 'DECIDE' }),
+    ];
+  }
+
+  test('summarizeVerdicts: доля от решений, сумма пунктов, медиана и максимум', () => {
+    const verification = summarizeVerdicts(mixedCycles());
+
+    assert.equal(verification.completed, 6, 'завершённые — DONE/ESCALATED, не DECIDE');
+    assert.equal(verification.decided, 5);
+    assert.deepEqual(verification.missing, ['d', 'g'], 'без решения — по имени каталога');
+    assert.deepEqual(verification.actions, {
+      REWORK: 1,
+      ACQUIRE_EVIDENCE: 0,
+      RETRY_STAGE: 0,
+      PROCEED: 1,
+      PROCEED_WITH_UNVERIFIED: 3,
+      ESCALATE: 0,
+    });
+    assert.equal(verification.proceed_with_unverified_share, 60);
+    assert.equal(verification.measured, 5);
+    assert.equal(verification.items_total, 11);
+    assert.equal(verification.items_median, 2);
+    assert.equal(verification.items_max, 5);
+    assert.equal(verification.gate_not_run, 1);
+  });
+
+  test('summarizeVerdicts: решений нет — доля null, а не ноль процентов', () => {
+    const verification = summarizeVerdicts([
+      cycleWith('a', { verification: { action: null, items: null, gate_not_run: null } }),
+    ]);
+
+    assert.equal(verification.completed, 1);
+    assert.equal(verification.decided, 0);
+    assert.equal(verification.proceed_with_unverified_share, null);
+    assert.equal(verification.items_total, null);
+    assert.equal(verification.items_median, null);
+    assert.equal(verification.items_max, null);
+  });
+
+  test('markdown: сводка вердиктов, колонка «Не проверено» и insufficient_data', () => {
+    const text = renderMarkdown(buildReport(mixedCycles()));
+
+    assert.ok(text.includes('Завершённых циклов (`DONE`/`ESCALATED`): 6, с решением: 5.'));
+    assert.ok(
+      text.includes(
+        'Вердикты: `PROCEED_WITH_UNVERIFIED` 3 (60.0%), `REWORK` 1, `ESCALATE` 0, `PROCEED` 1.',
+      ),
+      'доля — первая, остальные действия только когда были',
+    );
+    assert.ok(
+      text.includes(
+        'Пунктов «не проверено»: 11 (медиана 2, максимум 5; из них гейты `not_run`: 1).',
+      ),
+    );
+    assert.ok(text.includes('Нет `decision.<n>.json`: d, g — вердикт и число пунктов неизвестны.'));
+    assert.ok(text.includes('| Незакрытые этапы | Не проверено |'), 'колонка объявлена');
+    assert.match(text, /\| 3 \|$/mu, 'число пунктов в строке цикла');
+    assert.match(text, /\| insufficient_data \|$/mu, 'нет решения — insufficient_data');
+  });
+
+  test('--html: те же числа и та же колонка', () => {
+    const html = renderHtml(buildReport(mixedCycles()));
+
+    assert.ok(html.includes('Завершённых циклов (<code>DONE</code>/<code>ESCALATED</code>): 6'));
+    assert.ok(html.includes('<code>PROCEED_WITH_UNVERIFIED</code> 3 (60.0%)'));
+    assert.ok(html.includes('Пунктов «не проверено»: 11 (медиана 2, максимум 5;'));
+    assert.ok(html.includes('<th scope="col">Не проверено</th>'));
+    assert.ok(html.includes('<td>3</td>'), 'число пунктов в строке цикла');
+    assert.ok(html.includes('Нет <code>decision.&lt;n&gt;.json</code>: d, g'));
+  });
+
+  test('CLI: --json отдаёт вердикты, колонка считает пункты из решения и оценки', (t) => {
+    const dir = makeDir(t);
+    const proceed = writeCycle(
+      dir,
+      'a-proceed',
+      metricsDoc({
+        final_stage: 'DONE',
+        gate_outcomes: {
+          test_int: { pass: 0, fail: 0, skipped: 0, not_run: 1 },
+          lint_workflows: { pass: 0, fail: 0, skipped: 1, not_run: 0 },
+        },
+      }),
+    );
+    writeFileSync(
+      join(proceed, 'decision.1.json'),
+      `${JSON.stringify(
+        decisionDoc({
+          action: 'PROCEED_WITH_UNVERIFIED',
+          unverified: [
+            'gate:test_int not_run (no_database)',
+            'evaluation unverified: Битая запись',
+          ],
+        }),
+        null,
+        2,
+      )}\n`,
+    );
+    writeFileSync(
+      join(proceed, 'evaluation.1.json'),
+      `${JSON.stringify(evaluationDoc(['Битая запись']), null, 2)}\n`,
+    );
+    writeFileSync(
+      join(proceed, 'gates.1.json'),
+      `${JSON.stringify(
+        gatesDoc([
+          gate('test_int', 'not_run', 'no_database'),
+          gate('lint_workflows', 'skipped', 'not_applicable'),
+        ]),
+        null,
+        2,
+      )}\n`,
+    );
+
+    const skipped = writeCycle(
+      dir,
+      'b-skipped',
+      metricsDoc({
+        final_stage: 'DONE',
+        gate_outcomes: { lint_workflows: { pass: 0, fail: 0, skipped: 1, not_run: 0 } },
+      }),
+    );
+    writeFileSync(
+      join(skipped, 'decision.1.json'),
+      `${JSON.stringify(decisionDoc({ action: 'PROCEED', unverified: [] }), null, 2)}\n`,
+    );
+    writeFileSync(
+      join(skipped, 'gates.1.json'),
+      `${JSON.stringify(gatesDoc([gate('lint_workflows', 'skipped', 'not_applicable')]), null, 2)}\n`,
+    );
+
+    const result = runCli(['--dir', dir, '--json']);
+
+    assert.equal(result.status, 0, result.stderr);
+    const report = /** @type {import('./cycle-report.mjs').Report} */ (
+      JSON.parse(result.stdout.trim())
+    );
+    assert.deepEqual(report.verification, {
+      completed: 2,
+      decided: 2,
+      missing: [],
+      actions: {
+        REWORK: 0,
+        ACQUIRE_EVIDENCE: 0,
+        RETRY_STAGE: 0,
+        PROCEED: 1,
+        PROCEED_WITH_UNVERIFIED: 1,
+        ESCALATE: 0,
+      },
+      proceed_with_unverified_share: 50,
+      measured: 2,
+      items_total: 2,
+      items_median: 1,
+      items_max: 2,
+      gate_not_run: 1,
+    });
+    assert.deepEqual(
+      report.cycles.map((cycle) => cycle.verification),
+      [
+        { action: 'PROCEED_WITH_UNVERIFIED', items: 2, gate_not_run: 1 },
+        { action: 'PROCEED', items: 0, gate_not_run: 0 },
+      ],
+    );
+    assert.deepEqual(
+      report.gates.map((row) => `${row.id}:${row.skipped}:${row.not_run}`),
+      ['lint_workflows:2:0', 'test_int:0:1'],
+      'skipped и not_run — разные колонки, как и были',
+    );
+  });
+
+  test('CLI: нет decision — insufficient_data в колонке, цикл в перечне и в сводке', (t) => {
+    const dir = makeDir(t);
+    writeCycle(dir, 'no-decision', metricsDoc({ final_stage: 'DONE' }));
+
+    const markdown = runCli(['--dir', dir]);
+    const report = JSON.parse(runCli(['--dir', dir, '--json']).stdout);
+
+    assert.equal(markdown.status, 0, markdown.stderr);
+    assert.match(markdown.stdout, /\| insufficient_data \|$/mu);
+    assert.ok(markdown.stdout.includes('Нет `decision.<n>.json`: no-decision'));
+    assert.deepEqual(report.verification.missing, ['no-decision']);
+    assert.equal(report.verification.measured, 0, 'мерить нечего — не ноль пунктов');
+    assert.equal(report.verification.items_total, null);
+    assert.equal(report.verification.proceed_with_unverified_share, null);
   });
 });
