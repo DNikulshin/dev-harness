@@ -161,7 +161,32 @@ export type Stop = {
      */
     insufficient: boolean;
 };
+export type ReportSource = {
+    /**
+     * абсолютный каталог артефактов, из которого снят отчёт
+     */
+    dir: string | null;
+    /**
+     * прочитано каталогов цикла (`state.json` или `metrics.json`)
+     */
+    cycles_read: number;
+    /**
+     * пропущено каталогов: нет ни `state.json`, ни `metrics.json`
+     */
+    cycles_skipped: number;
+    /**
+     * ядро: версия и ревизия
+     */
+    core: {
+        version: string | null;
+        revision: string | null;
+    };
+};
 export type Report = {
+    /**
+     * происхождение отчёта (#114)
+     */
+    source: ReportSource;
     cycles: CycleSummary[];
     /**
      * каталоги со `state.json` без `metrics.json`
@@ -171,10 +196,6 @@ export type Report = {
      * почему остановились циклы (завершённые и эскалированные)
      */
     stops: Stop[];
-    /**
-     * каталоги без `state.json` и без `metrics.json`
-     */
-    skipped: number;
     cost: {
         measured: number;
         total: number;
@@ -220,6 +241,13 @@ export declare function listArtifactDirs(dir: string): string[];
  * @returns {string[]} имена каталогов
  */
 export declare function listCycleDirs(dir: string): string[];
+/**
+ * Версия ядра из `package.json` рядом с `scripts/`. Нет файла или поля — `null`:
+ * в шапке отчёта это «неизвестно», а не `0.0.0` и не версия на глаз.
+ * @param {string} root корень ядра
+ * @returns {string|null}
+ */
+export declare function coreVersion(root: string): string | null;
 /**
  * Последний по номеру файл итерации `base.<n>.json` в каталоге цикла. Перебор каталога не
  * зависит от порядка `readdir`: выбирается максимум номера.
@@ -306,20 +334,34 @@ export declare function summarizeStop(name: string, artifacts: ReturnType<typeof
 export declare function aggregateGates(cycles: CycleSummary[], gateIds?: readonly string[]): Report['gates'];
 /**
  * Собирает отчёт из прочитанных артефактов. Чистая функция: файлов не читает.
+ *
+ * `cycles_read` не параметр, а следствие: прочитанные каталоги — это ровно те, что дали
+ * `cycles` и `pending`. Принимать его числом значило бы разрешить отчёту разойтись
+ * со своим же содержимым.
  * @param {CycleSummary[]} cycles сводки по циклам (в порядке отчёта)
  * @param {{
  *   skipped?: number,
  *   gateIds?: readonly string[],
  *   pending?: PendingCycle[],
  *   stops?: Stop[],
+ *   source?: { dir?: string|null, core?: { version?: string|null, revision?: string|null } },
  * }} [options]
+ *   `skipped` — каталоги без `state.json` и `metrics.json`; `source.dir` и `source.core` —
+ *   происхождение, известное только CLI (без них — `null`, т. е. «неизвестно»)
  * @returns {Report}
  */
-export declare function buildReport(cycles: CycleSummary[], { skipped, gateIds, pending, stops }?: {
+export declare function buildReport(cycles: CycleSummary[], { skipped, gateIds, pending, stops, source }?: {
     skipped?: number;
     gateIds?: readonly string[];
     pending?: PendingCycle[];
     stops?: Stop[];
+    source?: {
+        dir?: string | null;
+        core?: {
+            version?: string | null;
+            revision?: string | null;
+        };
+    };
 }): Report;
 /**
  * Отчёт в markdown: шапка с итогами, таблица циклов, таблица гейтов, незавершённые циклы

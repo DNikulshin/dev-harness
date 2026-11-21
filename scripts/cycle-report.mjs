@@ -22,6 +22,17 @@
  * роста не даёт — там прочерк: «не с чем сравнивать» и «не изменилось» — разные факты.
  * Раздел «Контекст по стадиям» показывает те же input и долю кэша по этапам модели.
  *
+ * **Отчёт — представление прогона (#114).** Первичный контракт — `--json`: объект с фактами и
+ * блоком `source { dir, cycles_read, cycles_skipped, core { version, revision } }`. Откуда снят
+ * отчёт, сколько каталогов прочитано и сколько пропущено, каким ядром (`package.json#version`,
+ * `git rev-parse HEAD`) — всё это факты, которые нельзя подделать, не соврав в счётчиках:
+ * `cycles_read + cycles_skipped` = число подкаталогов каталога артефактов. Markdown и `--html`
+ * собираются из того же объекта (`renderMarkdown`/`renderHtml` берут `Report`), второго
+ * источника правды нет, и печатная шапка повторяет блок `source` строкой «факт — прогон,
+ * а не текст»: присланную сводку сверяют `--json`-выводом, а не доверием к виду таблицы.
+ * Ревизии нет (вне git, пустой репозиторий) — `null` в JSON и прочерк в шапке: догадка вместо
+ * факта в происхождение не попадает. `source` не зависит от времени, как и остальной отчёт.
+ *
  * **`--html` (#45).** Тот же отчёт одной самодостаточной страницей: стили внутри, без внешних
  * ресурсов и без JS — файл открывается с диска и в сеть не ходит (`> report.html` делает
  * человек, поэтому контракт «ничего не пишет на диск» сохраняется). Модель отчёта общая с
@@ -58,6 +69,7 @@ import { join, resolve } from 'node:path';
 
 import { isDirectRun } from './lib/cycle/cli.mjs';
 import { loadConfig, takeConfigOption } from './lib/cycle/config.mjs';
+import { headRevision } from './lib/cycle/git.mjs';
 import { readJson } from './lib/cycle/io.mjs';
 import { FIXED_NAMES, artifactsDir, repoRoot } from './lib/cycle/paths.mjs';
 import {
@@ -163,11 +175,19 @@ const MODEL_STAGES = Object.freeze(['plan', 'code', 'review', 'evaluate']);
  */
 
 /**
+ * @typedef {object} ReportSource
+ * @property {string|null} dir абсолютный каталог артефактов, из которого снят отчёт
+ * @property {number} cycles_read прочитано каталогов цикла (`state.json` или `metrics.json`)
+ * @property {number} cycles_skipped пропущено каталогов: нет ни `state.json`, ни `metrics.json`
+ * @property {{ version: string|null, revision: string|null }} core ядро: версия и ревизия
+ */
+
+/**
  * @typedef {object} Report
+ * @property {ReportSource} source происхождение отчёта (#114)
  * @property {CycleSummary[]} cycles
  * @property {PendingCycle[]} pending каталоги со `state.json` без `metrics.json`
  * @property {Stop[]} stops почему остановились циклы (завершённые и эскалированные)
- * @property {number} skipped каталоги без `state.json` и без `metrics.json`
  * @property {{ measured: number, total: number, sum: number|null, median: number|null }} cost
  * @property {{ evaluator_only: number, total: number, percent: number|null }} findings
  * @property {{ id: string, pass: number, fail: number, skipped: number, not_run: number }[]} gates
@@ -362,6 +382,25 @@ export function listArtifactDirs(dir) {
  */
 export function listCycleDirs(dir) {
   return listArtifactDirs(dir).filter((name) => existsSync(join(dir, name, FIXED_NAMES.metrics)));
+}
+
+/**
+ * Версия ядра из `package.json` рядом с `scripts/`. Нет файла или поля — `null`:
+ * в шапке отчёта это «неизвестно», а не `0.0.0` и не версия на глаз.
+ * @param {string} root корень ядра
+ * @returns {string|null}
+ */
+export function coreVersion(root) {
+  /** @type {unknown} */
+  let doc;
+  try {
+    doc = readJson(join(root, 'package.json'));
+  } catch {
+    return null;
+  }
+  if (doc === null || typeof doc !== 'object') return null;
+  const version = /** @type {Record<string, unknown>} */ (doc).version;
+  return typeof version === 'string' && version !== '' ? version : null;
 }
 
 /**
@@ -695,16 +734,26 @@ export function aggregateGates(cycles, gateIds = []) {
 
 /**
  * Собирает отчёт из прочитанных артефактов. Чистая функция: файлов не читает.
+ *
+ * `cycles_read` не параметр, а следствие: прочитанные каталоги — это ровно те, что дали
+ * `cycles` и `pending`. Принимать его числом значило бы разрешить отчёту разойтись
+ * со своим же содержимым.
  * @param {CycleSummary[]} cycles сводки по циклам (в порядке отчёта)
  * @param {{
  *   skipped?: number,
  *   gateIds?: readonly string[],
  *   pending?: PendingCycle[],
  *   stops?: Stop[],
+ *   source?: { dir?: string|null, core?: { version?: string|null, revision?: string|null } },
  * }} [options]
+ *   `skipped` — каталоги без `state.json` и `metrics.json`; `source.dir` и `source.core` —
+ *   происхождение, известное только CLI (без них — `null`, т. е. «неизвестно»)
  * @returns {Report}
  */
-export function buildReport(cycles, { skipped = 0, gateIds = [], pending = [], stops = [] } = {}) {
+export function buildReport(
+  cycles,
+  { skipped = 0, gateIds = [], pending = [], stops = [], source = {} } = {},
+) {
   const costs = cycles.map((cycle) => cycle.cost_rub).filter((value) => value !== null);
   const evaluatorOnly = cycles.reduce((sum, cycle) => sum + cycle.findings.only_evaluator, 0);
   const totalFindings = cycles.reduce(
@@ -714,10 +763,18 @@ export function buildReport(cycles, { skipped = 0, gateIds = [], pending = [], s
   );
 
   return {
+    source: {
+      dir: source.dir ?? null,
+      cycles_read: cycles.length + pending.length,
+      cycles_skipped: skipped,
+      core: {
+        version: source.core?.version ?? null,
+        revision: source.core?.revision ?? null,
+      },
+    },
     cycles,
     pending,
     stops,
-    skipped,
     cost: {
       measured: costs.length,
       total: cycles.length,
@@ -835,20 +892,36 @@ function stopsMarkdown(stops) {
 }
 
 /**
+ * Шапка отчёта в markdown: откуда снят, сколько прочитано и пропущено, каким ядром, и правило
+ * «факт — прогон». Всё — из блока `source`; без значения — прочерк, а не догадка.
+ * @param {ReportSource} source
+ * @returns {string[]}
+ */
+function sourceMarkdown(source) {
+  const dir = source.dir === null ? NO_VALUE : `\`${source.dir}\``;
+  const version = source.core.version === null ? NO_VALUE : source.core.version;
+  const revision = source.core.revision === null ? NO_VALUE : `\`${source.core.revision}\``;
+  return [
+    `- Каталог артефактов: ${dir}`,
+    `- Прочитано каталогов: ${source.cycles_read}, пропущено: ${source.cycles_skipped}` +
+      ` (без \`${FIXED_NAMES.state}\` и \`${FIXED_NAMES.metrics}\`)`,
+    `- Ядро: ${version}, ревизия: ${revision}`,
+    '- Факт — прогон, а не текст: сводка собрана из артефактов этого каталога, ' +
+      'повторный прогон на том же дереве даёт тот же вывод.',
+    '',
+  ];
+}
+
+/**
  * Отчёт в markdown: шапка с итогами, таблица циклов, таблица гейтов, незавершённые циклы
  * и причины остановки.
  * @param {Report} report
  * @returns {string}
  */
 export function renderMarkdown(report) {
-  const { cycles, pending, stops, cost, findings, skipped, gates } = report;
+  const { source, cycles, pending, stops, cost, findings, gates } = report;
   /** @type {string[]} */
-  const lines = ['# Отчёт по циклам', ''];
-
-  lines.push(
-    `Пропущено каталогов без \`${FIXED_NAMES.state}\` и \`${FIXED_NAMES.metrics}\`: ${skipped}.`,
-    '',
-  );
+  const lines = ['# Отчёт по циклам', '', ...sourceMarkdown(source)];
 
   if (cycles.length === 0) {
     lines.push('Циклов с `metrics.json` нет: собирать нечего.', '');
@@ -950,6 +1023,7 @@ h2 { margin: 2rem 0 .75rem; font-size: 1.2rem; }
 p { margin: .25rem 0; }
 .lead { font-weight: 600; }
 .muted { color: #6b7280; }
+.source { margin: 0 0 1rem; padding-left: 1.1rem; font-size: 14px; color: #6b7280; }
 table { border-collapse: collapse; width: 100%; margin: .5rem 0 1rem; font-size: 14px; }
 caption { text-align: left; padding-bottom: .4rem; color: #6b7280; }
 th, td { border: 1px solid #d1d5db; padding: .35rem .5rem; text-align: right;
@@ -975,7 +1049,7 @@ tbody tr:nth-child(even) { background: #fafafa; }
   thead th, .track { background: #1f2937; }
   tbody tr:nth-child(even) { background: #0f172a; }
   .fill { background: #60a5fa; }
-  .muted, .bars .value, caption { color: #9ca3af; }
+  .muted, .bars .value, caption, .source { color: #9ca3af; }
   .stop { border-color: #374151; }
   .insufficient { color: #fbbf24; }
 }`;
@@ -1104,20 +1178,40 @@ function stopsHtml(stops) {
 }
 
 /**
+ * Шапка отчёта в HTML: те же факты, что в markdown-шапке (#114).
+ * @param {ReportSource} source
+ * @returns {string[]}
+ */
+function sourceHtml(source) {
+  const dir = source.dir === null ? NO_VALUE : `<code>${escapeHtml(source.dir)}</code>`;
+  const version = source.core.version === null ? NO_VALUE : escapeHtml(source.core.version);
+  const revision =
+    source.core.revision === null ? NO_VALUE : `<code>${escapeHtml(source.core.revision)}</code>`;
+  const artifacts =
+    `без <code>${escapeHtml(FIXED_NAMES.state)}</code>` +
+    ` и <code>${escapeHtml(FIXED_NAMES.metrics)}</code>`;
+  return [
+    '<ul class="source">',
+    `<li>Каталог артефактов: ${dir}</li>`,
+    `<li>Прочитано каталогов: ${source.cycles_read}, пропущено: ${source.cycles_skipped}` +
+      ` (${artifacts})</li>`,
+    `<li>Ядро: ${version}, ревизия: ${revision}</li>`,
+    '<li><strong>Факт — прогон, а не текст:</strong> сводка собрана из артефактов этого каталога,' +
+      ' повторный прогон на том же дереве даёт тот же вывод.</li>',
+    '</ul>',
+  ];
+}
+
+/**
  * Отчёт одной самодостаточной HTML-страницей (#45). Чистая функция: те же факты, что в
  * markdown, без времени, случайности и внешних ресурсов.
  * @param {Report} report
  * @returns {string}
  */
 export function renderHtml(report) {
-  const { cycles, pending, stops, cost, findings, skipped, gates } = report;
+  const { source, cycles, pending, stops, cost, findings, gates } = report;
   /** @type {string[]} */
-  const body = ['<h1>Отчёт по циклам</h1>'];
-
-  body.push(
-    '<p class="muted">Пропущено каталогов без <code>state.json</code> и ' +
-      `<code>${escapeHtml(FIXED_NAMES.metrics)}</code>: ${skipped}.</p>`,
-  );
+  const body = ['<h1>Отчёт по циклам</h1>', ...sourceHtml(source)];
 
   if (cycles.length === 0) {
     body.push('<p>Циклов с <code>metrics.json</code> нет: собирать нечего.</p>');
@@ -1393,6 +1487,10 @@ function main() {
       skipped,
       pending,
       stops,
+      source: {
+        dir,
+        core: { version: coreVersion(root), revision: headRevision({ cwd: root }) },
+      },
       gateIds: config.gates.map((gate) => gate.id),
     });
     const output = args.html

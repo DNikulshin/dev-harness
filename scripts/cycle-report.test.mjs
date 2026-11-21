@@ -1,8 +1,16 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { describe, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
@@ -11,6 +19,7 @@ import {
   barPercent,
   buildReport,
   collectStopArtifacts,
+  coreVersion,
   escapeHtml,
   lastIterationFile,
   listArtifactDirs,
@@ -25,6 +34,7 @@ import {
   summarizePending,
   summarizeStop,
 } from './cycle-report.mjs';
+import { headRevision } from './lib/cycle/git.mjs';
 
 /** Путь к CLI: сквозные тесты запускают его отдельным процессом. */
 const SCRIPT = fileURLToPath(new URL('./cycle-report.mjs', import.meta.url));
@@ -146,7 +156,7 @@ describe('cycle-report: сводка по метрикам', () => {
 
     assert.deepEqual(report.cost, { measured: 2, total: 3, sum: 26.08, median: 13.04 });
     assert.deepEqual(report.findings, { evaluator_only: 3, total: 5, percent: 60 });
-    assert.equal(report.skipped, 5);
+    assert.equal(report.source.cycles_skipped, 5);
   });
 
   test('buildReport без расходов: сумма и медиана — null, а не 0', () => {
@@ -200,7 +210,9 @@ describe('cycle-report: markdown', () => {
     const text = renderMarkdown(buildReport([], { skipped: 7 }));
 
     assert.ok(text.includes('Циклов с `metrics.json` нет'));
-    assert.ok(text.includes('Пропущено каталогов без `state.json` и `metrics.json`: 7.'));
+    assert.ok(
+      text.includes('Прочитано каталогов: 0, пропущено: 7 (без `state.json` и `metrics.json`)'),
+    );
     assert.ok(!text.includes('| Цикл |'));
   });
 });
@@ -254,7 +266,7 @@ describe('cycle-report: html', () => {
     assert.ok(html.includes('Циклов с <code>metrics.json</code> нет'));
     assert.ok(
       html.includes(
-        'Пропущено каталогов без <code>state.json</code> и <code>metrics.json</code>: 7.',
+        'Прочитано каталогов: 0, пропущено: 7 (без <code>state.json</code> и <code>metrics.json</code>)',
       ),
     );
     assert.ok(!html.includes('<table>'), 'пустых таблиц нет');
@@ -523,7 +535,11 @@ describe('cycle-report: CLI', () => {
     assert.equal(first.status, 0, first.stderr);
     assert.equal(first.stdout, second.stdout, 'два прогона дают побайтно равный отчёт');
     assert.ok(first.stdout.includes('Циклов: 2, с расходом: 1.'));
-    assert.ok(first.stdout.includes('Пропущено каталогов без `state.json` и `metrics.json`: 2.'));
+    assert.ok(
+      first.stdout.includes(
+        'Прочитано каталогов: 2, пропущено: 2 (без `state.json` и `metrics.json`)',
+      ),
+    );
     assert.ok(
       first.stdout.indexOf('2026-11-16-188-health-db') <
         first.stdout.indexOf('2026-11-17-108-confirmation-url'),
@@ -668,7 +684,11 @@ describe('cycle-report: CLI', () => {
 
     assert.equal(first.status, 0, first.stderr);
     assert.equal(first.stdout, second.stdout, 'два прогона дают побайтно равный отчёт');
-    assert.ok(first.stdout.includes('Пропущено каталогов без `state.json` и `metrics.json`: 1.'));
+    assert.ok(
+      first.stdout.includes(
+        'Прочитано каталогов: 2, пропущено: 1 (без `state.json` и `metrics.json`)',
+      ),
+    );
     assert.match(first.stdout, /## Незавершённые циклы/u);
     assert.ok(
       first.stdout.includes(
@@ -970,5 +990,162 @@ describe('cycle-report: контекст и кэш (ADR 0009, #108)', () => {
     assert.equal(result.status, 2);
     assert.equal(result.stdout, '');
     assert.match(result.stderr, /--json и --html взаимоисключающие/u);
+  });
+});
+
+describe('cycle-report: отчёт как представление прогона (source, #114)', () => {
+  /** Корень ядра: версия и ревизия берутся из него, а не из `--dir`. */
+  const ROOT = fileURLToPath(new URL('..', import.meta.url));
+
+  /** Ревизия HEAD ядра; вне git — `null` (прогон возможен и без репозитория). */
+  function expectedRevision() {
+    const result = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: ROOT, encoding: 'utf8' });
+    return result.status === 0 ? result.stdout.trim() : null;
+  }
+
+  /**
+   * Дерево из трёх прочитанных каталогов (два цикла с метриками, один незавершённый) и
+   * одного пропущенного: `cycles_read + cycles_skipped` должно складываться в число каталогов.
+   * @param {import('node:test').TestContext} t
+   * @returns {string}
+   */
+  function provenanceTree(t) {
+    const dir = makeDir(t);
+    writeCycle(
+      dir,
+      '2026-11-16-188-health-db',
+      metricsDoc({ cost_rub: null, final_stage: 'ESCALATED' }),
+    );
+    writeCycle(dir, '2026-11-17-108-confirmation-url', metricsDoc({ cost_rub: 4.72 }));
+    const pending = join(dir, '2026-11-18-115-share');
+    mkdirSync(pending, { recursive: true });
+    writeFileSync(join(pending, 'state.json'), `${JSON.stringify(fixture('state.valid.json'))}\n`);
+    mkdirSync(join(dir, 'evals'), { recursive: true });
+    return dir;
+  }
+
+  test('--json: source говорит, откуда снят отчёт, сколько прочитано и каким ядром', (t) => {
+    const dir = provenanceTree(t);
+
+    const result = runCli(['--dir', dir, '--json']);
+
+    assert.equal(result.status, 0, result.stderr);
+    const { source } = JSON.parse(result.stdout.trim());
+
+    assert.ok(isAbsolute(source.dir), 'каталог артефактов — абсолютный путь');
+    assert.equal(realpathSync(source.dir), realpathSync(dir), 'тот же каталог, что в --dir');
+    assert.equal(source.cycles_read, 3, 'два цикла с метриками и один незавершённый');
+    assert.equal(source.cycles_skipped, 1, 'evals — без state.json и metrics.json');
+    assert.deepEqual(Object.keys(source), ['dir', 'cycles_read', 'cycles_skipped', 'core']);
+    assert.deepEqual(Object.keys(source.core), ['version', 'revision'], 'время в source не входит');
+    assert.equal(
+      source.core.version,
+      JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).version,
+    );
+    assert.equal(source.core.revision, expectedRevision());
+  });
+
+  test('числа source складываются в каталоги: подмена одного видна по сумме', (t) => {
+    const dir = provenanceTree(t);
+    const dirs = readdirSync(dir, { withFileTypes: true }).filter((entry) => entry.isDirectory());
+
+    const { source } = JSON.parse(runCli(['--dir', dir, '--json']).stdout);
+
+    assert.equal(source.cycles_read + source.cycles_skipped, dirs.length);
+  });
+
+  test('markdown и --html собираются из --json, второго источника правды нет', (t) => {
+    const dir = provenanceTree(t);
+
+    const report = JSON.parse(runCli(['--dir', dir, '--json']).stdout);
+
+    assert.equal(
+      runCli(['--dir', dir]).stdout,
+      renderMarkdown(report),
+      'markdown — из того же объекта',
+    );
+    assert.equal(
+      runCli(['--dir', dir, '--html']).stdout,
+      renderHtml(report),
+      '--html — из того же объекта',
+    );
+  });
+
+  test('подменённая сводка расходится с прогоном по source', (t) => {
+    const dir = provenanceTree(t);
+    /* Сводка «на глаз»: правдоподобные числа, но это текст, а не прогон. */
+    const claimed = { cycles: 4, skipped: 0 };
+
+    const { source } = JSON.parse(runCli(['--dir', dir, '--json']).stdout);
+
+    assert.notEqual(source.cycles_read, claimed.cycles, 'прочитано не столько, сколько в сводке');
+    assert.notEqual(source.cycles_skipped, claimed.skipped);
+
+    const text = runCli(['--dir', dir]).stdout;
+    assert.ok(
+      text.includes('Прочитано каталогов: 3, пропущено: 1'),
+      'шапка повторяет source, а не сводку',
+    );
+    assert.ok(!text.includes('Прочитано каталогов: 4'));
+    assert.ok(text.includes('Факт — прогон, а не текст'), 'правило напечатано в шапке');
+  });
+
+  test('детерминизм: два прогона дают побайтно равный JSON с тем же source', (t) => {
+    const dir = provenanceTree(t);
+
+    const first = runCli(['--dir', dir, '--json']);
+    const second = runCli(['--dir', dir, '--json']);
+
+    assert.equal(first.status, 0, first.stderr);
+    assert.equal(first.stdout, second.stdout);
+    assert.deepEqual(JSON.parse(first.stdout).source, JSON.parse(second.stdout).source);
+  });
+
+  test('происхождение неизвестно — null в JSON и прочерк в шапке, а не догадка', (t) => {
+    const report = buildReport([summarizeCycle('a', metricsDoc({ cost_rub: 1 }))], { skipped: 2 });
+
+    assert.deepEqual(report.source, {
+      dir: null,
+      cycles_read: 1,
+      cycles_skipped: 2,
+      core: { version: null, revision: null },
+    });
+
+    const text = renderMarkdown(report);
+    assert.ok(text.includes('- Каталог артефактов: —'));
+    assert.ok(text.includes('- Ядро: —, ревизия: —'));
+
+    const html = renderHtml(report);
+    assert.ok(html.includes('Каталог артефактов: —'));
+    assert.ok(html.includes('Ядро: —, ревизия: —'));
+
+    const empty = makeDir(t);
+    assert.equal(headRevision({ cwd: empty }), null, 'вне git — ревизии нет');
+    assert.equal(coreVersion(empty), null, 'нет package.json — версия неизвестна');
+  });
+
+  test('coreVersion: версия из package.json ядра, без файла и поля — null', (t) => {
+    const dir = makeDir(t);
+
+    writeFileSync(join(dir, 'package.json'), '{"version": "9.9.9"}\n');
+    assert.equal(coreVersion(dir), '9.9.9');
+
+    writeFileSync(join(dir, 'package.json'), '{"name": "no-version"}\n');
+    assert.equal(coreVersion(dir), null);
+
+    writeFileSync(join(dir, 'package.json'), '{"version": \n');
+    assert.equal(coreVersion(dir), null, 'битый package.json — неизвестно, а не падение');
+  });
+
+  test('путь к артефактам с разметкой экранируется в шапке --html', (t) => {
+    const root = makeDir(t);
+    const dir = join(root, 'artifacts<&>"x');
+    mkdirSync(dir, { recursive: true });
+    writeCycle(dir, 'a', metricsDoc({ cost_rub: 1 }));
+
+    const html = runCli(['--dir', dir, '--html']).stdout;
+
+    assert.ok(html.includes('artifacts&lt;&amp;&gt;&quot;x'), 'путь в шапке экранирован');
+    assert.ok(!html.includes('artifacts<&>'), 'сырого пути в разметке нет');
   });
 });

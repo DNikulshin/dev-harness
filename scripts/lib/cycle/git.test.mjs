@@ -12,6 +12,7 @@ import {
   changedFiles,
   changedFilesWithStatus,
   diffFromBase,
+  headRevision,
   intentToAddUntracked,
 } from './git.mjs';
 
@@ -152,6 +153,17 @@ const MULTI_HUNK_DIFF = [
 ].join('\n');
 
 describe('git', () => {
+  test('headRevision: sha текущего коммита, а вне git — null, а не догадка', (t) => {
+    const { dir, sha } = makeRepo(t);
+    assert.equal(headRevision({ cwd: dir }), sha);
+
+    // Пустой репозиторий: HEAD есть, коммита нет — ревизии нет.
+    const empty = mkdtempSync(join(tmpdir(), 'harness-git-empty-'));
+    t.after(() => rmSync(empty, { recursive: true, force: true }));
+    execFileSync('git', ['init'], { cwd: empty, encoding: 'utf8' });
+    assert.equal(headRevision({ cwd: empty }), null);
+  });
+
   test('без intent-to-add новый файл в диффе не виден, после — виден целиком', (t) => {
     const { dir, sha } = makeRepo(t);
     appendFileSync(join(dir, 'tracked.txt'), 'changed\n');

@@ -80,6 +80,21 @@ export function currentBranch({ cwd = repoRoot() } = {}) {
 }
 
 /**
+ * Ревизия HEAD (`git rev-parse HEAD`) — чем снят отчёт или артефакт. `null`, если ревизии
+ * нет: репозиторий без коммитов, каталог вне git, git недоступен. В отчёте это честное
+ * «ревизия неизвестна»: sha, выдуманный из даты или имени ветки, удостоверял бы несуществующее.
+ * @param {{ cwd?: string }} [options]
+ * @returns {string|null}
+ */
+export function headRevision({ cwd = repoRoot() } = {}) {
+  try {
+    return git(['rev-parse', 'HEAD'], cwd).trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Существует ли локальная ветка. `show-ref --verify --quiet` не пишет в stdout и
  * завершается кодом 1 для отсутствующей ссылки — `execFileSync` в этом случае бросает.
  * Полное имя ссылки строится здесь (`refs/heads/…`), поэтому значение не может стать
