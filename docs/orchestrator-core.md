@@ -543,12 +543,15 @@ node scripts/cycle-decide.mjs --dir D [--iteration N]
    `evidence/criteria.md` обязан иметь статус в `evaluation.criteria`; иначе строка
    `criteria:<id> missing`. Лишние `id` оценщика в решении не участвуют и ошибкой не являются.
    Добором это не решается: `acquire[]` не пополняется — статус даёт оценщик, а не данные.
-   Понижение (#125, ADR 0011 вариант B): каждый элемент `downgraded[]` повторяется в
-   `unverified[]` строкой `unproven: <id> [<SEV>] <причина>`; критерий `partial` —
-   `unproven: <id> [partial]`; вердикт оценки `REWORK` без валидного блокера —
-   `unproven: evaluation [REWORK]`. Понижение не блокер, но и не «проверено», поэтому
-   такое решение — `PROCEED_WITH_UNVERIFIED`, а не `PROCEED`; `acquire[]` не пополняется
-   (ссылку и сценарий даёт агент, а не данные). Счётчики `partial_criteria`,
+   Понижение (#125, ADR 0011 вариант B): недоказанный элемент `downgraded[]` повторяется в
+   `unverified[]` строкой `unproven: <id> [<SEV>] <причина>` — это `нет пути и строки`,
+   `нет сценария воспроизведения`, `ссылка не разрешается`, `нет свидетельства`. Исключения
+   политики — `preexisting` и `вне скоупа` — доказаны, но не в зоне ответственности цикла:
+   они остаются только в `downgraded[]` и `counts.followups` и `PROCEED` не лишают (#133).
+   Критерий `partial` — `unproven: <id> [partial]`; вердикт оценки `REWORK` без валидного
+   блокера — `unproven: evaluation [REWORK]`. Понижение не блокер, но и не «проверено»,
+   поэтому такое решение — `PROCEED_WITH_UNVERIFIED`, а не `PROCEED`; `acquire[]` не
+   пополняется (ссылку и сценарий даёт агент, а не данные). Счётчики `partial_criteria`,
    `verdict_without_evidence` и `followups` не меняются.
    unverified ≠ ∅:
      есть исполнимое (required-гейт not_run не по no_database; QA не выполнен при web-диффе;
@@ -569,9 +572,10 @@ node scripts/cycle-decide.mjs --dir D [--iteration N]
 этапа по Приложению B. Файла нет (правил `integrity` в проекте нет) — правило не срабатывает;
 битый файл — код 2, как у `qa-web.json`.
 
-`partial` у критерия блоком не является: попадает в `notes`. Вердикт модели
-`REWORK` без валидного блокера записывается как `verdict_without_evidence` и не блокирует.
-Бюджет (правило 7 спеки, правило 0 этого расчёта) — единственное правило, которое
+`partial` у критерия блоком не является, но и не «проверено»: он попадает в `unverified[]` строкой
+`unproven: <id> [partial]` (§5.6, #125), поэтому решение — `PROCEED_WITH_UNVERIFIED`.
+Вердикт модели `REWORK` без валидного блокера записывается как `verdict_without_evidence` и не
+блокирует, но `PROCEED` тоже не даёт. Бюджет (правило 7 спеки, правило 0 этого расчёта) — единственное правило, которое
 проверяется раньше агентских: стоимость считается по накопленному `usage.json` и
 `evals/prices.json` (`cost.mjs`), потому что на момент DECIDE `metrics.json` ещё не
 написан (§5.8). Порог — `LIMITS.maxCycleCostRub` (30 ₽, обоснование в §11

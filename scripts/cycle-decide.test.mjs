@@ -370,11 +370,14 @@ describe('decide: правило 2b — находки ревью', () => {
       name: 'preexisting находка',
       finding: finding({ preexisting: true }),
       expected: 'R1 [BLOCKER] найдено до правок (preexisting)',
+      // Исключение политикой: доказано, но вне зоны ответственности цикла (#133).
+      excluded: true,
     },
     {
       name: 'MAJOR вне скоупа',
       finding: finding({ severity: 'MAJOR', in_scope: false }),
       expected: 'R1 [MAJOR] вне скоупа',
+      excluded: true,
     },
     {
       name: 'нет сценария воспроизведения',
@@ -402,15 +405,39 @@ describe('decide: правило 2b — находки ревью', () => {
     test(`${scenario.name}: понижается, не блокирует`, (t) => {
       const result = decide(inputs(makeWorkspace(t), { review: reviewDoc([scenario.finding]) }));
 
-      // Понижение — не блокер, но и не «проверено» (#125): действие — PROCEED_WITH_UNVERIFIED.
-      assert.equal(result.action, 'PROCEED_WITH_UNVERIFIED');
+      // Понижение — не блокер. «Не доказано» (нет позиции/repro/ссылки) лишает PROCEED,
+      // «исключено политикой» (preexisting, вне скоупа) — нет (#125, #133).
+      assert.equal(result.action, scenario.excluded ? 'PROCEED' : 'PROCEED_WITH_UNVERIFIED');
       assert.deepEqual(result.downgraded, [scenario.expected]);
-      assert.deepEqual(result.unverified, [`unproven: ${scenario.expected}`]);
+      assert.deepEqual(
+        result.unverified,
+        scenario.excluded ? [] : [`unproven: ${scenario.expected}`],
+      );
       assert.deepEqual(result.acquire, []);
       assert.deepEqual(result.counts, counts({ followups: 1 }));
       assert.deepEqual(result.rework_items, []);
     });
   }
+
+  test('только исключения политикой: PROCEED и пустой unverified (#133)', (t) => {
+    const result = decide(
+      inputs(makeWorkspace(t), {
+        review: reviewDoc([
+          finding({ id: 'R1', preexisting: true }),
+          finding({ id: 'R2', severity: 'MAJOR', in_scope: false }),
+        ]),
+      }),
+    );
+
+    assert.equal(result.action, 'PROCEED');
+    assert.deepEqual(result.unverified, [], 'проверенный цикл — без «не проверено»');
+    assert.deepEqual(result.downgraded, [
+      'R1 [BLOCKER] найдено до правок (preexisting)',
+      'R2 [MAJOR] вне скоупа',
+    ]);
+    assert.deepEqual(result.counts, counts({ followups: 2 }), 'долг виден в followups');
+    assert.deepEqual(result.rework_items, []);
+  });
 
   test('неразрешаемая ссылка увеличивает unresolved_refs', (t) => {
     const result = decide(
