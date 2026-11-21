@@ -265,6 +265,22 @@ describe('scanSecrets', () => {
     });
   }
 
+  test('ссылка на код в присвоении — не секрет', () => {
+    // Иначе `secret = <имя функции из 12+ символов>` давало бы ложную находку на обычном коде.
+    assert.deepEqual(
+      scanSecrets([
+        'const token = buildToken(user);',
+        'const secret = process.env.APP_SECRET;',
+        'api_key: config.apiKey',
+      ]),
+      [],
+    );
+    // Литерал в кавычках — по-прежнему находка: там значение записано целиком.
+    assert.deepEqual(scanSecrets(['password: "hunter2hunter2hunter2"']), [
+      { line: 1, kind: 'assigned_secret' },
+    ]);
+  });
+
   test('имена переменных окружения не считаются токенами', () => {
     assert.deepEqual(scanSecrets(['npm_config_cache', 'npm_config_user_agent=1']), []);
   });
