@@ -1,4 +1,48 @@
 #!/usr/bin/env node
+export type StageContext = {
+    /**
+     * этап модели (`plan`, `code`, `review`, `evaluate`)
+     */
+    stage: string;
+    /**
+     * input-токены этапа
+     */
+    input: number;
+    /**
+     * доля кэша этапа
+     */
+    cache_share: number | null;
+};
+export type ContextSummary = {
+    /**
+     * размер пакета последней измеренной итерации
+     */
+    evidence_bytes: number | null;
+    /**
+     * число файлов той же итерации
+     */
+    evidence_files: number | null;
+    /**
+     * отношение последней измеренной итерации к первой
+     */
+    evidence_growth: number | null;
+    /**
+     * input-токены цикла
+     */
+    input: number | null;
+    /**
+     * доля кэша цикла
+     */
+    cache_share: number | null;
+    /**
+     * расход по стадиям (порядок автомата)
+     */
+    stages: StageContext[];
+    /**
+     * имена недостающих артефактов замера
+     */
+    missing: string[];
+};
 export type CycleSummary = {
     /**
      * имя каталога цикла
@@ -25,6 +69,10 @@ export type CycleSummary = {
     unresolved_refs: number;
     unclosed_stages: number;
     gate_outcomes: Record<string, Record<string, number>>;
+    /**
+     * контекст и кэш (ADR 0009)
+     */
+    context: ContextSummary;
 };
 export type PendingCycle = {
     /**
@@ -183,6 +231,25 @@ export declare function lastIterationFile(cycleDir: string, base: string): {
     iteration: number;
     fileName: string;
 } | null;
+/**
+ * Сводка контекста и кэша одного цикла из блока `context` (ADR 0009, #108). Чистая функция:
+ * файлов не читает, ничего не додумывает.
+ *
+ * Три источника, три правила:
+ *
+ * - **размер пакета** — последняя **измеренная** итерация: у неё есть снимок
+ *   `manifest.<n>.json`. Нет ни одного снимка — `null` и имя файла в `missing`;
+ * - **рост evidence** — отношение последней измеренной итерации к первой. Одна измеренная
+ *   итерация роста не даёт (сравнивать не с чем), а нулевая первая — не даёт доли;
+ * - **расход** — только `context.tokens`: нет `usage.json` — `tokens: null`, и это `null`,
+ *   а не нулевые токены.
+ *
+ * Отдельного поля «мерить нечем» нет намеренно: каждая колонка решает сама — у цикла
+ * с расходом, но без снимков, `insufficient_data` только в колонках размера.
+ * @param {Record<string, any>} metrics проверенный `metrics.json`
+ * @returns {ContextSummary}
+ */
+export declare function summarizeContext(metrics: Record<string, any>): ContextSummary;
 /**
  * Сводка одного цикла: только поля, которые попадают в отчёт.
  * @param {string} name
