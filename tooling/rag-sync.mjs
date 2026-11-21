@@ -24,6 +24,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 /** Версия пакета должна совпадать с `mcp.json` MCP-сервера, иначе разойдутся модель/формат индекса. */
 const LOCAL_RAG_VERSION = '0.23.0';
@@ -33,14 +34,39 @@ const DB_PATH =
   process.env.LOCAL_RAG_DB_PATH ?? join(homedir(), '.local/share/mcp-local-rag/lancedb');
 const CACHE_DIR = process.env.LOCAL_RAG_CACHE_DIR ?? join(homedir(), '.cache/mcp-local-rag');
 const BASE_DIRS = process.env.LOCAL_RAG_BASE_DIRS ?? JSON.stringify([join(homedir(), 'projects')]);
-const IGNORE_PATHS = JSON.stringify([
+/**
+ * Что не попадает в индекс. Список уходит в `mcp-local-rag` переменной `IGNORE_PATHS` и служит
+ * страховкой на случай **полной** сверки: `BASE_DIRS` по умолчанию — весь `~/projects`, и без
+ * этих строк `.pi/artifacts/` всех проектов снова окажется в общей базе (issue #169). Штатный
+ * `pnpm rag:sync` синкает только `docs/`, но полную сверку запускает и агент, и рука.
+ *
+ * `.pi/artifacts/` — рабочий мусор циклов, `.env*` — секреты (docs/rag.md, «Что индексируется»).
+ * @type {readonly string[]}
+ */
+export const IGNORE_PATTERNS = [
   '**/.git/**',
   '**/node_modules/**',
   '**/.next/**',
   '**/dist/**',
   '**/build/**',
   '**/.turbo/**',
-]);
+  '**/.pi/artifacts/**',
+  '**/.env*',
+];
+
+const IGNORE_PATHS = JSON.stringify(IGNORE_PATTERNS);
+
+/**
+ * Запущен ли файл напрямую (`node tooling/rag-sync.mjs`, `.githooks/post-merge`, `pnpm rag:sync`),
+ * а не импортирован тестом. Без этой проверки любой импорт запускал бы синк.
+ * @param {string | undefined} entry путь из `process.argv[1]`
+ * @param {string} moduleUrl `import.meta.url` этого файла
+ * @returns {boolean}
+ */
+export function isEntryPoint(entry, moduleUrl) {
+  if (!entry) return false;
+  return moduleUrl === pathToFileURL(entry).href;
+}
 
 /**
  * Первая строка сообщения об ошибке: в лог хука не должно попадать многострочное полотно.
@@ -93,4 +119,4 @@ function main() {
   }
 }
 
-main();
+if (isEntryPoint(process.argv[1], import.meta.url)) main();
