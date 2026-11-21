@@ -54,6 +54,11 @@ export type DecideInputs = {
      */
     integrity?: Record<string, any> | null;
     /**
+     * критерии из `evidence/criteria.md`, закреплённые `state.criteria_sha256`; `null`
+     * (по умолчанию) — заморозки не было (старый цикл), сверять полноту не с чем
+     */
+    frozenCriteria?: readonly import('./lib/cycle/criteria.mjs').Criterion[] | null;
+    /**
      * дифф затрагивает `apps/frontend`
      */
     webDiff: boolean;
@@ -141,6 +146,9 @@ export type Decision = {
  *   проверенный `qa-web.json` или `null`, если файла нет
  * @property {Record<string, any>|null} [integrity] проверенный `evidence/integrity.json`
  *   или `null` (по умолчанию): правил `integrity` в проекте нет или пакет собран без них
+ * @property {readonly import('./lib/cycle/criteria.mjs').Criterion[]|null} [frozenCriteria]
+ *   критерии из `evidence/criteria.md`, закреплённые `state.criteria_sha256`; `null`
+ *   (по умолчанию) — заморозки не было (старый цикл), сверять полноту не с чем
  * @property {boolean} webDiff дифф затрагивает `apps/frontend`
  * @property {string} root корень репозитория для разрешения ссылок
  * @property {number|null} [costRub] стоимость цикла по `usage.json` и `evals/prices.json`:
