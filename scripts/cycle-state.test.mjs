@@ -1982,18 +1982,57 @@ describe('cycle-state: lock', () => {
     assert.equal(claimStaleFile(file, inspected), 'gone', 'повторный claim — файла нет');
   });
 
+  test('claimStaleFile: свежий файл конкурента не переносится вовсе (сверка до переноса)', (t) => {
+    const { root } = makeRepo(t);
+    const file = join(root, '.pi', 'artifacts', '.lock');
+    mkdirSync(dirname(file), { recursive: true });
+
+    // Осматривали устаревший файл, но к моменту снятия по пути уже лежит свежий lock конкурента.
+    writeFileSync(file, 'устаревший\n');
+    const inspected = statSync(file).ino;
+    const fresh = join(dirname(file), 'fresh.tmp');
+    writeFileSync(fresh, 'свежий lock конкурента\n');
+    renameSync(fresh, file);
+
+    let moved = false;
+    assert.equal(
+      claimStaleFile(file, inspected, {
+        // До issue #122 свежий файл сначала уносился под `.stale.*`, и на время возврата его не
+        // было по каноническому пути — владелец считал свой захват потерянным, оба получали код 3.
+        afterMove: () => {
+          moved = true;
+        },
+      }),
+      'other',
+    );
+
+    assert.equal(moved, false, 'чужой файл не переименовывался');
+    assert.equal(readFileSync(file, 'utf8'), 'свежий lock конкурента\n', 'чужой файл не тронут');
+    assert.deepEqual(
+      readdirSync(dirname(file)).filter((name) => name.includes('.stale.')),
+      [],
+      'черновых имён после сверки не осталось',
+    );
+  });
+
   test('claimStaleFile: возврат чужого файла не затирает появившийся .lock (BLOCKER ревью)', (t) => {
     const { root } = makeRepo(t);
     const file = join(root, '.pi', 'artifacts', '.lock');
     mkdirSync(dirname(file), { recursive: true });
 
-    // Осматривали устаревший файл, но к моменту снятия по пути уже лежит свежий lock.
+    // Осматривали устаревший файл, но в окне между сверкой inode и переносом по пути уже лежит
+    // свежий lock: сверка до переноса такое окно закрыть не может — его закрывает возврат.
     writeFileSync(file, 'устаревший\n');
-    const alienIno = statSync(file).ino + 1; // inode, которого на пути нет — значит «чужой»
+    const inspected = statSync(file).ino;
 
     assert.throws(
       () =>
-        claimStaleFile(file, alienIno, {
+        claimStaleFile(file, inspected, {
+          beforeMove: () => {
+            const fresh = join(dirname(file), 'fresh.tmp');
+            writeFileSync(fresh, 'свежий lock\n');
+            renameSync(fresh, file);
+          },
           // Вклиниваемся в окно между переименованием и возвратом: третий процесс создал свой .lock.
           afterMove: () => writeFileSync(file, 'третий процесс\n'),
         }),
