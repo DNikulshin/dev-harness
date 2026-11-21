@@ -33,6 +33,28 @@ describe('IGNORE_PATTERNS: что не попадает в общую базу',
     }
   });
 
+  test('дампы данных и отчёты сборки исключены — на них приходилось 25% базы (issue #173)', () => {
+    for (const pattern of ['**/*.txt', '**/out/**', '**/coverage/**']) {
+      assert.ok(
+        IGNORE_PATTERNS.includes(pattern),
+        `без ${pattern} полная сверка вернёт в индекс дампы сборки (certdata.txt — 3833 чанка)`,
+      );
+    }
+  });
+
+  test('кэши и окружения исключены — их содержимое не документация (issue #173)', () => {
+    for (const pattern of ['**/.cache/**', '**/.venv/**', '**/target/**']) {
+      assert.ok(IGNORE_PATTERNS.includes(pattern), `нет исключения ${pattern}`);
+    }
+  });
+
+  test('ни один шаблон не исключает всё дерево целиком', () => {
+    for (const pattern of IGNORE_PATTERNS) {
+      assert.notEqual(pattern.trim(), '**', `слишком широкий шаблон ${pattern}`);
+      assert.ok(pattern.length > 4, `подозрительно короткий шаблон ${pattern}`);
+    }
+  });
+
   test('список не содержит пустых строк: пустой шаблон исключил бы всё', () => {
     assert.ok(IGNORE_PATTERNS.every((pattern) => pattern.trim() !== ''));
   });
