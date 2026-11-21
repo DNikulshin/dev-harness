@@ -7,6 +7,7 @@
  * прочитать из теста без побочного эффекта.
  */
 import assert from 'node:assert/strict';
+import { posix } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, test } from 'node:test';
 
@@ -46,6 +47,29 @@ describe('IGNORE_PATTERNS: что не попадает в общую базу',
     for (const pattern of ['**/.cache/**', '**/.venv/**', '**/target/**']) {
       assert.ok(IGNORE_PATTERNS.includes(pattern), `нет исключения ${pattern}`);
     }
+  });
+
+  test('pnpm-стор исключён: ** не проходит через dot-сегменты (issue #175)', () => {
+    const pnpmStore = 'app/node_modules/.pnpm/pkg@1.0.0/node_modules/pkg/README.md';
+
+    // Фиксируем саму ловушку: без этой проверки шаблон может «выглядеть» рабочим, а не работать.
+    assert.equal(
+      posix.matchesGlob(pnpmStore, '**/node_modules/**'),
+      false,
+      '**/node_modules/** не ловит pnpm-стор — значит нужен отдельный шаблон',
+    );
+    assert.ok(
+      IGNORE_PATTERNS.some((pattern) => posix.matchesGlob(pnpmStore, pattern)),
+      'ни один шаблон списка не исключает путь внутри node_modules/.pnpm',
+    );
+  });
+
+  test('тестовые данные исключены: фикстуры — не документация (issue #175)', () => {
+    const fixture = 'scripts/fixtures/cycle/pr-body/proceed/evidence/criteria.md';
+    assert.ok(
+      IGNORE_PATTERNS.some((pattern) => posix.matchesGlob(fixture, pattern)),
+      'фикстуры попадают в индекс',
+    );
   });
 
   test('ни один шаблон не исключает всё дерево целиком', () => {
