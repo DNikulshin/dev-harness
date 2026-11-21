@@ -66,8 +66,9 @@
  *   (`<reason>` — причина из файла, `web-diff` — файла нет, `reason_missing` — причина пуста),
  *   `criteria:<id> unverified`, `criteria:<id> missing` (критерий заморожен, а статуса
  *   в оценке нет — полнота оценивания, #124), `unproven: <id> [<SEV>] <причина>` и
- *   `unproven: <id> [partial]` / `unproven: evaluation [REWORK]` (понижение и неполная
- *   оценка — тоже «не проверено», #125), `evaluation unverified: <what>`,
+ *   `unproven: <id> [partial]` / `unproven: evaluation [REWORK]` (недоказанный факт — тоже
+ *   «не проверено», #125; `preexisting` и `вне скоупа` доказаны и исключены политикой,
+ *   в `unverified[]` их нет — #133), `evaluation unverified: <what>`,
  *   `integrity: protected <путь> (<added|modified|deleted>)`,
  *   `integrity: tests deleted <путь>`, `integrity: tests changed (<N>)`;
  * - `downgraded[]`: `<id> [<SEV>] <причина>` (у критерия вместо `SEV` — статус `unmet`);
@@ -152,6 +153,18 @@ const DOWNGRADE_REASONS = Object.freeze({
   outOfScope: 'вне скоупа',
   noEvidence: 'нет свидетельства',
 });
+
+/**
+ * Причины, при которых замечание **исключено политикой**, а не осталось недоказанным (#133):
+ * `preexisting` и `outOfScope` доказаны, но сознательно вне зоны ответственности цикла
+ * (правило 2b `docs/orchestrator.md` §9 блокерами их не считает). В `unverified[]` они
+ * поэтому не попадают: этот список — про то, что требует внимания в текущем цикле.
+ *
+ * Сравнение идёт по значению причины, а не по готовой строке `downgraded[]`: строка
+ * содержит `id` и серьёзность, и разбор её обратно был бы вторым форматом.
+ */
+/** @type {ReadonlySet<string>} */
+const EXCLUSION_REASONS = new Set([DOWNGRADE_REASONS.preexisting, DOWNGRADE_REASONS.outOfScope]);
 
 /**
  * @typedef {object} Retries
@@ -494,6 +507,13 @@ export function decide(inputs) {
   const reworkItems = [];
   /** @type {string[]} */
   const downgraded = [];
+  /**
+   * Элементы `downgraded[]`, которые нужно показать как «не проверено» (#125).
+   * Отдельный список, а не фильтр готовых строк: исключения политики (#133) в него не попадают
+   * с момента понижения, и решать это второй раз при сборке `unverified[]` не приходится.
+   * @type {string[]}
+   */
+  const unproven = [];
   /** @type {string[]} */
   const unverified = [];
   /** @type {string[]} */
@@ -597,7 +617,11 @@ export function decide(inputs) {
 
     const problem = reviewDowngradeReason(finding, resolution);
     if (problem !== null) {
-      downgraded.push(`${finding.id} [${severity}] ${problem}`);
+      const item = `${finding.id} [${severity}] ${problem}`;
+      downgraded.push(item);
+      // `preexisting` и `outOfScope` доказаны, но исключены политикой: в «не проверено» их нет
+      // (#133), иначе честный цикл с пометкой «было до правок» никогда не получит PROCEED.
+      if (!EXCLUSION_REASONS.has(problem)) unproven.push(item);
       continue;
     }
 
@@ -640,7 +664,9 @@ export function decide(inputs) {
     if (status !== 'unmet') continue;
 
     if (refs.resolved < 1) {
-      downgraded.push(`${criterion.id} [unmet] ${DOWNGRADE_REASONS.noEvidence}`);
+      const item = `${criterion.id} [unmet] ${DOWNGRADE_REASONS.noEvidence}`;
+      downgraded.push(item);
+      unproven.push(item);
       continue;
     }
 
@@ -666,7 +692,9 @@ export function decide(inputs) {
 
     const problem = defectDowngradeReason(defect, refs.resolved);
     if (problem !== null) {
-      downgraded.push(`${defect.id} [${defect.severity}] ${problem}`);
+      const item = `${defect.id} [${defect.severity}] ${problem}`;
+      downgraded.push(item);
+      unproven.push(item);
       continue;
     }
 
@@ -728,12 +756,12 @@ export function decide(inputs) {
     }
   }
 
-  // Понижение — тоже «не проверено» (#125, ADR 0011 вариант B): находка без позиции/репро,
-  // критерий без свидетельства, `preexisting` и вне скоупа. Строка повторяет `downgraded[]`
-  // дословно, чтобы решение и отчёт не расходились, и попадает в `unverified[]`, а не в
-  // `reasons[]`: понижение не блокер, но и не «проверено». `acquire[]` не пополняется —
-  // добором это не решается: ссылку и сценарий даёт агент, а не данные.
-  for (const item of downgraded) unverified.push(`unproven: ${item}`);
+  // Понижение — тоже «не проверено» (#125, ADR 0011 вариант B), кроме исключений политики
+  // (#133): находка без позиции/репро и критерий без свидетельства — недоказанные факты.
+  // Строка повторяет `downgraded[]` дословно, чтобы решение и отчёт не расходились, и
+  // попадает в `unverified[]`, а не в `reasons[]`. `acquire[]` не пополняется — добором это
+  // не решается: ссылку и сценарий даёт агент, а не данные.
+  for (const item of unproven) unverified.push(`unproven: ${item}`);
 
   // `partial` — критерий оценён не полностью; `REWORK` без блокера — вердикт без свидетельств.
   // Счётчики `partial_criteria` и `verdict_without_evidence` остаются как были: они про
