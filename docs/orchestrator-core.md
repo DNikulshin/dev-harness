@@ -535,6 +535,7 @@ node scripts/cycle-decide.mjs --dir D [--iteration N]
 4. Нет блокеров. unverified = required-гейты not_run (кроме no_database) ∪ web-дифф без qa-web done
                               ∪ критерии unverified ∪ evaluation.unverified
                               ∪ критерии замороженного criteria.md без статуса (#124)
+                              ∪ понижения, критерии partial и REWORK без блокера (#125)
                               ∪ факты integrity (§5.4, #36)
    (у `qa-web not_run (<reason>)`: `reason` из файла, `web-diff` — файла нет,
    `reason_missing` — причина пуста, #30)
@@ -542,6 +543,13 @@ node scripts/cycle-decide.mjs --dir D [--iteration N]
    `evidence/criteria.md` обязан иметь статус в `evaluation.criteria`; иначе строка
    `criteria:<id> missing`. Лишние `id` оценщика в решении не участвуют и ошибкой не являются.
    Добором это не решается: `acquire[]` не пополняется — статус даёт оценщик, а не данные.
+   Понижение (#125, ADR 0011 вариант B): каждый элемент `downgraded[]` повторяется в
+   `unverified[]` строкой `unproven: <id> [<SEV>] <причина>`; критерий `partial` —
+   `unproven: <id> [partial]`; вердикт оценки `REWORK` без валидного блокера —
+   `unproven: evaluation [REWORK]`. Понижение не блокер, но и не «проверено», поэтому
+   такое решение — `PROCEED_WITH_UNVERIFIED`, а не `PROCEED`; `acquire[]` не пополняется
+   (ссылку и сценарий даёт агент, а не данные). Счётчики `partial_criteria`,
+   `verdict_without_evidence` и `followups` не меняются.
    unverified ≠ ∅:
      есть исполнимое (required-гейт not_run не по no_database; QA не выполнен при web-диффе;
      правка защищённых файлов или удаление теста) и retries.evidence < 1

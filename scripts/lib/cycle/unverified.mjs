@@ -15,10 +15,11 @@
  */
 
 /**
- * Префикс источника в `decision.unverified[]` (§5.6): `evaluation unverified: <what>`.
- * При сравнении снимается — иначе тот же факт из `evaluation.unverified[]` считался бы новым.
+ * Префикс источника в `decision.unverified[]` (§5.6): `evaluation unverified: <what>` и
+ * `unproven: <id> [<SEV>] <причина>` (#125). При сравнении снимается — иначе тот же факт
+ * из `evaluation.unverified[]` считался бы новым.
  */
-const SOURCE_PREFIX = /^(?:evaluation|review|decision)[ \t]+unverified:[ \t]*/iu;
+const SOURCE_PREFIX = /^(?:(?:evaluation|review|decision)[ \t]+unverified:|unproven:)[ \t]*/iu;
 
 /**
  * Непустая строка после обрезки пробелов.

@@ -42,6 +42,24 @@ describe('unverified', () => {
     assert.throws(() => dedupeUnverified(/** @type {any} */ ('пункт')), TypeError);
   });
 
+  test('префикс `unproven:` снимается: понижение одного факта не удваивается (#125)', () => {
+    const items = dedupeUnverified([
+      'unproven: R1 [BLOCKER] ссылка не разрешается',
+      'R1 [BLOCKER] ссылка не разрешается',
+    ]);
+
+    assert.deepEqual(items, ['unproven: R1 [BLOCKER] ссылка не разрешается']);
+  });
+
+  test('`unproven:` и `evaluation unverified:` — разные факты при разном тексте', () => {
+    const items = dedupeUnverified([
+      'unproven: C1 [partial]',
+      'evaluation unverified: Поведение на битом JSON',
+    ]);
+
+    assert.equal(items.length, 2);
+  });
+
   test('singleLine: пробельные последовательности — один пробел', () => {
     assert.equal(singleLine('  a\n\tb  '), 'a b');
   });
