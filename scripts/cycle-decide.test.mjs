@@ -402,8 +402,11 @@ describe('decide: правило 2b — находки ревью', () => {
     test(`${scenario.name}: понижается, не блокирует`, (t) => {
       const result = decide(inputs(makeWorkspace(t), { review: reviewDoc([scenario.finding]) }));
 
-      assert.equal(result.action, 'PROCEED');
+      // Понижение — не блокер, но и не «проверено» (#125): действие — PROCEED_WITH_UNVERIFIED.
+      assert.equal(result.action, 'PROCEED_WITH_UNVERIFIED');
       assert.deepEqual(result.downgraded, [scenario.expected]);
+      assert.deepEqual(result.unverified, [`unproven: ${scenario.expected}`]);
+      assert.deepEqual(result.acquire, []);
       assert.deepEqual(result.counts, counts({ followups: 1 }));
       assert.deepEqual(result.rework_items, []);
     });
@@ -474,8 +477,9 @@ describe('decide: правило 2c — критерии и дефекты оц�
       }),
     );
 
-    assert.equal(result.action, 'PROCEED');
+    assert.equal(result.action, 'PROCEED_WITH_UNVERIFIED');
     assert.deepEqual(result.downgraded, ['C1 [unmet] нет свидетельства']);
+    assert.deepEqual(result.unverified, ['unproven: C1 [unmet] нет свидетельства']);
     assert.deepEqual(result.counts, counts({ followups: 1 }));
     assert.equal(result.unresolved_refs, 1);
   });
@@ -501,8 +505,9 @@ describe('decide: правило 2c — критерии и дефекты оц�
       }),
     );
 
-    assert.equal(result.action, 'PROCEED');
+    assert.equal(result.action, 'PROCEED_WITH_UNVERIFIED');
     assert.deepEqual(result.downgraded, ['D1 [MAJOR] нет сценария воспроизведения']);
+    assert.deepEqual(result.unverified, ['unproven: D1 [MAJOR] нет сценария воспроизведения']);
   });
 
   test('дефект без разрешаемой ссылки понижается', (t) => {
@@ -512,7 +517,7 @@ describe('decide: правило 2c — критерии и дефекты оц�
       }),
     );
 
-    assert.equal(result.action, 'PROCEED');
+    assert.equal(result.action, 'PROCEED_WITH_UNVERIFIED');
     assert.deepEqual(result.downgraded, ['D1 [BLOCKER] нет свидетельства']);
     assert.equal(result.unresolved_refs, 1);
   });
@@ -587,8 +592,10 @@ describe('decide: partial и вердикт без свидетельств', ()
       }),
     );
 
-    assert.equal(result.action, 'PROCEED');
+    // `partial` — критерий оценён не полностью: не блокер, но и не «проверено» (#125).
+    assert.equal(result.action, 'PROCEED_WITH_UNVERIFIED');
     assert.deepEqual(result.reasons, ['criteria:C1 partial']);
+    assert.deepEqual(result.unverified, ['unproven: C1 [partial]']);
     assert.deepEqual(result.counts, counts({ partial_criteria: 1 }));
     assert.deepEqual(result.downgraded, []);
   });
@@ -600,7 +607,9 @@ describe('decide: partial и вердикт без свидетельств', ()
       }),
     );
 
-    assert.equal(result.action, 'PROCEED');
+    // Вердикт без свидетельств не блокирует, но и не делает цикл проверенным (#125).
+    assert.equal(result.action, 'PROCEED_WITH_UNVERIFIED');
+    assert.deepEqual(result.unverified, ['unproven: evaluation [REWORK]']);
     assert.deepEqual(result.counts, counts({ verdict_without_evidence: 1 }));
   });
 
@@ -834,6 +843,54 @@ describe('decide: правило 4 — unverified и acquire', () => {
           'evaluation unverified: Ручной сценарий',
         ],
         acquire: ['qa-web'],
+      },
+    },
+    {
+      name: 'понижение не мешает добору и попадает перед unverified оценщика (#125)',
+      setup: {
+        review: reviewDoc([finding({ file: 'src/a-two.mjs' })]),
+        evaluation: evaluationDoc({
+          unverified: [{ what: 'Ручной сценарий', why: 'нет стенда', how_to_verify: 'qa' }],
+        }),
+      },
+      expected: {
+        action: 'PROCEED_WITH_UNVERIFIED',
+        unverified: [
+          'unproven: R1 [BLOCKER] ссылка не разрешается',
+          'evaluation unverified: Ручной сценарий',
+        ],
+        acquire: [],
+      },
+    },
+    {
+      name: 'понижение вместе с исполнимым добором — сначала ACQUIRE_EVIDENCE',
+      setup: {
+        webDiff: true,
+        review: reviewDoc([finding({ file: 'src/a-two.mjs' })]),
+      },
+      expected: {
+        action: 'ACQUIRE_EVIDENCE',
+        unverified: ['qa-web not_run (web-diff)', 'unproven: R1 [BLOCKER] ссылка не разрешается'],
+        acquire: ['qa-web'],
+      },
+    },
+    {
+      name: 'partial и REWORK без блокера: оба попадают в unverified по порядку',
+      setup: {
+        review: reviewDoc([finding({ file: 'src/a-two.mjs' })]),
+        evaluation: evaluationDoc({
+          verdict: 'REWORK',
+          criteria: [criterion({ status: 'partial' })],
+        }),
+      },
+      expected: {
+        action: 'PROCEED_WITH_UNVERIFIED',
+        unverified: [
+          'unproven: R1 [BLOCKER] ссылка не разрешается',
+          'unproven: C1 [partial]',
+          'unproven: evaluation [REWORK]',
+        ],
+        acquire: [],
       },
     },
   ];
@@ -1166,8 +1223,9 @@ describe('decide: ссылки на .env* не читаются (AGENTS.md)', ()
 
       const result = decide(inputs(root, { review: reviewDoc([finding({ file, line: 2 })]) }));
 
-      assert.equal(result.action, 'PROCEED');
+      assert.equal(result.action, 'PROCEED_WITH_UNVERIFIED');
       assert.deepEqual(result.downgraded, ['R1 [BLOCKER] ссылка не разрешается']);
+      assert.deepEqual(result.unverified, ['unproven: R1 [BLOCKER] ссылка не разрешается']);
       assert.equal(result.unresolved_refs, 1);
       assert.deepEqual(result.rework_items, []);
       // Сам путь в решение не попадает.
@@ -1201,7 +1259,7 @@ describe('decide: ссылки на .env* не читаются (AGENTS.md)', ()
       }),
     );
 
-    assert.equal(result.action, 'PROCEED');
+    assert.equal(result.action, 'PROCEED_WITH_UNVERIFIED');
     assert.deepEqual(result.downgraded, ['C1 [unmet] нет свидетельства']);
     assert.equal(result.unresolved_refs, 1);
     assert.equal(JSON.stringify(result).includes('.env'), false);
@@ -1842,8 +1900,9 @@ describe('CLI: ПДн в решении и запрет чтения .env*', () 
 
     assert.equal(result.status, 0, result.stderr);
     const decision = JSON.parse(result.stdout);
-    assert.equal(decision.action, 'PROCEED');
+    assert.equal(decision.action, 'PROCEED_WITH_UNVERIFIED');
     assert.deepEqual(decision.downgraded, ['R1 [BLOCKER] ссылка не разрешается']);
+    assert.deepEqual(decision.unverified, ['unproven: R1 [BLOCKER] ссылка не разрешается']);
     assert.equal(decision.unresolved_refs, 1);
     assert.equal(result.stdout.includes('.env'), false);
     assert.equal(readFileSync(join(dir, 'decision.1.json'), 'utf8').includes('.env'), false);

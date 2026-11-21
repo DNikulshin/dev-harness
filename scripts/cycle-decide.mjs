@@ -65,7 +65,9 @@
  * - `unverified[]`: `gate:<id> not_run (<reason>)`, `qa-web not_run (<reason>)`
  *   (`<reason>` — причина из файла, `web-diff` — файла нет, `reason_missing` — причина пуста),
  *   `criteria:<id> unverified`, `criteria:<id> missing` (критерий заморожен, а статуса
- *   в оценке нет — полнота оценивания, #124), `evaluation unverified: <what>`,
+ *   в оценке нет — полнота оценивания, #124), `unproven: <id> [<SEV>] <причина>` и
+ *   `unproven: <id> [partial]` / `unproven: evaluation [REWORK]` (понижение и неполная
+ *   оценка — тоже «не проверено», #125), `evaluation unverified: <what>`,
  *   `integrity: protected <путь> (<added|modified|deleted>)`,
  *   `integrity: tests deleted <путь>`, `integrity: tests changed (<N>)`;
  * - `downgraded[]`: `<id> [<SEV>] <причина>` (у критерия вместо `SEV` — статус `unmet`);
@@ -613,6 +615,9 @@ export function decide(inputs) {
   /** Критерии `unverified`: попадают в `unverified[]` правила 4. */
   /** @type {string[]} */
   const criteriaUnverified = [];
+  /** Критерии `partial`: оценены не полностью — тоже «не проверено» (#125). */
+  /** @type {string[]} */
+  const partialCriteria = [];
 
   // Правило 2c, критерии: `unmet` блокирует только со свидетельством.
   for (const criterion of criteria) {
@@ -625,6 +630,7 @@ export function decide(inputs) {
 
     if (status === 'partial') {
       counts.partial_criteria += 1;
+      partialCriteria.push(String(criterion.id));
       continue;
     }
     if (status === 'unverified') {
@@ -721,6 +727,19 @@ export function decide(inputs) {
       unverified.push(`criteria:${id} missing`);
     }
   }
+
+  // Понижение — тоже «не проверено» (#125, ADR 0011 вариант B): находка без позиции/репро,
+  // критерий без свидетельства, `preexisting` и вне скоупа. Строка повторяет `downgraded[]`
+  // дословно, чтобы решение и отчёт не расходились, и попадает в `unverified[]`, а не в
+  // `reasons[]`: понижение не блокер, но и не «проверено». `acquire[]` не пополняется —
+  // добором это не решается: ссылку и сценарий даёт агент, а не данные.
+  for (const item of downgraded) unverified.push(`unproven: ${item}`);
+
+  // `partial` — критерий оценён не полностью; `REWORK` без блокера — вердикт без свидетельств.
+  // Счётчики `partial_criteria` и `verdict_without_evidence` остаются как были: они про
+  // метрики, а не про действие решения.
+  for (const id of partialCriteria) unverified.push(`unproven: ${id} [partial]`);
+  if (counts.verdict_without_evidence === 1) unverified.push('unproven: evaluation [REWORK]');
 
   for (const item of evalUnverified)
     unverified.push(`evaluation unverified: ${redacted(item.what)}`);
