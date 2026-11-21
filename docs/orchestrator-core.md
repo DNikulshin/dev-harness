@@ -460,7 +460,9 @@ node scripts/cycle-gates.mjs --dir D [--only id,id] [--base SHA]
 | `bearer_token` | `Authorization: Bearer/Basic <токен ≥12>` (значение-JWT даёт `jwt`, а не два вида) |
 | `assigned_secret` | присвоение `api[-_]?key\|secret\|token\|password\|passwd\|pass\|pwd\|credential` строковым литералом или «голым» значением ≥12 символов; имя может быть частью другого слова (`dbPassword`, `_authToken`), ключ в кавычках допускается (`"api_key": "…"`) |
 
-Заглушка определяется **по значению, а не по имени файла**: `example`, `sample`, `changeme`,
+Исключений по имени файла нет: `.env.example` сканируется наравне с остальными, находка в нём —
+такой же `fail` (#127). Заглушка определяется **по значению, а не по имени файла**: `example`,
+`sample`, `changeme`,
 `placeholder`, `dummy`, `fake`, `test`, `xxx`, `your_*`, `<…>`, `{{…}}`, `${…}` — целиком, с
 допустимым суффиксом через `-`/`_` (`example-token-value`). Суффикс-слово не спасает боевой
 секрет: `prodexample12345678` — находка. Тестовые префиксы провайдеров (`sk_test_`) находку дают:

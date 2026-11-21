@@ -86,9 +86,6 @@ const BLOCKING_STATUSES = Object.freeze(['fail', 'not_run']);
 /** Подкаталог логов гейтов внутри каталога цикла. */
 const LOGS_DIR = 'gates';
 
-/** Единственное исключение `secrets_scan` (§5.5): шаблон окружения не считается секретом. */
-const ENV_EXAMPLE = '.env.example';
-
 /** Ссылка на текущий коммит: `baseSha` с `branch: 'HEAD'` даёт sha HEAD без новой функции в lib. */
 const HEAD_REV = 'HEAD';
 
@@ -202,21 +199,11 @@ export function classifyTestIntLog(text) {
 }
 
 /**
- * Файл `.env.example` — единственное исключение `secrets_scan`. Регистр не важен;
- * проверяются полный путь (`config/.env.example`) и имя файла в корне.
- * @param {string} file
- * @returns {boolean}
- */
-function isEnvExample(file) {
-  const lower = file.toLowerCase();
-  return lower === ENV_EXAMPLE || lower.endsWith(`/${ENV_EXAMPLE}`);
-}
-
-/**
  * Находки `secrets_scan` по добавленным строкам диффа (§5.5): только `file:line` и вид
- * находки, значение секрета не сохраняется. Файл `.env.example` — единственное исключение.
- * `scanSecrets` нумерует строки относительно переданного массива, поэтому номер строки
- * в файле берётся из соответствующего элемента `addedLinesByFile`.
+ * находки, значение секрета не сохраняется. Исключений по имени файла нет: `.env.example`
+ * сканируется как любой другой файл, а «образцовость» определяется значением (заглушки
+ * отсекает `scanSecrets`, §5.5). `scanSecrets` нумерует строки относительно переданного
+ * массива, поэтому номер строки в файле берётся из элемента `addedLinesByFile`.
  * @param {unknown} files массив `{ file, lines }` (не массив — `TypeError`)
  * @returns {{ file: string, line: number, kind: string }[]}
  */
@@ -231,7 +218,6 @@ export function scanAddedLines(files) {
   for (const entry of /** @type {{ file: string, lines: { line: number, text: string }[] }[]} */ (
     files
   )) {
-    if (isEnvExample(entry.file)) continue;
     const lines = entry.lines.map((line) => line.text);
     for (const finding of scanSecrets(lines)) {
       const source = entry.lines[finding.line - 1];

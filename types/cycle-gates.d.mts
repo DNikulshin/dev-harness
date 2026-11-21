@@ -79,9 +79,10 @@ export declare function planRun(definitions: readonly {
 export declare function classifyTestIntLog(text: unknown): 'no_database' | 'fail';
 /**
  * Находки `secrets_scan` по добавленным строкам диффа (§5.5): только `file:line` и вид
- * находки, значение секрета не сохраняется. Файл `.env.example` — единственное исключение.
- * `scanSecrets` нумерует строки относительно переданного массива, поэтому номер строки
- * в файле берётся из соответствующего элемента `addedLinesByFile`.
+ * находки, значение секрета не сохраняется. Исключений по имени файла нет: `.env.example`
+ * сканируется как любой другой файл, а «образцовость» определяется значением (заглушки
+ * отсекает `scanSecrets`, §5.5). `scanSecrets` нумерует строки относительно переданного
+ * массива, поэтому номер строки в файле берётся из элемента `addedLinesByFile`.
  * @param {unknown} files массив `{ file, lines }` (не массив — `TypeError`)
  * @returns {{ file: string, line: number, kind: string }[]}
  */
