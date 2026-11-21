@@ -632,6 +632,141 @@ function optionalDriver(doc, name, errors) {
   });
 }
 
+/** Счётчики расхода в строке `context.tokens` (ADR 0009): без `runs` и `reasoning`. */
+const CONTEXT_TOKEN_FIELDS = Object.freeze(['input', 'cache_read', 'cache_write', 'output']);
+
+/**
+ * Строка `context.tokens` (стадия или `cycle`) и её связка: доля кэша — `null` при нулевом
+ * `input` и число ≥ 0 иначе. Верхней границы нет: `cache_share` — частное `cache_read / input`
+ * в том виде, в каком его отдал источник расхода (ADR 0009); если источник считает `input`
+ * без кэшированной части, частное больше единицы — факт, а не ошибка схемы.
+ * @param {unknown} value
+ * @param {string} path
+ * @param {string[]} errors
+ * @returns {void}
+ */
+function contextTokenRow(value, path, errors) {
+  if (!isRecord(value)) {
+    errors.push(`${path}: ожидается объект сумм, получено ${describe(value)}`);
+    return;
+  }
+  for (const field of CONTEXT_TOKEN_FIELDS) reqInt(value, field, path, errors, { min: 0 });
+  reqNullable(value, 'cache_share', path, errors, (share, sharePath, errs) => {
+    num(share, sharePath, errs, { min: 0 });
+  });
+
+  const input = /** @type {number} */ (value.input);
+  if (!Number.isInteger(input)) return;
+  const share = value.cache_share;
+  if (input === 0 && share !== null) {
+    errors.push(
+      `${path}.cache_share: при нулевом input ожидается null, получено ${describe(share)}`,
+    );
+  }
+  if (input > 0 && share === null) {
+    errors.push(`${path}.cache_share: при ненулевом input ожидается число, получено null`);
+  }
+}
+
+/**
+ * Итерация блока `context` (ADR 0009, #107): размер пакета, рост к предыдущей и новые файлы.
+ * Поля измеренной итерации заполняются вместе: частичный `null` означал бы не «не мерили»,
+ * а дефект писателя.
+ * @param {unknown} item
+ * @param {string} path
+ * @param {string[]} errors
+ * @returns {void}
+ */
+function contextIteration(item, path, errors) {
+  if (!isRecord(item)) {
+    errors.push(`${path}: ожидается объект итерации, получено ${describe(item)}`);
+    return;
+  }
+  reqInt(item, 'iteration', path, errors, { min: 1 });
+  for (const field of ['evidence_files', 'evidence_bytes', 'evidence_lines']) {
+    reqNullable(item, field, path, errors, (value, valuePath, errs) =>
+      int(value, valuePath, errs, { min: 0 }),
+    );
+  }
+  const measured = ['evidence_files', 'evidence_bytes', 'evidence_lines'].map(
+    (field) => item[field] !== null,
+  );
+  if (measured.some((value) => value !== measured[0])) {
+    errors.push(`${path}: evidence_files/bytes/lines заполняются вместе или все null`);
+  }
+
+  reqNullable(item, 'evidence_growth', path, errors, (value, valuePath, errs) => {
+    record(value, valuePath, errs, (growth, growthPath, growthErrs) => {
+      for (const field of ['bytes', 'files']) {
+        reqNullable(growth, field, growthPath, growthErrs, (ratio, ratioPath, ratioErrs) => {
+          num(ratio, ratioPath, ratioErrs, { min: 0 });
+        });
+      }
+    });
+  });
+
+  reqNullable(item, 'new_files', path, errors, (value, valuePath, errs) => {
+    list(value, valuePath, errs, textItem);
+  });
+}
+
+/**
+ * Блок `context` файла `metrics.json` (ADR 0009, #107). Описывается отдельно от
+ * `validateMetrics`, чтобы правило «не мерили — не ноль» проверялось целиком.
+ * @param {unknown} doc
+ * @returns {ValidationResult}
+ */
+export function validateContext(doc) {
+  /** @type {string[]} */
+  const errors = [];
+  if (!isRecord(doc)) {
+    return { ok: false, errors: [`context: ожидается объект, получено ${describe(doc)}`] };
+  }
+
+  reqList(doc, 'iterations', 'context', errors, contextIteration);
+  reqList(doc, 'missing', 'context', errors, textItem);
+
+  reqNullable(doc, 'tokens', 'context', errors, (value, valuePath, errs) => {
+    if (!isRecord(value)) {
+      errs.push(`${valuePath}: ожидается объект стадий или null, получено ${describe(value)}`);
+      return;
+    }
+    for (const stage of Object.keys(value)) {
+      if (stage !== 'cycle' && !MODEL_STAGES.includes(stage)) {
+        errs.push(`${valuePath}.${stage}: неизвестный этап (ожидается ${MODEL_STAGES.join('|')})`);
+      }
+    }
+    for (const [stage, row] of Object.entries(value)) {
+      contextTokenRow(row, `${valuePath}.${stage}`, errs);
+    }
+  });
+
+  // Итог цикла — сумма стадий, а не отдельный замер: расхождение делает блок
+  // противоречивым и сбивает решение по отчёту (#108).
+  if (isRecord(doc.tokens)) {
+    const cycle = doc.tokens.cycle;
+    if (isRecord(cycle)) {
+      for (const field of CONTEXT_TOKEN_FIELDS) {
+        const stages = Object.entries(doc.tokens)
+          .filter(([stage]) => stage !== 'cycle')
+          .map(([, row]) => (isRecord(row) && typeof row[field] === 'number' ? row[field] : null));
+        if (stages.some((value) => value === null)) continue;
+        const sum = stages.reduce(
+          (total, value) => /** @type {number} */ (total) + /** @type {number} */ (value),
+          0,
+        );
+        if (cycle[field] !== sum) {
+          errors.push(
+            `context.tokens.cycle.${field}: не равен сумме стадий (${cycle[field]} ≠ ${sum})`,
+          );
+        }
+      }
+    }
+  }
+
+  return { ok: errors.length === 0, errors };
+}
+
 /**
  * `state.json` (Приложение A). Счётчики `retries` — целые ≥ 0, `iteration` не больше
  * `max_iterations`, кроме случая явного одобрения владельца (`owner_approved`).
@@ -1332,6 +1467,12 @@ export function validateMetrics(doc) {
 
   optionalAppliedLimits(doc, 'metrics', errors);
   optionalDriver(doc, 'metrics', errors);
+  // Блок `context` (ADR 0009) необязателен для чтения старых артефактов, но если он есть —
+  // проверяется целиком: `null` значит «не мерили», а не «ноль».
+  if (doc.context !== undefined) {
+    const context = validateContext(doc.context);
+    errors.push(...context.errors);
+  }
 
   return { ok: errors.length === 0, errors };
 }

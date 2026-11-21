@@ -1,5 +1,30 @@
 {
   "both": 2,
+  "context": {
+    "iterations": [
+      {
+        "evidence_bytes": null,
+        "evidence_files": null,
+        "evidence_growth": null,
+        "evidence_lines": null,
+        "iteration": 1,
+        "new_files": null
+      },
+      {
+        "evidence_bytes": null,
+        "evidence_files": null,
+        "evidence_growth": null,
+        "evidence_lines": null,
+        "iteration": 2,
+        "new_files": null
+      }
+    ],
+    "missing": [
+      "manifest.1.json",
+      "manifest.2.json"
+    ],
+    "tokens": null
+  },
   "cost_rub": null,
   "cycle_duration_s": 6750,
   "evaluator_defects": {

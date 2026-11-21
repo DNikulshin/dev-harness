@@ -37,7 +37,14 @@
  *   субагентов). Нет файла — `null`: это не ноль токенов, а отсутствие замера;
  * - `cost_rub` — те же токены, оценённые по `evals/prices.json` и моделям из `state.models`.
  *   `null`, если `usage.json` нет, нет снапшота цен или хотя бы у одного этапа с расходом
- *   не известна модель: частичная сумма выдавала бы неполный расход за полный.
+ *   не известна модель: частичная сумма выдавала бы неполный расход за полный;
+ * - `context` — контекст как измеримая величина (ADR 0009, #107): размер пакета `evidence/`
+ *   по итерациям из снимков `manifest.<n>.json` (его пишет `cycle-evidence packet`, #106) с
+ *   ростом к соседней предыдущей и списком новых файлов, плюс расход по стадиям и за цикл
+ *   с долей кэша `cache_read / input`. Нет снимка — `null` в полях и имя файла в `missing`:
+ *   «не мерили» — это не ноль; нет предыдущего снимка — нет и роста. Разреза токенов по
+ *   итерациям нет: в `usage.json` его нет, и деление суммы на число итераций выдавало бы
+ *   производное число за замер.
  *
  * Отсутствие `review`/`evaluation`/`decision` у итерации — не ошибка: цикл мог
  * эскалироваться раньше REVIEW, и вклад такой итерации в счётчики нулевой.
@@ -73,6 +80,7 @@ import {
   priceUsage,
   readPriceSnapshot,
   readUsage,
+  MODEL_STAGES,
 } from './lib/cycle/cost.mjs';
 import { isDirectRun } from './lib/cycle/cli.mjs';
 import { parseJournal, summarizeJournal } from './lib/cycle/driver.mjs';
@@ -90,6 +98,7 @@ import {
   validateDecision,
   validateEvaluation,
   validateGates,
+  validateManifest,
   validateMetrics,
   validateReview,
   validateState,
@@ -119,6 +128,12 @@ const DURATION_DIGITS = 3;
 /** Множитель округления длительностей. */
 const DURATION_FACTOR = 10 ** DURATION_DIGITS;
 
+/** Знаков после запятой у отношений (`evidence_growth`, `cache_share`). */
+const RATIO_DIGITS = 3;
+
+/** Множитель округления отношений. */
+const RATIO_FACTOR = 10 ** RATIO_DIGITS;
+
 /**
  * @typedef {object} IterationInputs
  * @property {number} iteration номер итерации, целое ≥ 1
@@ -126,6 +141,32 @@ const DURATION_FACTOR = 10 ** DURATION_DIGITS;
  * @property {Record<string, any>|null} review проверенный `review.<n>.json` или `null`
  * @property {Record<string, any>|null} evaluation проверенный `evaluation.<n>.json` или `null`
  * @property {Record<string, any>|null} decision проверенный `decision.<n>.json` или `null`
+ */
+
+/**
+ * @typedef {object} ContextIteration
+ * @property {number} iteration
+ * @property {number|null} evidence_files
+ * @property {number|null} evidence_bytes
+ * @property {number|null} evidence_lines
+ * @property {{ bytes: number|null, files: number|null }|null} evidence_growth отношение к предыдущей итерации
+ * @property {string[]|null} new_files пути, впервые появившиеся в этой итерации
+ */
+
+/**
+ * @typedef {object} ContextTokensRow
+ * @property {number} input
+ * @property {number} cache_read
+ * @property {number} cache_write
+ * @property {number} output
+ * @property {number|null} cache_share `cache_read / input`; `null` при нулевом `input`
+ */
+
+/**
+ * @typedef {object} Context
+ * @property {ContextIteration[]} iterations по итерациям `1..state.iteration`, включая неизмеренные
+ * @property {string[]} missing имена отсутствующих `manifest.<n>.json`
+ * @property {Record<string, ContextTokensRow>|null} tokens по стадиям и `cycle`; `null` — `usage.json` нет
  */
 
 /**
@@ -149,6 +190,7 @@ const DURATION_FACTOR = 10 ** DURATION_DIGITS;
  * @property {boolean} evaluator_shares_family_with_plan
  * @property {Record<string, { runs: number, input: number, cache_read: number, cache_write: number, output: number, reasoning: number }>|null} tokens
  * @property {number|null} cost_rub
+ * @property {Context} context
  * @property {{ steps: number, executed: number, handed_off: number, mismatch: number }} [driver]
  */
 
@@ -202,6 +244,159 @@ function countOf(value, label) {
  */
 function sumValues(map) {
   return Object.values(map).reduce((total, value) => total + value, 0);
+}
+
+/**
+ * Отношение с фиксированной точностью: отношение двух замеров (`evidence_growth`,
+ * `cache_share`), а не длительность. `-0` приводится к `0`, нечисло — исключение.
+ * @param {number} value
+ * @param {string} label
+ * @returns {number}
+ */
+function roundRatio(value, label) {
+  if (!Number.isFinite(value)) {
+    throw new Error(`${label}: отношение не является конечным числом`);
+  }
+  const rounded = Math.round(value * RATIO_FACTOR) / RATIO_FACTOR;
+  return Object.is(rounded, -0) ? 0 : rounded;
+}
+
+/**
+ * Строка расхода `context.tokens`: только поля, нужные для ответа «сколько контекста
+ * стоил этап и сколько из него пришло из кэша». Доля кэша — `cache_read / input`;
+ * при нулевом `input` она `null`, а не `0`: «кэша не было» и «замера нет» — разные факты
+ * (ADR 0009).
+ * @param {{ input: number, cache_read: number, cache_write: number, output: number }} source
+ * @param {string} label
+ * @returns {ContextTokensRow}
+ */
+function contextTokensRow(source, label) {
+  return {
+    input: source.input,
+    cache_read: source.cache_read,
+    cache_write: source.cache_write,
+    output: source.output,
+    cache_share: source.input === 0 ? null : roundRatio(source.cache_read / source.input, label),
+  };
+}
+
+/**
+ * Расход по стадиям и по циклу для блока `context`. Разреза по итерациям нет: в `usage.json`
+ * его нет, а деление суммы на число итераций выдавало бы производное число за замер
+ * (ADR 0009, пункт «в»).
+ * @param {Record<string, import('./lib/cycle/cost.mjs').StageUsage>|null} tokens
+ *   нормализованный `usage.json` (`metrics.tokens`) или `null`
+ * @returns {Record<string, ContextTokensRow>|null}
+ */
+export function summarizeContextTokens(tokens) {
+  if (tokens === null) return null;
+
+  /** @type {Record<string, ContextTokensRow>} */
+  const summary = {};
+  /** @type {{ input: number, cache_read: number, cache_write: number, output: number }} */
+  const cycle = { input: 0, cache_read: 0, cache_write: 0, output: 0 };
+
+  // Порядок стадий — порядок автомата, а не порядок ключей в `usage.json`: отчёт и
+  // `--html` не должны зависеть от того, как легли записи в файл.
+  for (const stage of MODEL_STAGES) {
+    const entry = tokens[stage];
+    if (entry === undefined) continue;
+    summary[stage] = contextTokensRow(entry, `context.tokens.${stage}.cache_share`);
+    cycle.input += entry.input;
+    cycle.cache_read += entry.cache_read;
+    cycle.cache_write += entry.cache_write;
+    cycle.output += entry.output;
+  }
+
+  summary.cycle = contextTokensRow(cycle, 'context.tokens.cycle.cache_share');
+  return summary;
+}
+
+/**
+ * Блок `context` из снимков `manifest.<n>.json` (ADR 0009, #107). Чистая функция:
+ * файлов не читает и время не использует — снимки приходят готовыми.
+ *
+ * Три правила, без которых блок врал бы:
+ *
+ * - **не мерили — не ноль:** отсутствие `manifest.<n>.json` даёт `null` в полях итерации
+ *   и имя файла в `missing`, а не нулевой размер;
+ * - **рост — только к соседней итерации:** `evidence_growth` сравнивает итерацию `n` с `n-1`;
+ *   если предыдущей нет (первая итерация или нет её снимка), роста тоже нет — `null`.
+ *   Нулевой предыдущий размер доли не даёт — тоже `null`;
+ * - **новые файлы — те, которых не было ни в одной предыдущей итерации;** у первой
+ *   измеренной итерации новых файлов столько же, сколько файлов: они появляются впервые.
+ *
+ * Порядок итераций — номер, порядок путей — как в снимке (сортировка по строке).
+ * @param {{
+ *   iterationCount: number,
+ *   manifests: (Record<string, any>|null)[],
+ *   tokens?: Record<string, import('./lib/cycle/cost.mjs').StageUsage>|null,
+ * }} options
+ *   `manifests[i]` — проверенный `manifest.<i+1>.json` или `null`.
+ * @returns {Context}
+ */
+export function buildContext({ iterationCount, manifests, tokens = null }) {
+  /** @type {ContextIteration[]} */
+  const iterations = [];
+  /** @type {string[]} */
+  const missing = [];
+  /** @type {Set<string>} */
+  const seenPaths = new Set();
+
+  for (let iteration = 1; iteration <= iterationCount; iteration += 1) {
+    const doc = manifests[iteration - 1] ?? null;
+    if (doc === null) {
+      missing.push(iterNames(iteration).manifest);
+      iterations.push({
+        iteration,
+        evidence_files: null,
+        evidence_bytes: null,
+        evidence_lines: null,
+        evidence_growth: null,
+        new_files: null,
+      });
+      continue;
+    }
+
+    const totals = /** @type {{ files: number, bytes: number, lines: number }} */ (doc.totals);
+    const paths = /** @type {{ path: string }[]} */ (doc.files).map((file) => file.path);
+    const newFiles = paths.filter((path) => !seenPaths.has(path));
+    for (const path of paths) seenPaths.add(path);
+
+    const previous = iteration === 1 ? null : (manifests[iteration - 2] ?? null);
+    /** @type {{ bytes: number|null, files: number|null }|null} */
+    let growth = null;
+    if (previous !== null) {
+      const previousTotals = /** @type {{ files: number, bytes: number }} */ (previous.totals);
+      growth = {
+        bytes:
+          previousTotals.bytes === 0
+            ? null
+            : roundRatio(
+                totals.bytes / previousTotals.bytes,
+                `context.iterations.${iteration}.bytes`,
+              ),
+        files:
+          previousTotals.files === 0
+            ? null
+            : roundRatio(
+                totals.files / previousTotals.files,
+                `context.iterations.${iteration}.files`,
+              ),
+      };
+    }
+
+    iterations.push({
+      iteration,
+      evidence_files: totals.files,
+      evidence_bytes: totals.bytes,
+      evidence_lines: totals.lines,
+      evidence_growth: growth,
+      new_files: newFiles,
+    });
+  }
+
+  return { iterations, missing, tokens: summarizeContextTokens(tokens) };
 }
 
 /**
@@ -352,11 +547,14 @@ export function evaluatorSharesFamilyWithPlan(models) {
  *   prices?: Record<string, import('./lib/evals/cost.mjs').ModelPrice>|null,
  *   appliedLimits?: Record<string, { value: number, source: string }>|null,
  *   driver?: { steps: number, executed: number, handed_off: number, mismatch: number }|null,
+ *   manifests?: (Record<string, any>|null)[],
  * }} inputs
  *   `appliedLimits` — лимиты с источниками (#235): попав в `metrics.json`, они объясняют,
  *   по какому порогу считались бюджет и размер диффа. Считает CLI, а не эта функция.
  *   `driver` — сводка журнала `driver.jsonl` (#47): сколько шагов выдал драйвер, сколько
  *   исполнил сам и сколько раз состояние разошлось с его ответом. `null` — журнала нет.
+ *   `manifests` — проверенные `manifest.<n>.json` по итерациям (ADR 0009): из них
+ *   собирается блок `context`. Нет снимка — нет замера, а не ноль.
  * @returns {Metrics}
  */
 export function buildMetrics({
@@ -366,6 +564,7 @@ export function buildMetrics({
   prices = null,
   appliedLimits = null,
   driver = null,
+  manifests = [],
 }) {
   /** @type {Record<string, number>} */
   const stageTotals = {};
@@ -473,9 +672,10 @@ export function buildMetrics({
   }
 
   const tokens = usage === null ? null : normalizeUsage(usage);
+  const iterationCount = countOf(state.iteration, 'state.iteration');
 
   return {
-    iterations: countOf(state.iteration, 'state.iteration'),
+    iterations: iterationCount,
     max_iterations: countOf(state.max_iterations, 'state.max_iterations'),
     final_stage: String(state.stage),
     stage_durations_s: stageDurations,
@@ -494,6 +694,10 @@ export function buildMetrics({
     evaluator_shares_family_with_plan: evaluatorSharesFamilyWithPlan(state.models),
     tokens,
     cost_rub: tokens === null || prices === null ? null : priceUsage(tokens, state.models, prices),
+    // Контекст как измеримая величина (ADR 0009): размер пакета по итерациям и доля кэша.
+    // Блок есть всегда: `null` в полях и список `missing` сообщают «не мерили», а его
+    // отсутствие читалось бы как «мерить нечего».
+    context: buildContext({ iterationCount, manifests, tokens }),
     // Применённые лимиты цикла (#235): видно, с каким порогом считали бюджет и дифф.
     ...(appliedLimits === null ? {} : { applied_limits: appliedLimits }),
     // Маршрутизация кодом (#47): `mismatch = 0` — супервизор ни разу не разошёлся с драйвером.
@@ -607,6 +811,26 @@ function readIterations(dir, state) {
 }
 
 /**
+ * Снимки размера пакета по итерациям (ADR 0009, #106). Нет файла — `null` в позиции
+ * итерации: «не мерили» — это факт, и он попадёт в `context.missing`. Битый снимок —
+ * отказ (код 2), как у остальных артефактов: испорченный агрегат исказил бы рост молча.
+ * @param {string} dir каталог цикла
+ * @param {Record<string, any>} state проверенный `state.json`
+ * @returns {(Record<string, any>|null)[]} `manifests[i]` — `manifest.<i+1>.json` или `null`
+ */
+function readManifests(dir, state) {
+  /** @type {(Record<string, any>|null)[]} */
+  const manifests = [];
+
+  for (let iteration = 1; iteration <= state.iteration; iteration += 1) {
+    const names = iterNames(iteration);
+    manifests.push(readOptionalJson(join(dir, names.manifest), validateManifest, names.manifest));
+  }
+
+  return manifests;
+}
+
+/**
  * Сводка журнала решений драйвера (#47). Нет файла — `null`: цикл вели без драйвера, и это
  * факт, а не ноль. Битая запись — исключение (код 2), а не тихий пропуск: `mismatch`
  * считается по журналу, и потерянная строка выдала бы себя за чистую маршрутизацию.
@@ -666,6 +890,7 @@ function main() {
       prices: readPriceSnapshot(root, config.evals.prices),
       appliedLimits: describedLimits(resolvedLimits),
       driver: readDriverJournal(dir),
+      manifests: readManifests(dir, state),
     });
 
     // Самопроверка: метрики обязаны проходить собственный валидатор (Приложение A).

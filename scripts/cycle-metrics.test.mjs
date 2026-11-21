@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
   LINE_TOLERANCE,
+  buildContext,
   buildMetrics,
   evaluatorSharesFamilyWithPlan,
   matchFindings,
@@ -16,6 +17,7 @@ import {
   priceKeyFor,
   priceUsage,
   resolveCycleDir,
+  summarizeContextTokens,
 } from './cycle-metrics.mjs';
 import { LIMIT_KEYS } from './lib/cycle/limits.mjs';
 import { validateMetrics } from './lib/cycle/validate.mjs';
@@ -800,5 +802,226 @@ describe('buildMetrics: расход и стоимость', () => {
     assert.ok(metrics.tokens !== null);
     assert.equal(metrics.cost_rub, null);
     assert.equal(validateMetrics(metrics).ok, true);
+  });
+});
+
+describe('buildContext: размер пакета по итерациям (ADR 0009, #107)', () => {
+  /**
+   * Снимок итерации в форме `manifest.<n>.json` (Приложение A).
+   * @param {number} iteration
+   * @param {{ path: string, bytes: number, lines: number }[]} files
+   * @returns {Record<string, any>}
+   */
+  function manifest(iteration, files) {
+    return {
+      iteration,
+      base_sha: '0123456789abcdef0123456789abcdef01234567',
+      files,
+      totals: {
+        files: files.length,
+        bytes: files.reduce((sum, file) => sum + file.bytes, 0),
+        lines: files.reduce((sum, file) => sum + file.lines, 0),
+      },
+    };
+  }
+
+  test('первая итерация: роста нет, все файлы новые', () => {
+    const context = buildContext({
+      iterationCount: 1,
+      manifests: [manifest(1, [{ path: 'evidence/diff.patch', bytes: 100, lines: 10 }])],
+    });
+
+    assert.deepEqual(context.iterations, [
+      {
+        iteration: 1,
+        evidence_files: 1,
+        evidence_bytes: 100,
+        evidence_lines: 10,
+        evidence_growth: null,
+        new_files: ['evidence/diff.patch'],
+      },
+    ]);
+    assert.deepEqual(context.missing, []);
+  });
+
+  test('две итерации дают рост по байтам и по файлам', () => {
+    const context = buildContext({
+      iterationCount: 2,
+      manifests: [
+        manifest(1, [{ path: 'evidence/diff.patch', bytes: 1000, lines: 20 }]),
+        manifest(2, [
+          { path: 'evidence/diff.patch', bytes: 2000, lines: 40 },
+          { path: 'evidence/gates/test.2.log', bytes: 200, lines: 10 },
+        ]),
+      ],
+    });
+
+    assert.deepEqual(context.iterations[1]?.evidence_growth, { bytes: 2.2, files: 2 });
+    assert.deepEqual(context.iterations[1]?.new_files, ['evidence/gates/test.2.log']);
+    assert.equal(context.iterations[1]?.evidence_bytes, 2200);
+  });
+
+  test('постоянный размер — рост ровно 1, а не «чуть больше»', () => {
+    const files = [{ path: 'evidence/diff.patch', bytes: 1000, lines: 20 }];
+    const context = buildContext({
+      iterationCount: 2,
+      manifests: [manifest(1, files), manifest(2, files)],
+    });
+
+    assert.deepEqual(context.iterations[1]?.evidence_growth, { bytes: 1, files: 1 });
+    assert.deepEqual(context.iterations[1]?.new_files, []);
+  });
+
+  test('нет снимка — null и имя файла в missing, а не нули', () => {
+    const context = buildContext({
+      iterationCount: 2,
+      manifests: [null, manifest(2, [{ path: 'evidence/diff.patch', bytes: 10, lines: 1 }])],
+    });
+
+    assert.deepEqual(context.missing, ['manifest.1.json']);
+    assert.deepEqual(context.iterations[0], {
+      iteration: 1,
+      evidence_files: null,
+      evidence_bytes: null,
+      evidence_lines: null,
+      evidence_growth: null,
+      new_files: null,
+    });
+    // Предыдущего замера нет — роста тоже нет, хотя размер известен.
+    assert.equal(context.iterations[1]?.evidence_growth, null);
+    assert.deepEqual(context.iterations[1]?.new_files, ['evidence/diff.patch']);
+  });
+
+  test('нулевой предыдущий размер доли не даёт', () => {
+    const context = buildContext({
+      iterationCount: 2,
+      manifests: [
+        {
+          iteration: 1,
+          base_sha: 'a'.repeat(40),
+          files: [],
+          totals: { files: 0, bytes: 0, lines: 0 },
+        },
+        manifest(2, [{ path: 'evidence/diff.patch', bytes: 100, lines: 5 }]),
+      ],
+    });
+
+    assert.deepEqual(context.iterations[1]?.evidence_growth, { bytes: null, files: null });
+  });
+
+  test('без usage блок tokens — null, а не нули', () => {
+    assert.equal(summarizeContextTokens(null), null);
+    const context = buildContext({
+      iterationCount: 1,
+      manifests: [manifest(1, [{ path: 'evidence/diff.patch', bytes: 1, lines: 1 }])],
+      tokens: null,
+    });
+    assert.equal(context.tokens, null);
+  });
+});
+
+describe('summarizeContextTokens: доля кэша (ADR 0009)', () => {
+  test('считает cache_read / input по стадиям и по циклу', () => {
+    const summary = summarizeContextTokens({
+      plan: { runs: 1, input: 1000, cache_read: 250, cache_write: 0, output: 100, reasoning: 0 },
+      code: { runs: 1, input: 500, cache_read: 0, cache_write: 50, output: 700, reasoning: 20 },
+    });
+
+    assert.deepEqual(summary, {
+      plan: { input: 1000, cache_read: 250, cache_write: 0, output: 100, cache_share: 0.25 },
+      code: { input: 500, cache_read: 0, cache_write: 50, output: 700, cache_share: 0 },
+      cycle: { input: 1500, cache_read: 250, cache_write: 50, output: 800, cache_share: 0.167 },
+    });
+  });
+
+  test('нулевой input даёт cache_share null, а не ноль', () => {
+    const summary = summarizeContextTokens({
+      review: { runs: 0, input: 0, cache_read: 0, cache_write: 0, output: 0, reasoning: 0 },
+    });
+
+    assert.equal(summary?.review?.cache_share, null);
+    assert.equal(summary?.cycle?.cache_share, null);
+  });
+
+  test('порядок стадий — порядок автомата, а не порядок ключей в usage.json', () => {
+    const summary = summarizeContextTokens({
+      evaluate: { runs: 1, input: 10, cache_read: 0, cache_write: 0, output: 0, reasoning: 0 },
+      plan: { runs: 1, input: 10, cache_read: 0, cache_write: 0, output: 0, reasoning: 0 },
+    });
+
+    assert.deepEqual(Object.keys(summary ?? {}), ['plan', 'evaluate', 'cycle']);
+  });
+});
+
+describe('CLI: блок context из манифестов', () => {
+  test('фикстура с двумя манифестами даёт рост, новые файлы и долю кэша', () => {
+    const { doc } = metricsOf('context');
+
+    assert.deepEqual(doc.context.missing, []);
+    assert.deepEqual(
+      doc.context.iterations.map((/** @type {any} */ item) => item.evidence_bytes),
+      [1440, 2560],
+    );
+    assert.equal(doc.context.iterations[0].evidence_growth, null);
+    assert.deepEqual(doc.context.iterations[1].evidence_growth, { bytes: 1.778, files: 1.333 });
+    assert.deepEqual(doc.context.iterations[1].new_files, ['evidence/gates/test.2.log']);
+    assert.deepEqual(doc.context.tokens.cycle, {
+      input: 2000,
+      cache_read: 600,
+      cache_write: 400,
+      output: 800,
+      cache_share: 0.3,
+    });
+    assert.deepEqual(validateMetrics(doc), { ok: true, errors: [] });
+  });
+
+  test('без манифестов — null, missing и перечень файлов; процесс не падает', () => {
+    const { doc } = metricsOf('no-review');
+
+    assert.deepEqual(doc.context.missing, ['manifest.1.json']);
+    assert.equal(doc.context.iterations.length, 1);
+    assert.equal(doc.context.iterations[0].evidence_bytes, null);
+    assert.equal(doc.context.iterations[0].new_files, null);
+    assert.equal(doc.context.tokens, null);
+    assert.deepEqual(validateMetrics(doc), { ok: true, errors: [] });
+  });
+
+  test('битый manifest.<n>.json — код 2, metrics.json не пишется', () => {
+    const dir = tempCopy('context');
+    writeFileSync(join(dir, 'manifest.2.json'), '{"iteration": 2, "files": [}\n');
+
+    const result = runCli(['--dir', dir]);
+
+    assert.equal(result.status, 2);
+    assert.match(result.stderr, /manifest\.2\.json: не читается/);
+    assert.ok(!result.stderr.includes(dir), 'в диагностике не должно быть абсолютного пути');
+    assert.ok(metricsMissing(dir), 'при ошибке metrics.json не пишется');
+  });
+
+  test('манифест с неверными totals — код 2: битый агрегат исказил бы рост молча', () => {
+    const dir = tempCopy('context');
+    const doc = JSON.parse(readFileSync(join(dir, 'manifest.1.json'), 'utf8'));
+    doc.totals.bytes += 1;
+    writeFileSync(join(dir, 'manifest.1.json'), `${JSON.stringify(doc, null, 2)}\n`);
+
+    const result = runCli(['--dir', dir]);
+
+    assert.equal(result.status, 2);
+    assert.match(result.stderr, /manifest\.1\.json: схема нарушена/);
+    assert.ok(metricsMissing(dir));
+  });
+
+  test('детерминизм: повторный прогон с манифестами даёт побайтно тот же файл', () => {
+    const run = runFixture('context');
+    assert.equal(run.status, 0, run.stderr);
+    const file = join(run.dir, 'metrics.json');
+    const first = readFileSync(file, 'utf8');
+
+    const second = runCli(['--dir', run.dir]);
+    assert.equal(second.status, 0, second.stderr);
+    assert.equal(readFileSync(file, 'utf8'), first);
+    assert.equal(second.stdout, run.stdout);
+
+    rmSync(run.dir, { recursive: true, force: true });
   });
 });

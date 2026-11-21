@@ -609,6 +609,23 @@ node scripts/cycle-pr-body.mjs --dir D [--draft-escalation]
 `handed_off` (`spawn`/`handoff` супервизору), `mismatch` (расхождений с ответом драйвера).
 Журнала нет — блока нет: цикл вели без драйвера, и выдумывать нули нельзя.
 
+**Блок `context` (ADR 0009, #107).** Контекст как измеримая величина: размер пакета `evidence/`
+читается из снимков `manifest.<n>.json` (его пишет `cycle-evidence packet`, #106), стоимость —
+из тех же `tokens`.
+
+- `iterations[]` — по итерациям `1..state.iteration`: `evidence_files`, `evidence_bytes`,
+  `evidence_lines` из `totals` снимка, `evidence_growth {bytes, files}` — отношение к соседней
+  предыдущей итерации, `new_files[]` — пути, впервые появившиеся в этой итерации (у первой
+  измеренной — все её файлы). Нет снимка — все поля `null`, а имя файла попадает в `missing`:
+  «не мерили» — это не ноль. Нет предыдущего снимка (первая итерация, пропуск) — роста тоже нет
+  (`null`), а не «роста ноль»; нулевой предыдущий размер доли не даёт — тоже `null`.
+- `tokens` — по стадиям и `cycle`: `input`, `cache_read`, `cache_write`, `output` и
+  `cache_share = cache_read / input` (`null` при нулевом `input`). Нет `usage.json` — `tokens`
+  `null`, как и в основном блоке.
+- Разреза расхода по итерациям нет: в `usage.json` его нет (ADR 0009, пункт «в»), а деление
+  суммы на число итераций выдавало бы производное число за замер. Порога и оценки
+  «хорошо/плохо» блок не содержит: `contextGrowthRatio` — отдельная задача по данным (#109).
+
 ### 5.8a `cycle-report.mjs`
 
 ```
@@ -1039,6 +1056,22 @@ A1–A9 статически; запуск `node --test` и `gh` остаётс�
 | `tokens`                                      | `null` или карта «этап → `{runs, input, cache_read, cache_write, output, reasoning}`»; этапы только `plan`, `code`, `review`, `evaluate` |
 | `cost_rub`                                    | `null` или число ≥ 0 (₽, копейки): те же токены по `evals/prices.json` и `state.models`                                                  |
 | `driver`                                      | необязательный блок: `{ steps, executed, handed_off, mismatch }`, целые ≥ 0 — сводка журнала `driver.jsonl` (§5.3a); нет журнала — нет блока |
+| `context`                                     | необязательный блок (ADR 0009, §5.8): размер пакета по итерациям и расход с долей кэша; у старых артефактов его нет; если есть — проверяется целиком |
+
+**context** (ADR 0009, #107). `null` в полях означает «не мерили», а не ноль.
+
+| Поле                            | Тип и правила                                                                                                                                   |
+| ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `iterations[]`                  | по одной записи на итерацию `1..iterations`: `{ iteration, evidence_files, evidence_bytes, evidence_lines, evidence_growth, new_files }` |
+| `iterations[].iteration`        | целое ≥ 1, порядок — по возрастанию                                                                                                              |
+| `evidence_files/bytes/lines`    | `null` или целые ≥ 0; заполняются вместе или все `null`: частичный `null` — дефект писателя                                                    |
+| `iterations[].evidence_growth`  | `null` или `{ bytes, files }`: каждое — `null` или число ≥ 0 (отношение к соседней предыдущей итерации)                                          |
+| `iterations[].new_files`        | `null` или массив непустых строк: пути, впервые появившиеся в этой итерации                                                                     |
+| `missing`                       | массив непустых строк: имена отсутствующих `manifest.<n>.json`                                                                                    |
+| `tokens`                        | `null` или карта «стадия или `cycle` → `{ input, cache_read, cache_write, output, cache_share }`»; стадии только `plan`, `code`, `review`, `evaluate` |
+| `tokens.*.input/cache_read/cache_write/output` | целые ≥ 0                                                                                                                          |
+| `tokens.*.cache_share`          | `null` при нулевом `input`, иначе число ≥ 0: `cache_read / input` без верхней границы — источник расхода может считать `input` без кэша |
+| `tokens.cycle.*`                | равен сумме стадий по каждому из четырёх счётчиков                                                                                              |
 
 ## Приложение B. Протокол супервизора (канонический порядок команд)
 

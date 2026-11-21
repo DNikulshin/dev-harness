@@ -1,0 +1,26 @@
+{
+  "iteration": 1,
+  "base_sha": "0123456789abcdef0123456789abcdef01234567",
+  "files": [
+    {
+      "path": "evidence/criteria.md",
+      "bytes": 40,
+      "lines": 3
+    },
+    {
+      "path": "evidence/diff.patch",
+      "bytes": 1000,
+      "lines": 20
+    },
+    {
+      "path": "evidence/gates.json",
+      "bytes": 400,
+      "lines": 16
+    }
+  ],
+  "totals": {
+    "files": 3,
+    "bytes": 1440,
+    "lines": 39
+  }
+}
