@@ -20,6 +20,7 @@ import {
   percent,
   renderHtml,
   renderMarkdown,
+  summarizeContext,
   summarizeCycle,
   summarizePending,
   summarizeStop,
@@ -748,5 +749,226 @@ describe('cycle-report: CLI', () => {
     assert.equal(artifacts.decision?.iteration, 2);
     assert.equal(artifacts.evaluation, null, 'чужая итерация не выдаётся за свидетельство');
     assert.deepEqual(summarizeStop('c', artifacts).criteria, []);
+  });
+});
+
+describe('cycle-report: контекст и кэш (ADR 0009, #108)', () => {
+  /** Метрики с блоком `context` из фикстуры #107. */
+  function withContext() {
+    return JSON.parse(readFileSync(join(METRICS_FIXTURES, 'metrics.valid.context.json'), 'utf8'));
+  }
+
+  test('summarizeContext: размер последней итерации, рост к первой, доля кэша', () => {
+    const context = summarizeContext(withContext());
+
+    assert.equal(context.evidence_bytes, 2560);
+    assert.equal(context.evidence_files, 4);
+    assert.equal(context.evidence_growth, 1.778, 'последняя измеренная к первой');
+    assert.equal(context.input, 2000);
+    assert.equal(context.cache_share, 0.3);
+    assert.deepEqual(context.stages, [
+      { stage: 'plan', input: 1200, cache_share: 0.5 },
+      { stage: 'code', input: 800, cache_share: 0 },
+    ]);
+    assert.deepEqual(context.missing, []);
+  });
+
+  test('нет блока context — null и имя блока в недостающих, а не нули', () => {
+    const metrics = withContext();
+    delete metrics.context;
+
+    const context = summarizeContext(metrics);
+
+    assert.equal(context.evidence_bytes, null);
+    assert.equal(context.evidence_growth, null);
+    assert.equal(context.input, null);
+    assert.equal(context.cache_share, null);
+    assert.deepEqual(context.stages, []);
+    assert.deepEqual(context.missing, ['нет блока context в metrics.json']);
+  });
+
+  test('нет снимков и usage.json — в недостающих и манифесты, и расход', () => {
+    const context = summarizeContext(metricsDoc());
+
+    assert.equal(context.evidence_bytes, null);
+    assert.equal(context.input, null);
+    assert.deepEqual(context.missing, ['manifest.1.json', 'manifest.2.json', 'usage.json']);
+  });
+
+  test('одна измеренная итерация роста не даёт: null, а не единица', () => {
+    const metrics = metricsDoc({
+      context: {
+        iterations: [
+          {
+            iteration: 1,
+            evidence_files: null,
+            evidence_bytes: null,
+            evidence_lines: null,
+            evidence_growth: null,
+            new_files: null,
+          },
+          {
+            iteration: 2,
+            evidence_files: 3,
+            evidence_bytes: 900,
+            evidence_lines: 30,
+            evidence_growth: null,
+            new_files: [],
+          },
+        ],
+        missing: ['manifest.1.json'],
+        tokens: null,
+      },
+    });
+
+    const context = summarizeContext(metrics);
+
+    assert.equal(context.evidence_bytes, 900);
+    assert.equal(context.evidence_growth, null);
+    assert.equal(context.input, null);
+  });
+
+  test('нулевой размер первой итерации доли не даёт', () => {
+    const metrics = metricsDoc({
+      context: {
+        iterations: [
+          {
+            iteration: 1,
+            evidence_files: 0,
+            evidence_bytes: 0,
+            evidence_lines: 0,
+            evidence_growth: null,
+            new_files: [],
+          },
+          {
+            iteration: 2,
+            evidence_files: 2,
+            evidence_bytes: 200,
+            evidence_lines: 10,
+            evidence_growth: null,
+            new_files: [],
+          },
+        ],
+        missing: [],
+        tokens: null,
+      },
+    });
+
+    assert.equal(summarizeContext(metrics).evidence_growth, null);
+    assert.equal(summarizeContext(metrics).evidence_bytes, 200);
+  });
+
+  test('markdown: колонки контекста, insufficient_data и перечень недостающих файлов', () => {
+    const report = buildReport([
+      summarizeCycle('with-context', withContext()),
+      summarizeCycle('without-context', metricsDoc()),
+    ]);
+    const text = renderMarkdown(report);
+
+    assert.ok(text.includes('| Input-токены | Доля кэша | Размер пакета | Рост evidence |'));
+    assert.ok(
+      text.includes(
+        '| with-context | DONE | 2/2 | 6750 | — | 2000 | 30.0% | 2.5 КБ (4 файла) | ×1.778 |',
+      ),
+    );
+    assert.ok(
+      text.includes(
+        '| without-context | DONE | 2/2 | 6750 | — | insufficient_data | insufficient_data | insufficient_data | insufficient_data |',
+      ),
+      'нет замера — insufficient_data, а не нули',
+    );
+    assert.ok(text.includes('Нечем мерить (insufficient_data):'));
+    assert.ok(text.includes('`without-context` — manifest.1.json, manifest.2.json, usage.json'));
+    assert.ok(text.includes('## Контекст по стадиям'));
+    assert.ok(text.includes('| with-context | plan | 1200 | 50.0% |'));
+    assert.ok(text.includes('| with-context | code | 800 | 0.0% |'));
+    assert.ok(!text.includes('| without-context | plan |'), 'нет замера — нет строк стадий');
+  });
+
+  test('отчёт без контекста вообще: прочерк роста и имя блока в недостающих', () => {
+    const metrics = metricsDoc();
+    delete metrics.context;
+    const text = renderMarkdown(buildReport([summarizeCycle('old-cycle', metrics)]));
+
+    assert.ok(text.includes('insufficient_data'));
+    assert.ok(text.includes('`old-cycle` — нет блока context в metrics.json'));
+    assert.ok(!text.includes('## Контекст по стадиям'), 'раздел стадий без данных не печатается');
+  });
+
+  test('html: те же колонки, таблица стадий и перечень недостающих — без JS и сети', () => {
+    const report = buildReport([
+      summarizeCycle('with-context', withContext()),
+      summarizeCycle('without-context', metricsDoc()),
+    ]);
+    const html = renderHtml(report);
+
+    for (const title of ['Input-токены', 'Доля кэша', 'Размер пакета', 'Рост evidence']) {
+      assert.ok(html.includes(`<th scope="col">${title}</th>`), `колонка ${title}`);
+    }
+    assert.ok(html.includes('2.5 КБ (4 файла)'));
+    assert.ok(html.includes('×1.778'));
+    assert.ok(html.includes('30.0%'));
+    assert.ok(html.includes('insufficient_data'));
+    assert.ok(html.includes('Нечем мерить (insufficient_data):'));
+    assert.ok(html.includes('manifest.1.json, manifest.2.json, usage.json'));
+    assert.ok(html.includes('<h2>Контекст по стадиям</h2>'));
+    assert.ok(!html.includes('<script'), 'без JS');
+    assert.ok(!html.includes('http://') && !html.includes('https://'), 'ни одного внешнего URL');
+    assert.equal(html, renderHtml(report), 'два вызова дают побайтно равную страницу');
+  });
+
+  test('два цикла с разным числом итераций: context в --json и в обоих форматах', (t) => {
+    const dir = makeDir(t);
+    const oneIteration = metricsDoc({
+      iterations: 1,
+      context: {
+        iterations: [
+          {
+            iteration: 1,
+            evidence_files: 2,
+            evidence_bytes: 1024,
+            evidence_lines: 20,
+            evidence_growth: null,
+            new_files: ['evidence/diff.patch'],
+          },
+        ],
+        missing: [],
+        tokens: {
+          plan: { input: 100, cache_read: 50, cache_write: 0, output: 10, cache_share: 0.5 },
+          cycle: { input: 100, cache_read: 50, cache_write: 0, output: 10, cache_share: 0.5 },
+        },
+      },
+    });
+    writeCycle(dir, 'a-two-iterations', withContext());
+    writeCycle(dir, 'b-one-iteration', oneIteration);
+
+    const json = runCli(['--dir', dir, '--json']);
+    assert.equal(json.status, 0, json.stderr);
+    const report = JSON.parse(json.stdout.trim());
+    assert.deepEqual(
+      report.cycles.map((/** @type {any} */ cycle) => cycle.context.evidence_growth),
+      [1.778, null],
+    );
+
+    const markdown = runCli(['--dir', dir]);
+    assert.equal(markdown.status, 0, markdown.stderr);
+    assert.ok(markdown.stdout.includes('| b-one-iteration | DONE | 1/2 |'), 'цикл попал в отчёт');
+    assert.ok(markdown.stdout.includes('1.0 КБ (2 файла) | — |'), 'одна итерация — роста нет');
+
+    const html = runCli(['--dir', dir, '--html']);
+    assert.equal(html.status, 0, html.stderr);
+    assert.ok(html.stdout.includes('<h2>Контекст по стадиям</h2>'));
+    assert.equal(html.stdout, runCli(['--dir', dir, '--html']).stdout);
+  });
+
+  test('--json и --html вместе по-прежнему ошибка использования (код 2)', (t) => {
+    const dir = makeDir(t);
+    writeCycle(dir, 'a', withContext());
+
+    const result = runCli(['--dir', dir, '--html', '--json']);
+
+    assert.equal(result.status, 2);
+    assert.equal(result.stdout, '');
+    assert.match(result.stderr, /--json и --html взаимоисключающие/u);
   });
 });

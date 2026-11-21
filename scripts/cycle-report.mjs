@@ -13,6 +13,15 @@
  * **Только факты.** Скрипт не выносит вердиктов и не сравнивает с порогами: пороги —
  * в `limits` конфига проекта и в §15, а здесь агрегат. Ничего не пишет на диск.
  *
+ * **Контекст и кэш (ADR 0009, #108).** Колонки «Input-токены», «Доля кэша», «Размер пакета»
+ * и «Рост evidence» берутся из блока `context` (`metrics.json`, #107): размер — последняя
+ * измеренная итерация, рост — она же к первой (по байтам), расход — `context.tokens`.
+ * Нет замера — в ячейке `insufficient_data`, а под таблицей — перечень недостающих
+ * артефактов (`manifest.<n>.json`, `usage.json`, отсутствующий блок `context`): ноль
+ * вместо отсутствия данных выдавал бы «не мерили» за «не выросло». Одна измеренная итерация
+ * роста не даёт — там прочерк: «не с чем сравнивать» и «не изменилось» — разные факты.
+ * Раздел «Контекст по стадиям» показывает те же input и долю кэша по этапам модели.
+ *
  * **`--html` (#45).** Тот же отчёт одной самодостаточной страницей: стили внутри, без внешних
  * ресурсов и без JS — файл открывается с диска и в сеть не ходит (`> report.html` делает
  * человек, поэтому контракт «ничего не пишет на диск» сохраняется). Модель отчёта общая с
@@ -70,6 +79,36 @@ const GATE_STATUSES = Object.freeze(['pass', 'fail', 'skipped', 'not_run']);
 const NO_VALUE = '—';
 
 /**
+ * Нет замера: в ячейке — явное «мерить нечем», а не ноль и не прочерк. Прочерк значал бы
+ * «вопрос не применим», а здесь именно отсутствие данных (ADR 0009).
+ */
+const INSUFFICIENT = 'insufficient_data';
+
+/** Блок `context` в `metrics.json` ещё не писался: старые артефакты до #107. */
+const REASON_NO_CONTEXT = 'нет блока context в metrics.json';
+
+/** Этапы, у которых есть расход токенов (§5.8). */
+const MODEL_STAGES = Object.freeze(['plan', 'code', 'review', 'evaluate']);
+
+/**
+ * @typedef {object} StageContext
+ * @property {string} stage этап модели (`plan`, `code`, `review`, `evaluate`)
+ * @property {number} input input-токены этапа
+ * @property {number|null} cache_share доля кэша этапа
+ */
+
+/**
+ * @typedef {object} ContextSummary
+ * @property {number|null} evidence_bytes размер пакета последней измеренной итерации
+ * @property {number|null} evidence_files число файлов той же итерации
+ * @property {number|null} evidence_growth отношение последней измеренной итерации к первой
+ * @property {number|null} input input-токены цикла
+ * @property {number|null} cache_share доля кэша цикла
+ * @property {StageContext[]} stages расход по стадиям (порядок автомата)
+ * @property {string[]} missing имена недостающих артефактов замера
+ */
+
+/**
  * @typedef {object} CycleSummary
  * @property {string} name имя каталога цикла
  * @property {string} final_stage `final_stage` из `metrics.json`
@@ -83,6 +122,7 @@ const NO_VALUE = '—';
  * @property {number} unresolved_refs
  * @property {number} unclosed_stages
  * @property {Record<string, Record<string, number>>} gate_outcomes
+ * @property {ContextSummary} context контекст и кэш (ADR 0009)
  */
 
 /**
@@ -152,6 +192,17 @@ function round2(value) {
 }
 
 /**
+ * Округление отношения до тысячных — та же точность, что у `evidence_growth` в
+ * `metrics.json` (ADR 0009): отчёт показывает число из артефакта, а не своё.
+ * @param {number} value
+ * @returns {number}
+ */
+function round3(value) {
+  const rounded = Math.round(value * 1000) / 1000;
+  return Object.is(rounded, -0) ? 0 : rounded;
+}
+
+/**
  * Медиана чисел; `null` для пустого списка. Для чётного числа — среднее двух средних
  * (так же считается `alert = 2 × медиана` в §11).
  * @param {unknown} values список чисел (не массив или пустой — `null`)
@@ -194,6 +245,102 @@ function rub(value) {
  */
 function percentText(value) {
   return value === null ? NO_VALUE : `${value.toFixed(1)}%`;
+}
+
+/**
+ * Размер пакета `evidence/` человекочитаемо: байты до килобайта, дальше — КБ с одним знаком.
+ * Пустого размера не бывает: 0 — это измеренный пустой пакет, а не отсутствие замера.
+ * @param {number} bytes
+ * @returns {string}
+ */
+function sizeText(bytes) {
+  if (bytes < 1024) return `${bytes} Б`;
+  return `${(bytes / 1024).toFixed(1)} КБ`;
+}
+
+/**
+ * Слово «файл» в нужной форме: 1 файл, 2 файла, 5 файлов, 11 файлов.
+ * @param {number} value
+ * @returns {string}
+ */
+function filesWord(value) {
+  const tail = Math.abs(value) % 100;
+  const last = tail % 10;
+  if (tail >= 11 && tail <= 14) return 'файлов';
+  if (last === 1) return 'файл';
+  if (last >= 2 && last <= 4) return 'файла';
+  return 'файлов';
+}
+
+/**
+ * Ячейка «Размер пакета»: размер последней измеренной итерации и число файлов.
+ * @param {ContextSummary} context
+ * @returns {string}
+ */
+function evidenceText(context) {
+  if (context.evidence_bytes === null || context.evidence_files === null) return INSUFFICIENT;
+  return `${sizeText(context.evidence_bytes)} (${context.evidence_files} ${filesWord(context.evidence_files)})`;
+}
+
+/**
+ * Ячейка «Рост evidence»: последняя измеренная итерация к первой. Одна итерация роста не
+ * даёт — прочерк, а не единица: «не с чем сравнивать» и «не выросло» — разные факты.
+ * @param {ContextSummary} context
+ * @returns {string}
+ */
+function growthText(context) {
+  if (context.evidence_bytes === null) return INSUFFICIENT;
+  if (context.evidence_growth === null) return NO_VALUE;
+  return `×${context.evidence_growth}`;
+}
+
+/**
+ * Ячейка «Input-токены»: нет `usage.json` — `insufficient_data`, а не нули.
+ * @param {number|null} value
+ * @returns {string}
+ */
+function tokensText(value) {
+  return value === null ? INSUFFICIENT : String(value);
+}
+
+/**
+ * Ячейка «Доля кэша»: отношение из `context.tokens`, в процентах.
+ * @param {number|null} value доля 0–1 или `null`
+ * @param {boolean} measured был ли замер расхода
+ * @returns {string}
+ */
+function cacheText(value, measured) {
+  if (!measured) return INSUFFICIENT;
+  return percentText(value === null ? null : value * 100);
+}
+
+/**
+ * Перечень недостающих артефактов замера по циклам: `insufficient_data` в ячейке говорит
+ * «мерить нечем», а эта строка — чем именно. Порядок — как в отчёте.
+ * @param {CycleSummary[]} cycles
+ * @returns {string[]}
+ */
+function contextGapsMarkdown(cycles) {
+  const gaps = cycles.filter((cycle) => cycle.context.missing.length > 0);
+  if (gaps.length === 0) return [];
+
+  /** @type {string[]} */
+  const lines = ['Нечем мерить (insufficient_data):'];
+  for (const cycle of gaps) {
+    lines.push(`- \`${cycle.name}\` — ${cycle.context.missing.join(', ')}`);
+  }
+  lines.push('');
+  return lines;
+}
+
+/**
+ * Строки таблицы «Контекст по стадиям»: по строке на цикл и стадию. Нет ни одного замера —
+ * пусто, и раздел в отчёт не попадает.
+ * @param {CycleSummary[]} cycles
+ * @returns {CycleSummary[]}
+ */
+function cyclesWithStages(cycles) {
+  return cycles.filter((cycle) => cycle.context.stages.length > 0);
 }
 
 /**
@@ -267,6 +414,98 @@ export function lastIterationFile(cycleDir, base) {
 }
 
 /**
+ * Сводка контекста и кэша одного цикла из блока `context` (ADR 0009, #108). Чистая функция:
+ * файлов не читает, ничего не додумывает.
+ *
+ * Три источника, три правила:
+ *
+ * - **размер пакета** — последняя **измеренная** итерация: у неё есть снимок
+ *   `manifest.<n>.json`. Нет ни одного снимка — `null` и имя файла в `missing`;
+ * - **рост evidence** — отношение последней измеренной итерации к первой. Одна измеренная
+ *   итерация роста не даёт (сравнивать не с чем), а нулевая первая — не даёт доли;
+ * - **расход** — только `context.tokens`: нет `usage.json` — `tokens: null`, и это `null`,
+ *   а не нулевые токены.
+ *
+ * Отдельного поля «мерить нечем» нет намеренно: каждая колонка решает сама — у цикла
+ * с расходом, но без снимков, `insufficient_data` только в колонках размера.
+ * @param {Record<string, any>} metrics проверенный `metrics.json`
+ * @returns {ContextSummary}
+ */
+export function summarizeContext(metrics) {
+  /** @type {ContextSummary} */
+  const empty = {
+    evidence_bytes: null,
+    evidence_files: null,
+    evidence_growth: null,
+    input: null,
+    cache_share: null,
+    stages: [],
+    missing: [],
+  };
+
+  const block = metrics?.context;
+  if (typeof block !== 'object' || block === null) {
+    return { ...empty, missing: [REASON_NO_CONTEXT] };
+  }
+
+  /** @type {string[]} */
+  const missing = Array.isArray(block.missing)
+    ? /** @type {string[]} */ (
+        block.missing.filter((/** @type {unknown} */ name) => typeof name === 'string')
+      )
+    : [];
+
+  const iterations = /** @type {any[]} */ (Array.isArray(block.iterations) ? block.iterations : []);
+  const measured = iterations.filter(
+    (item) =>
+      typeof item === 'object' &&
+      item !== null &&
+      typeof item.evidence_bytes === 'number' &&
+      typeof item.evidence_files === 'number',
+  );
+  const first = measured[0] ?? null;
+  const last = measured[measured.length - 1] ?? null;
+
+  const tokens = block.tokens;
+  const tokenRows = typeof tokens === 'object' && tokens !== null ? tokens : null;
+  if (tokenRows === null) missing.push(FIXED_NAMES.usage);
+
+  /** @type {StageContext[]} */
+  const stages = [];
+  for (const stage of MODEL_STAGES) {
+    const row = tokenRows?.[stage];
+    if (typeof row !== 'object' || row === null) continue;
+    if (typeof row.input !== 'number') continue;
+    stages.push({
+      stage,
+      input: row.input,
+      cache_share: typeof row.cache_share === 'number' ? row.cache_share : null,
+    });
+  }
+
+  const cycle = tokenRows?.cycle;
+  const hasCycleRow = typeof cycle === 'object' && cycle !== null;
+
+  return {
+    evidence_bytes: last === null ? null : last.evidence_bytes,
+    evidence_files: last === null ? null : last.evidence_files,
+    evidence_growth:
+      first === null || last === null || first === last || first.evidence_bytes <= 0
+        ? null
+        : round3(last.evidence_bytes / first.evidence_bytes),
+    // Итог цикла берётся из `cycle`, а не складывается из стадий: сумму стадий считает
+    // `cycle-metrics`; второй счётчик тут стал бы вторым источником правды.
+    input: hasCycleRow && typeof cycle.input === 'number' ? cycle.input : null,
+    cache_share:
+      hasCycleRow && (typeof cycle.cache_share === 'number' || cycle.cache_share === null)
+        ? cycle.cache_share
+        : null,
+    stages,
+    missing,
+  };
+}
+
+/**
  * Сводка одного цикла: только поля, которые попадают в отчёт.
  * @param {string} name
  * @param {Record<string, any>} metrics
@@ -297,6 +536,7 @@ export function summarizeCycle(name, metrics) {
     unresolved_refs: count(metrics.unresolved_refs),
     unclosed_stages: count(metrics.unclosed_stages),
     gate_outcomes: metrics.gate_outcomes ?? {},
+    context: summarizeContext(metrics),
   };
 }
 
@@ -620,8 +860,8 @@ export function renderMarkdown(report) {
       `Находок только у оценщика: ${findings.evaluator_only} из ${findings.total}` +
         ` (${percentText(findings.percent)}).`,
       '',
-      '| Цикл | Стадия | Итераций | Время, с | Расход, ₽ | Только оценщик | Только ревью | Оба | Дефекты оценщика B/M/m | Неразрешённые ссылки | Незакрытые этапы |',
-      '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
+      '| Цикл | Стадия | Итераций | Время, с | Расход, ₽ | Input-токены | Доля кэша | Размер пакета | Рост evidence | Только оценщик | Только ревью | Оба | Дефекты оценщика B/M/m | Неразрешённые ссылки | Незакрытые этапы |',
+      '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
     );
 
     for (const cycle of cycles) {
@@ -629,10 +869,29 @@ export function renderMarkdown(report) {
       lines.push(
         `| ${cycle.name} | ${cycle.final_stage} | ${cycle.iterations}/${cycle.max_iterations}` +
           ` | ${Math.round(cycle.duration_s)} | ${rub(cycle.cost_rub)}` +
+          ` | ${tokensText(cycle.context.input)}` +
+          ` | ${cacheText(cycle.context.cache_share, cycle.context.input !== null)}` +
+          ` | ${evidenceText(cycle.context)} | ${growthText(cycle.context)}` +
           ` | ${cycle.findings.only_evaluator} | ${cycle.findings.only_review} | ${cycle.findings.both}` +
           ` | ${defects.BLOCKER}/${defects.MAJOR}/${defects.MINOR}` +
           ` | ${cycle.unresolved_refs} | ${cycle.unclosed_stages} |`,
       );
+    }
+
+    lines.push('', ...contextGapsMarkdown(cycles));
+
+    const withStages = cyclesWithStages(cycles);
+    if (withStages.length > 0) {
+      lines.push('## Контекст по стадиям', '');
+      lines.push('| Цикл | Стадия | Input-токены | Доля кэша |', '| --- | --- | --- | --- |');
+      for (const cycle of withStages) {
+        for (const stage of cycle.context.stages) {
+          lines.push(
+            `| ${cycle.name} | ${stage.stage} | ${stage.input} | ${cacheText(stage.cache_share, true)} |`,
+          );
+        }
+      }
+      lines.push('');
     }
 
     lines.push('', '## Исходы гейтов', '');
@@ -898,6 +1157,10 @@ export function renderHtml(report) {
       'Итераций',
       'Время, с',
       'Расход, ₽',
+      'Input-токены',
+      'Доля кэша',
+      'Размер пакета',
+      'Рост evidence',
       'Только оценщик',
       'Только ревью',
       'Оба',
@@ -918,6 +1181,10 @@ export function renderHtml(report) {
             `${cycle.iterations}/${cycle.max_iterations}`,
             `${Math.round(cycle.duration_s)}`,
             rub(cycle.cost_rub),
+            tokensText(cycle.context.input),
+            cacheText(cycle.context.cache_share, cycle.context.input !== null),
+            evidenceText(cycle.context),
+            growthText(cycle.context),
             `${cycle.findings.only_evaluator}`,
             `${cycle.findings.only_review}`,
             `${cycle.findings.both}`,
@@ -931,6 +1198,43 @@ export function renderHtml(report) {
       );
     }
     body.push('</tbody>', '</table>');
+
+    const withStages = cyclesWithStages(cycles);
+    if (withStages.length > 0) {
+      body.push(
+        '<h2>Контекст по стадиям</h2>',
+        '<table>',
+        '<caption>Расход и доля кэша по этапам модели, по <code>context.tokens</code></caption>',
+        '<thead>',
+        '<tr>',
+        '<th scope="col">Цикл</th><th scope="col">Стадия</th>' +
+          '<th scope="col">Input-токены</th><th scope="col">Доля кэша</th>',
+        '</tr>',
+        '</thead>',
+        '<tbody>',
+      );
+      for (const cycle of withStages) {
+        for (const stage of cycle.context.stages) {
+          body.push(
+            `<tr><td>${escapeHtml(cycle.name)}</td><td>${escapeHtml(stage.stage)}</td>` +
+              `<td>${stage.input}</td>` +
+              `<td>${cacheText(stage.cache_share, true)}</td></tr>`,
+          );
+        }
+      }
+      body.push('</tbody>', '</table>');
+    }
+
+    const gaps = cycles.filter((cycle) => cycle.context.missing.length > 0);
+    if (gaps.length > 0) {
+      body.push('<p class="insufficient"><strong>Нечем мерить (insufficient_data):</strong>');
+      for (const cycle of gaps) {
+        body.push(
+          `<br><code>${escapeHtml(cycle.name)}</code> — ${escapeHtml(cycle.context.missing.join(', '))}`,
+        );
+      }
+      body.push('</p>');
+    }
 
     body.push('<h2>Исходы гейтов</h2>');
     if (gates.length === 0) {
