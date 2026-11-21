@@ -55,9 +55,37 @@ const JWT_DETECT = /\beyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/;
 
 /** Присвоение секрета: строковый литерал или «голое» значение от 12 символов (§5.5). */
 const ASSIGNED_SECRET = new RegExp(
-  `(?<![A-Za-z0-9])(api[-_]?key|secret|token|password)${H}*[:=]${H}*(?:"([^"]{12,})"|'([^']{12,})'|([^\\s"',;#]{12,}))`,
+  '(?:api[-_]?key|secret|token|password|passwd|pass|pwd|credential)' +
+    `["']?${H}*[:=]${H}*(?:"([^"]{12,})"|'([^']{12,})'|([^\\s"',;#]{12,}))`,
   'gi',
 );
+
+/**
+ * Префиксные токены провайдеров (§5.5): префикс фиксирован, тело — алфавит и минимальная
+ * длина. Длины выбраны так, чтобы соседние идентификаторы не задевались: `npm_config_cache`
+ * не токен (после `npm_` идёт `_`), а `sk_live_…`/`ghp_…` без присваивания — токен.
+ */
+const PROVIDER_TOKENS = [
+  /\bgh[pousr]_[A-Za-z0-9]{30,}\b/,
+  /\bgithub_pat_[A-Za-z0-9_]{22,}\b/,
+  /\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}\b/,
+  /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/,
+  /\bAIza[0-9A-Za-z_-]{30,}\b/,
+  /\bSG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}\b/,
+  /\bnpm_[A-Za-z0-9]{30,}\b/,
+  /\bglpat-[A-Za-z0-9_-]{20,}\b/,
+];
+
+/**
+ * Строка подключения с паролем для любой известной схемы (§5.5). `postgres` входит сюда же:
+ * отдельного вида находки для него больше нет, вид один — `password_url`.
+ */
+const PASSWORD_URL =
+  /\b(?:postgres(?:ql)?|mongodb(?:\+srv)?|rediss?|mysql|amqps?):\/\/[^\s:/@]+:([^\s@/]+)@/gi;
+
+/** Значение заголовка авторизации (§5.5): `Bearer`/`Basic` + токен от 12 символов. */
+const BEARER_TOKEN =
+  /\b(?:proxy-)?authorization[ \t]*[:=][ \t]*(?:bearer|basic)[ \t]+([^\s"',;]{12,})/gi;
 
 /**
  * Явные заглушки: похожи на секрет, но им не являются (§5.5). Проверка идёт по всему
@@ -144,13 +172,42 @@ function isPlaceholder(value) {
 }
 
 /**
- * Есть ли в строке URI Postgres с непустым не-шаблонным паролем.
+ * Есть ли в строке URI с паролем (любая известная схема) и пароль не шаблонный.
  * @param {string} text
  * @returns {boolean}
  */
-function hasPostgresPassword(text) {
-  for (const match of text.matchAll(PG_URL)) {
+function hasPasswordUrl(text) {
+  for (const match of text.matchAll(PASSWORD_URL)) {
     if (!isPlaceholder(match[1] ?? '')) return true;
+  }
+  return false;
+}
+
+/**
+ * Есть ли префиксный токен провайдера, который не является заглушкой.
+ * @param {string} text
+ * @returns {boolean}
+ */
+function hasProviderToken(text) {
+  for (const pattern of PROVIDER_TOKENS) {
+    const match = pattern.exec(text);
+    if (match !== null && !isPlaceholder(match[0])) return true;
+  }
+  return false;
+}
+
+/**
+ * Есть ли заголовок авторизации с токеном. Значение-JWT не считается отдельной находкой:
+ * вид `jwt` у той же строки уже есть, и два вида на один секрет — шум, а не сигнал.
+ * @param {string} text
+ * @returns {boolean}
+ */
+function hasBearerToken(text) {
+  for (const match of text.matchAll(BEARER_TOKEN)) {
+    const value = match[1] ?? '';
+    if (isPlaceholder(value)) continue;
+    if (JWT_DETECT.test(value)) continue;
+    return true;
   }
   return false;
 }
@@ -163,7 +220,9 @@ function hasPostgresPassword(text) {
  */
 function hasAssignedSecret(text) {
   for (const match of text.matchAll(ASSIGNED_SECRET)) {
-    const value = match[2] ?? match[3] ?? match[4] ?? '';
+    // Группы значения: 1 — двойные кавычки, 2 — одинарные, 3 — без кавычек. Имя ключа
+    // в выражении не захватывается: оно не нужно, а захват сдвигал бы индексы.
+    const value = match[1] ?? match[2] ?? match[3] ?? '';
     if (!isPlaceholder(value)) return true;
   }
   return false;
@@ -173,7 +232,7 @@ function hasAssignedSecret(text) {
  * @typedef {object} SecretFinding
  * @property {number} line номер элемента в `addedLines` (нумерация с 1)
  * @property {string} kind вид находки: `private_key`, `aws_access_key`, `jwt`,
- *   `postgres_password`, `assigned_secret`
+ *   `provider_token`, `password_url`, `bearer_token`, `assigned_secret`
  */
 
 /**
@@ -200,7 +259,9 @@ export function scanSecrets(addedLines) {
     if (PRIVATE_KEY_HEADER.test(text)) findings.push({ line, kind: 'private_key' });
     if (AWS_ACCESS_KEY.test(text)) findings.push({ line, kind: 'aws_access_key' });
     if (JWT_DETECT.test(text)) findings.push({ line, kind: 'jwt' });
-    if (hasPostgresPassword(text)) findings.push({ line, kind: 'postgres_password' });
+    if (hasProviderToken(text)) findings.push({ line, kind: 'provider_token' });
+    if (hasPasswordUrl(text)) findings.push({ line, kind: 'password_url' });
+    if (hasBearerToken(text)) findings.push({ line, kind: 'bearer_token' });
     if (hasAssignedSecret(text)) findings.push({ line, kind: 'assigned_secret' });
   });
 

@@ -28,7 +28,7 @@ export type SecretFinding = {
     line: number;
     /**
      * вид находки: `private_key`, `aws_access_key`, `jwt`,
-     * `postgres_password`, `assigned_secret`
+     * `provider_token`, `password_url`, `bearer_token`, `assigned_secret`
      */
     kind: string;
 };
@@ -36,7 +36,7 @@ export type SecretFinding = {
  * @typedef {object} SecretFinding
  * @property {number} line номер элемента в `addedLines` (нумерация с 1)
  * @property {string} kind вид находки: `private_key`, `aws_access_key`, `jwt`,
- *   `postgres_password`, `assigned_secret`
+ *   `provider_token`, `password_url`, `bearer_token`, `assigned_secret`
  */
 /**
  * Детектор гейта `secrets_scan` (§5.5): ищет секреты только в добавленных строках диффа.
