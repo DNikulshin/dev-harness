@@ -81,6 +81,13 @@ MCP-сервера, путь к базе, общий индекс несколь
 Проверить фактический состав базы: `local-rag_status` (документы и чанки) и `local-rag_list_files`
 со `scope` — `ingested: true` показывает, что реально лежит в индексе.
 
+Шаблоны матчатся через `node:path.posix.matchesGlob`, где `*` и `**` **не проходят через сегменты,
+начинающиеся с точки**. Поэтому `**/node_modules/**` не исключает pnpm-стор
+(`node_modules/.pnpm/…`), и такие пути пишутся явно (`**/.pnpm/**`); то же для скрытых каталогов
+вообще. Проверять надо семантикой, а не глазами:
+`posix.matchesGlob('app/node_modules/.pnpm/p/node_modules/p/README.md', '**/node_modules/**')`
+возвращает `false` (issue [#175](https://github.com/DNikulshin/dev-harness/issues/175)).
+
 ## Автоматизация (по желанию проекта)
 
 Индекс можно обновлять без агента: хук `.githooks/post-merge` вызывает `pnpm rag:sync` после
