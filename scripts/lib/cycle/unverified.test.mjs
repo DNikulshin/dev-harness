@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
-import { dedupeUnverified, singleLine } from './unverified.mjs';
+import {
+  UNVERIFIED_SOURCES,
+  dedupeUnverified,
+  singleLine,
+  unverifiedSource,
+} from './unverified.mjs';
 
 describe('unverified', () => {
   test('префикс источника снимается: один факт не считается дважды', () => {
@@ -62,5 +67,32 @@ describe('unverified', () => {
 
   test('singleLine: пробельные последовательности — один пробел', () => {
     assert.equal(singleLine('  a\n\tb  '), 'a b');
+  });
+
+  test('unverifiedSource: префикс строки решает, откуда пришёл пункт (#137)', () => {
+    assert.equal(unverifiedSource('gate:test_int not_run (no_database)'), 'gate');
+    assert.equal(unverifiedSource('gate:test_int not_run'), 'gate');
+    assert.equal(unverifiedSource('unproven: R1 [BLOCKER] ссылка не разрешается'), 'unproven');
+    assert.equal(unverifiedSource('unproven: C1 [partial]'), 'unproven');
+    assert.equal(unverifiedSource('criteria:C3 missing'), 'criteria_missing');
+  });
+
+  test('unverifiedSource: остальное — `other`, а не догадка о причине', () => {
+    assert.equal(unverifiedSource('criteria:C3 unverified'), 'other');
+    assert.equal(unverifiedSource('evaluation unverified: Битая запись'), 'other');
+    assert.equal(unverifiedSource('qa-web not_run (web-diff)'), 'other');
+    assert.equal(unverifiedSource('integrity: tests deleted src/old.test.mjs'), 'other');
+    assert.equal(unverifiedSource('gate:test_int not_run'), 'gate', 'причина в скобках не мешает');
+  });
+
+  test('unverifiedSource: список источников и разбор не расходятся', () => {
+    const samples = [
+      'gate:a not_run',
+      'unproven: X [MAJOR] нет ссылки',
+      'criteria:C1 missing',
+      'integrity: tests changed (2)',
+    ];
+
+    assert.deepEqual(samples.map(unverifiedSource), [...UNVERIFIED_SOURCES]);
   });
 });

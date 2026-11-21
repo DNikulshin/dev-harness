@@ -732,10 +732,12 @@ node scripts/cycle-report.mjs [--dir <каталог артефактов>] [--j
 | `verification.actions` | счётчики по всем действиям §5.6 (сумма = `decided`) |
 | `verification.proceed_with_unverified_share` | доля `PROCEED_WITH_UNVERIFIED` от `decided`, `null` без решений |
 | `verification.measured` / `items_total` / `items_median` / `items_max` | циклов с посчитанным числом пунктов и агрегаты по ним |
-| `verification.gate_not_run` | из пунктов — гейты `not_run` |
+| `verification.gate_not_run` | из пунктов — гейты `not_run`; `null` без измеренных циклов |
+| `verification.unproven` / `criteria_missing` / `other` | разрез остальных источников: понижения `unproven:` (#125), критерии без статуса `criteria:<id> missing` (#124), прочее; `null` без измеренных циклов |
 | `cycles[].verification.action` | действие решения; `null` — решения нет |
 | `cycles[].verification.items` | пунктов «не проверено» после дедупликации; `null` — считать не из чего |
 | `cycles[].verification.gate_not_run` | из них гейты `not_run` |
+| `cycles[].verification.unproven` / `criteria_missing` / `other` | из них остальные источники (то же разбиение) |
 
 Пункты берутся из `decision.unverified[]` и `evaluation.unverified[]` и дедуплицируются по
 нормализованной форме (`lib/cycle/unverified.mjs`): `cycle-decide` кладёт в решение
@@ -747,6 +749,30 @@ node scripts/cycle-report.mjs [--dir <каталог артефактов>] [--j
 `--json` — `null`, а не `0`: решение о пороге (`verification_tax`, #116) не должно опираться на
 выданный за факт ноль. В markdown и `--html` те же числа — сводкой над таблицей и колонкой
 «Не проверено»; что представления не разошлись, проверяет тест: оба собираются из `--json`.
+
+**Разрез по источникам и смена определения `items` (#137, ADR
+[0012](./adr/0012-verification-items-sources.md)).** Действует с **2026-11-21**: с версии,
+где `unverified[]` пополнился строками `unproven:` (#125) и `criteria:<id> missing` (#124),
+`verification.items` считает больше фактов, чем в замерах, сделанных раньше. Поэтому
+`items_total`, `items_median`, `items_max` и `proceed_with_unverified_share` **между базами
+несопоставимы**: база ADR 0010 (17 решений, доля `PROCEED_WITH_UNVERIFIED` 76.5 %, 38 пунктов,
+медиана 2) получена на прежнем определении и напрямую с новыми прогонами не сравнивается.
+
+Сопоставим разрез: каждый пункт относится ровно к одной группе
+(`UNVERIFIED_SOURCES` в `lib/cycle/unverified.mjs`), поэтому сумма четырёх групп равна числу
+пунктов — в `--json`, в markdown и в `--html` одинаково:
+
+| Источник | Что это | Строки решения |
+| --- | --- | --- |
+| `gate_not_run` | проверка не выполнена | `gate:<id> not_run [<reason>]` |
+| `unproven` | недоказанный факт (#125) | `unproven: <id> [<SEV>] <причина>`, `unproven: <id> [partial]`, `unproven: evaluation [REWORK]` |
+| `criteria_missing` | критерий замороженного `criteria.md` без статуса (#124) | `criteria:<id> missing` |
+| `other` | остальное: оценщик, ревью, QA, integrity, `criteria:<id> unverified` | `evaluation unverified: …`, `qa-web not_run (…)`, `integrity: …` |
+
+Разрез печатается рядом с суммой, чтобы число пунктов не читалось как один долг проверки
+(ADR 0010, г). Нет измеренных циклов — все четыре группы `null`, а не нули: ноль означал бы
+«всё проверено». Это правило сменило прежнее поведение `verification.gate_not_run`, который
+в этом случае печатался нулём.
 
 **Дифф и провалы проверок (#120, ADR [0010](./adr/0010-verification-tax.md)).** Два факта,
 которых требует решение о verification tax, читаются из уже существующих артефактов — схема не
