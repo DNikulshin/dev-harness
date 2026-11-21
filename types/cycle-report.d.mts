@@ -57,6 +57,46 @@ export type CycleVerification = {
      */
     gate_not_run: number | null;
 };
+export type CycleDiff = {
+    /**
+     * номер последней измеренной итерации
+     */
+    iteration: number | null;
+    /**
+     * байт `evidence/diff.patch` той итерации
+     */
+    bytes: number | null;
+    /**
+     * строк того же файла
+     */
+    lines: number | null;
+    /**
+     * отношение к предыдущей измеренной итерации по строкам
+     */
+    growth: number | null;
+    /**
+     * сколько итераций с измеренным диффом
+     */
+    measured: number;
+    /**
+     * чего не хватает, чтобы измерить
+     */
+    missing: string[];
+};
+export type CycleChecks = {
+    /**
+     * обязательных гейтов в `fail`
+     */
+    fail: number;
+    /**
+     * обязательных гейтов в `not_run`
+     */
+    not_run: number;
+    /**
+     * обязательных гейтов в `skipped` (условие проекта)
+     */
+    skipped: number;
+};
 export type CycleSummary = {
     /**
      * имя каталога цикла
@@ -91,6 +131,14 @@ export type CycleSummary = {
      * решение и «не проверено» (#115)
      */
     verification?: CycleVerification | null;
+    /**
+     * дифф по итерациям и его рост (#120)
+     */
+    diff?: CycleDiff;
+    /**
+     * провалы обязательных гейтов; `null` — нет `gates.<n>.json`
+     */
+    checks?: CycleChecks | null;
 };
 export type PendingCycle = {
     /**
@@ -221,6 +269,54 @@ export type VerificationSummary = {
      */
     gate_not_run: number;
 };
+export type DiffFacts = {
+    /**
+     * циклов с измеренным диффом
+     */
+    measured: number;
+    /**
+     * медиана строк диффа на цикл
+     */
+    lines_median: number | null;
+    /**
+     * максимум строк
+     */
+    lines_max: number | null;
+    /**
+     * медиана роста к предыдущей итерации
+     */
+    growth_median: number | null;
+    /**
+     * циклы, у которых мерить нечем
+     */
+    unmeasured: string[];
+};
+export type CheckFacts = {
+    /**
+     * циклов, у которых есть `gates.<n>.json`
+     */
+    measured: number;
+    /**
+     * из них с провалом обязательного гейта (`fail` или `not_run`)
+     */
+    failing: number;
+    /**
+     * обязательных гейтов в `fail`
+     */
+    fail_total: number;
+    /**
+     * обязательных гейтов в `not_run`
+     */
+    not_run_total: number;
+    /**
+     * обязательных гейтов в `skipped` (не провал)
+     */
+    skipped_total: number;
+    /**
+     * циклы без `gates.<n>.json`
+     */
+    unmeasured: string[];
+};
 export type ReportSource = {
     /**
      * абсолютный каталог артефактов, из которого снят отчёт
@@ -271,6 +367,14 @@ export type Report = {
      * вердикты и «не проверено» (#115)
      */
     verification: VerificationSummary;
+    /**
+     * дифф по итерациям (#120)
+     */
+    diff: DiffFacts;
+    /**
+     * провалы обязательных гейтов (#120)
+     */
+    checks: CheckFacts;
     gates: {
         id: string;
         pass: number;
@@ -323,6 +427,18 @@ export declare function lastIterationFile(cycleDir: string, base: string): {
     iteration: number;
     fileName: string;
 } | null;
+/**
+ * Все файлы итерации `base.<n>.json` в каталоге цикла по возрастанию номера. Перебор не зависит
+ * от порядка `readdir`: сортировка по числу, а не по строке — иначе `manifest.10.json` встал бы
+ * перед `manifest.2.json` и рост считался бы от чужой итерации.
+ * @param {string} cycleDir каталог цикла
+ * @param {string} base имя без номера и расширения (`manifest`, `gates`, …)
+ * @returns {{ iteration: number, fileName: string }[]}
+ */
+export declare function iterationFiles(cycleDir: string, base: string): {
+    iteration: number;
+    fileName: string;
+}[];
 /**
  * Сводка контекста и кэша одного цикла из блока `context` (ADR 0009, #108). Чистая функция:
  * файлов не читает, ничего не додумывает.
@@ -414,6 +530,46 @@ export declare function summarizeVerification(artifacts: ReturnType<typeof colle
  * @returns {VerificationSummary}
  */
 export declare function summarizeVerdicts(cycles: CycleSummary[]): VerificationSummary;
+/**
+ * Размер диффа по итерациям (#120, ADR 0010).
+ *
+ * Источник — `manifest.<n>.json` (#106): `files[]` уже содержит `evidence/diff.patch` с `bytes` и
+ * `lines`. Новый снимок не нужен: это тот же файл, который ушёл оценщику.
+ *
+ * Дифф в пакете **кумулятивный** — от `base_sha` до `HEAD` итерации. Поэтому рост — отношение
+ * последней измеренной итерации к предыдущей измеренной по строкам (той же единице, что в
+ * колонке); дельта итерации — производное число и отдельным замером не становится. Одна
+ * измеренная итерация роста не даёт — `null`, а не единица: «не с чем сравнивать» и «не изменилось»
+ * — разные факты (то же правило, что у `evidence_growth`, ADR 0009).
+ * @param {string} cycleDir каталог цикла
+ * @param {string} cycleName имя каталога цикла
+ * @returns {CycleDiff}
+ */
+export declare function summarizeDiff(cycleDir: string, cycleName: string): CycleDiff;
+/**
+ * Провалы обязательных гейтов (#120, ADR 0010). Чистая функция: файлов не читает.
+ *
+ * Считаются только гейты `required: true` — необязательный гейт в `fail` ничего не блокировал.
+ * `skipped` (условие проекта не применимо) — не провал, а отдельный факт: то же различение, что
+ * в #115. Нет `gates.<n>.json` — `null`, а не нули: «нечего считать» и «всё прошло» — разные
+ * факты, и решение о пороге не должно опираться на выданный за факт ноль.
+ * @param {ReturnType<typeof collectStopArtifacts>} artifacts артефакты цикла
+ * @returns {CycleChecks|null}
+ */
+export declare function summarizeChecks(artifacts: ReturnType<typeof collectStopArtifacts>): CycleChecks | null;
+/**
+ * Дифф по всем циклам отчёта: агрегаты и перечень «мерить нечем» (#120).
+ * @param {CycleSummary[]} cycles
+ * @returns {DiffFacts}
+ */
+export declare function summarizeDiffFacts(cycles: CycleSummary[]): DiffFacts;
+/**
+ * Провалы обязательных гейтов по всем циклам (#120): сколько циклов с провалом и сколько
+ * самих провалов, с `skipped` отдельно.
+ * @param {CycleSummary[]} cycles
+ * @returns {CheckFacts}
+ */
+export declare function summarizeCheckFacts(cycles: CycleSummary[]): CheckFacts;
 /**
  * Исходы гейтов по всем циклам: суммы по `id`, порядок — таблица §5.5, затем алфавит.
  * @param {CycleSummary[]} cycles

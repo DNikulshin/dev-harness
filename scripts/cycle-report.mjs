@@ -50,6 +50,14 @@
  * разными колонками. Нет `decision.<n>.json` — в ячейке и в сводке `insufficient_data`
  * с именем цикла, а не ноль: решение о пороге не должно опираться на выданный за факт ноль.
  *
+ * **Дифф и провалы проверок (#120, ADR 0010).** Два факта для решения о verification tax
+ * читаются из уже существующих артефактов, схема не меняется: размер `evidence/diff.patch` и
+ * рост к предыдущей измеренной итерации — из `manifest.<n>.json` (там уже есть `files[]` и
+ * `totals`), провалы — из `gates.<n>.json` только по обязательным (`required: true`).
+ * Кумулятивный дифф от `base_sha` — то, что лежит в пакете; дельта итерации — производное число,
+ * отдельным замером не становится. Нет снимка или файла гейтов — `insufficient_data` и перечень
+ * «нечем мерить», а не ноль: выдуманный ноль в решении о пороге неотличим от «всё прошло».
+ *
  * **Наблюдаемый минимум (#85, ADR [0006](./adr/0006-ui-presentation.md)).** Отчёт отвечает на
  * вопрос «почему цикл встал», а не только «сколько стоил»: каталоги с `state.json` без
  * `metrics.json` перечисляются блоком «Незавершённые циклы» (стадия, статус, итерация,
@@ -88,6 +96,7 @@ import {
   validateEscalation,
   validateEvaluation,
   validateGates,
+  validateManifest,
   validateMetrics,
   validateState,
 } from './lib/cycle/validate.mjs';
@@ -139,6 +148,9 @@ const INSUFFICIENT = 'insufficient_data';
 /** Блок `context` в `metrics.json` ещё не писался: старые артефакты до #107. */
 const REASON_NO_CONTEXT = 'нет блока context в metrics.json';
 
+/** Файл диффа в пакете `evidence/`: его размер и есть «размер диффа» (#120, ADR 0010). */
+const DIFF_PATH = 'evidence/diff.patch';
+
 /** Этапы, у которых есть расход токенов (§5.8). */
 const MODEL_STAGES = Object.freeze(['plan', 'code', 'review', 'evaluate']);
 
@@ -169,6 +181,25 @@ const MODEL_STAGES = Object.freeze(['plan', 'code', 'review', 'evaluate']);
  */
 
 /**
+ * Размер диффа по итерациям из `manifest.<n>.json` (#120, ADR 0010).
+ * @typedef {object} CycleDiff
+ * @property {number|null} iteration номер последней измеренной итерации
+ * @property {number|null} bytes байт `evidence/diff.patch` той итерации
+ * @property {number|null} lines строк того же файла
+ * @property {number|null} growth отношение к предыдущей измеренной итерации по строкам
+ * @property {number} measured сколько итераций с измеренным диффом
+ * @property {string[]} missing чего не хватает, чтобы измерить
+ */
+
+/**
+ * Провалы обязательных гейтов (#120, ADR 0010): `skipped` — не провал, а отдельный факт.
+ * @typedef {object} CycleChecks
+ * @property {number} fail обязательных гейтов в `fail`
+ * @property {number} not_run обязательных гейтов в `not_run`
+ * @property {number} skipped обязательных гейтов в `skipped` (условие проекта)
+ */
+
+/**
  * @typedef {object} CycleSummary
  * @property {string} name имя каталога цикла
  * @property {string} final_stage `final_stage` из `metrics.json`
@@ -184,6 +215,8 @@ const MODEL_STAGES = Object.freeze(['plan', 'code', 'review', 'evaluate']);
  * @property {Record<string, Record<string, number>>} gate_outcomes
  * @property {ContextSummary} context контекст и кэш (ADR 0009)
  * @property {CycleVerification|null} [verification] решение и «не проверено» (#115)
+ * @property {CycleDiff} [diff] дифф по итерациям и его рост (#120)
+ * @property {CycleChecks|null} [checks] провалы обязательных гейтов; `null` — нет `gates.<n>.json`
  */
 
 /**
@@ -239,6 +272,26 @@ const MODEL_STAGES = Object.freeze(['plan', 'code', 'review', 'evaluate']);
  */
 
 /**
+ * Дифф и провалы гейтов по всем циклам отчёта (#120, ADR 0010).
+ * @typedef {object} DiffFacts
+ * @property {number} measured циклов с измеренным диффом
+ * @property {number|null} lines_median медиана строк диффа на цикл
+ * @property {number|null} lines_max максимум строк
+ * @property {number|null} growth_median медиана роста к предыдущей итерации
+ * @property {string[]} unmeasured циклы, у которых мерить нечем
+ */
+
+/**
+ * @typedef {object} CheckFacts
+ * @property {number} measured циклов, у которых есть `gates.<n>.json`
+ * @property {number} failing из них с провалом обязательного гейта (`fail` или `not_run`)
+ * @property {number} fail_total обязательных гейтов в `fail`
+ * @property {number} not_run_total обязательных гейтов в `not_run`
+ * @property {number} skipped_total обязательных гейтов в `skipped` (не провал)
+ * @property {string[]} unmeasured циклы без `gates.<n>.json`
+ */
+
+/**
  * @typedef {object} ReportSource
  * @property {string|null} dir абсолютный каталог артефактов, из которого снят отчёт
  * @property {number} cycles_read прочитано каталогов цикла (`state.json` или `metrics.json`)
@@ -255,6 +308,8 @@ const MODEL_STAGES = Object.freeze(['plan', 'code', 'review', 'evaluate']);
  * @property {{ measured: number, total: number, sum: number|null, median: number|null }} cost
  * @property {{ evaluator_only: number, total: number, percent: number|null }} findings
  * @property {VerificationSummary} verification вердикты и «не проверено» (#115)
+ * @property {DiffFacts} diff дифф по итерациям (#120)
+ * @property {CheckFacts} checks провалы обязательных гейтов (#120)
  * @property {{ id: string, pass: number, fail: number, skipped: number, not_run: number }[]} gates
  */
 
@@ -405,14 +460,16 @@ function cacheText(value, measured) {
  * @param {CycleSummary[]} cycles
  * @returns {string[]}
  */
-function contextGapsMarkdown(cycles) {
-  const gaps = cycles.filter((cycle) => cycle.context.missing.length > 0);
+function gapsMarkdown(cycles) {
+  const gaps = cycles
+    .map((cycle) => ({ name: cycle.name, missing: cycleGaps(cycle) }))
+    .filter((entry) => entry.missing.length > 0);
   if (gaps.length === 0) return [];
 
   /** @type {string[]} */
   const lines = ['Нечем мерить (insufficient_data):'];
-  for (const cycle of gaps) {
-    lines.push(`- \`${cycle.name}\` — ${cycle.context.missing.join(', ')}`);
+  for (const gap of gaps) {
+    lines.push(`- \`${gap.name}\` — ${gap.missing.join(', ')}`);
   }
   lines.push('');
   return lines;
@@ -505,16 +562,28 @@ function readArtifact(cycleDir, cycleName, fileName, validate) {
  * @returns {{ iteration: number, fileName: string }|null}
  */
 export function lastIterationFile(cycleDir, base) {
+  const files = iterationFiles(cycleDir, base);
+  return files.at(-1) ?? null;
+}
+
+/**
+ * Все файлы итерации `base.<n>.json` в каталоге цикла по возрастанию номера. Перебор не зависит
+ * от порядка `readdir`: сортировка по числу, а не по строке — иначе `manifest.10.json` встал бы
+ * перед `manifest.2.json` и рост считался бы от чужой итерации.
+ * @param {string} cycleDir каталог цикла
+ * @param {string} base имя без номера и расширения (`manifest`, `gates`, …)
+ * @returns {{ iteration: number, fileName: string }[]}
+ */
+export function iterationFiles(cycleDir, base) {
   const pattern = new RegExp(`^${base}\\.(\\d+)\\.json$`, 'u');
-  /** @type {{ iteration: number, fileName: string }|null} */
-  let latest = null;
+  /** @type {{ iteration: number, fileName: string }[]} */
+  const files = [];
   for (const fileName of readdirSync(cycleDir)) {
     const match = pattern.exec(fileName);
     if (match === null) continue;
-    const iteration = Number(match[1]);
-    if (latest === null || iteration > latest.iteration) latest = { iteration, fileName };
+    files.push({ iteration: Number(match[1]), fileName });
   }
-  return latest;
+  return files.sort((left, right) => left.iteration - right.iteration);
 }
 
 /**
@@ -838,6 +907,134 @@ export function summarizeVerdicts(cycles) {
 }
 
 /**
+ * Размер диффа по итерациям (#120, ADR 0010).
+ *
+ * Источник — `manifest.<n>.json` (#106): `files[]` уже содержит `evidence/diff.patch` с `bytes` и
+ * `lines`. Новый снимок не нужен: это тот же файл, который ушёл оценщику.
+ *
+ * Дифф в пакете **кумулятивный** — от `base_sha` до `HEAD` итерации. Поэтому рост — отношение
+ * последней измеренной итерации к предыдущей измеренной по строкам (той же единице, что в
+ * колонке); дельта итерации — производное число и отдельным замером не становится. Одна
+ * измеренная итерация роста не даёт — `null`, а не единица: «не с чем сравнивать» и «не изменилось»
+ * — разные факты (то же правило, что у `evidence_growth`, ADR 0009).
+ * @param {string} cycleDir каталог цикла
+ * @param {string} cycleName имя каталога цикла
+ * @returns {CycleDiff}
+ */
+export function summarizeDiff(cycleDir, cycleName) {
+  const files = iterationFiles(cycleDir, 'manifest');
+  /** @type {{ iteration: number, bytes: number, lines: number }[]} */
+  const measured = [];
+  /** @type {string[]} */
+  const missing = [];
+  if (files.length === 0) missing.push('manifest.<n>.json');
+
+  for (const { iteration, fileName } of files) {
+    const manifest = readArtifact(cycleDir, cycleName, fileName, validateManifest);
+    /** @type {{ path: string, bytes: number, lines: number }[]} */
+    const entries = manifest.files;
+    const entry = entries.find((item) => item.path === DIFF_PATH);
+    if (entry === undefined) {
+      missing.push(`${fileName}: нет ${DIFF_PATH}`);
+      continue;
+    }
+    measured.push({ iteration, bytes: entry.bytes, lines: entry.lines });
+  }
+
+  const last = measured.at(-1) ?? null;
+  const previous = measured.length < 2 ? null : (measured.at(-2) ?? null);
+
+  return {
+    iteration: last === null ? null : last.iteration,
+    bytes: last === null ? null : last.bytes,
+    lines: last === null ? null : last.lines,
+    growth:
+      last === null || previous === null || previous.lines <= 0
+        ? null
+        : round3(last.lines / previous.lines),
+    measured: measured.length,
+    missing,
+  };
+}
+
+/**
+ * Провалы обязательных гейтов (#120, ADR 0010). Чистая функция: файлов не читает.
+ *
+ * Считаются только гейты `required: true` — необязательный гейт в `fail` ничего не блокировал.
+ * `skipped` (условие проекта не применимо) — не провал, а отдельный факт: то же различение, что
+ * в #115. Нет `gates.<n>.json` — `null`, а не нули: «нечего считать» и «всё прошло» — разные
+ * факты, и решение о пороге не должно опираться на выданный за факт ноль.
+ * @param {ReturnType<typeof collectStopArtifacts>} artifacts артефакты цикла
+ * @returns {CycleChecks|null}
+ */
+export function summarizeChecks(artifacts) {
+  const gates = artifacts.gates;
+  if (gates === null) return null;
+
+  /** @type {{ id: string, required: boolean, status: string }[]} */
+  const rows = gates.gates;
+  const required = rows.filter((gate) => gate.required === true);
+  const countOf = (/** @type {string} */ status) =>
+    required.filter((gate) => gate.status === status).length;
+
+  return { fail: countOf('fail'), not_run: countOf('not_run'), skipped: countOf('skipped') };
+}
+
+/**
+ * Дифф по всем циклам отчёта: агрегаты и перечень «мерить нечем» (#120).
+ * @param {CycleSummary[]} cycles
+ * @returns {DiffFacts}
+ */
+export function summarizeDiffFacts(cycles) {
+  const measured = cycles.filter((cycle) => (cycle.diff?.lines ?? null) !== null);
+  const lines = measured.map((cycle) => cycle.diff?.lines ?? 0);
+  const growth = measured
+    .map((cycle) => cycle.diff?.growth ?? null)
+    .filter((value) => value !== null);
+
+  return {
+    measured: measured.length,
+    lines_median: median(lines),
+    lines_max: lines.length === 0 ? null : Math.max(...lines),
+    growth_median: median(growth),
+    unmeasured: cycles
+      .filter((cycle) => (cycle.diff?.lines ?? null) === null)
+      .map((cycle) => cycle.name),
+  };
+}
+
+/**
+ * Провалы обязательных гейтов по всем циклам (#120): сколько циклов с провалом и сколько
+ * самих провалов, с `skipped` отдельно.
+ * @param {CycleSummary[]} cycles
+ * @returns {CheckFacts}
+ */
+export function summarizeCheckFacts(cycles) {
+  const measured = cycles.filter((cycle) => (cycle.checks ?? null) !== null);
+  const totals = { fail: 0, not_run: 0, skipped: 0 };
+  let failing = 0;
+
+  for (const cycle of measured) {
+    const checks = cycle.checks ?? { fail: 0, not_run: 0, skipped: 0 };
+    totals.fail += checks.fail;
+    totals.not_run += checks.not_run;
+    totals.skipped += checks.skipped;
+    if (checks.fail + checks.not_run > 0) failing += 1;
+  }
+
+  return {
+    measured: measured.length,
+    failing,
+    fail_total: totals.fail,
+    not_run_total: totals.not_run,
+    skipped_total: totals.skipped,
+    unmeasured: cycles
+      .filter((cycle) => (cycle.checks ?? null) === null)
+      .map((cycle) => cycle.name),
+  };
+}
+
+/**
  * Исходы гейтов по всем циклам: суммы по `id`, порядок — таблица §5.5, затем алфавит.
  * @param {CycleSummary[]} cycles
  * @param {readonly string[]} [gateIds] порядок id из конфига проекта
@@ -930,6 +1127,8 @@ export function buildReport(
       percent: percent(evaluatorOnly, totalFindings),
     },
     verification: summarizeVerdicts(cycles),
+    diff: summarizeDiffFacts(cycles),
+    checks: summarizeCheckFacts(cycles),
     gates: aggregateGates(cycles, gateIds),
   };
 }
@@ -1170,6 +1369,136 @@ function verificationHtml(verification) {
 }
 
 /**
+ * Ячейка «Дифф, строк»: размер `evidence/diff.patch` последней измеренной итерации.
+ * @param {CycleDiff|null|undefined} diff
+ * @returns {string}
+ */
+function diffText(diff) {
+  if (diff === null || diff === undefined || diff.lines === null || diff.bytes === null) {
+    return INSUFFICIENT;
+  }
+  return `${diff.lines} (${sizeText(diff.bytes)})`;
+}
+
+/**
+ * Рост в виде `×1.2`: `null` — прочерк, «сравнивать не с чем».
+ * @param {number|null} value
+ * @returns {string}
+ */
+function growthValueText(value) {
+  return value === null ? NO_VALUE : `×${value}`;
+}
+
+/**
+ * Ячейка «Рост диффа»: последняя измеренная итерация к предыдущей. Одна итерация роста не даёт.
+ * @param {CycleDiff|null|undefined} diff
+ * @returns {string}
+ */
+function diffGrowthText(diff) {
+  if (diff === null || diff === undefined || diff.lines === null) return INSUFFICIENT;
+  return growthValueText(diff.growth);
+}
+
+/**
+ * Ячейка «Провалы проверок»: обязательные гейты `fail`/`not_run` в виде `fail/not_run`.
+ * `skipped` не входит: условие проекта не применимо — не провал (ADR 0010).
+ * @param {CycleChecks|null|undefined} checks
+ * @returns {string}
+ */
+function checksText(checks) {
+  if (checks === null || checks === undefined) return INSUFFICIENT;
+  return `${checks.fail}/${checks.not_run}`;
+}
+
+/**
+ * Строки сводки markdown про дифф и провалы обязательных гейтов (#120).
+ * @param {DiffFacts} diff
+ * @param {CheckFacts} checks
+ * @returns {string[]}
+ */
+function diffAndChecksMarkdown(diff, checks) {
+  /** @type {string[]} */
+  const lines = [];
+
+  if (checks.measured === 0) {
+    lines.push(`Провалы обязательных гейтов: ${INSUFFICIENT} — нет \`gates.<n>.json\`.`);
+  } else {
+    lines.push(
+      `Провалы обязательных гейтов: циклов с провалом — ${checks.failing} из ${checks.measured}` +
+        ` (fail ${checks.fail_total}, not_run ${checks.not_run_total};` +
+        ` skipped ${checks.skipped_total} — не провал).`,
+    );
+  }
+
+  if (diff.measured === 0) {
+    lines.push(`Дифф: ${INSUFFICIENT} — нет \`manifest.<n>.json\`.`);
+  } else {
+    lines.push(
+      `Дифф: медиана ${diff.lines_median}, максимум ${diff.lines_max} строк` +
+        ` (замеров: ${diff.measured}); рост — медиана ${growthValueText(diff.growth_median)}.`,
+    );
+  }
+
+  return lines;
+}
+
+/**
+ * Те же числа для `--html`.
+ * @param {DiffFacts} diff
+ * @param {CheckFacts} checks
+ * @returns {string[]}
+ */
+function diffAndChecksHtml(diff, checks) {
+  /** @type {string[]} */
+  const lines = [];
+
+  if (checks.measured === 0) {
+    lines.push(
+      `<p>Провалы обязательных гейтов: ${escapeHtml(INSUFFICIENT)} — нет` +
+        ' <code>gates.&lt;n&gt;.json</code>.</p>',
+    );
+  } else {
+    lines.push(
+      `<p>Провалы обязательных гейтов: циклов с провалом — ${checks.failing} из ${checks.measured}` +
+        ` (fail ${checks.fail_total}, not_run ${checks.not_run_total};` +
+        ` skipped ${checks.skipped_total} — не провал).</p>`,
+    );
+  }
+
+  if (diff.measured === 0) {
+    lines.push(
+      `<p>Дифф: ${escapeHtml(INSUFFICIENT)} — нет <code>manifest.&lt;n&gt;.json</code>.</p>`,
+    );
+  } else {
+    lines.push(
+      `<p>Дифф: медиана ${diff.lines_median}, максимум ${diff.lines_max} строк` +
+        ` (замеров: ${diff.measured}); рост — медиана` +
+        ` ${escapeHtml(growthValueText(diff.growth_median))}.</p>`,
+    );
+  }
+
+  return lines;
+}
+
+/**
+ * Чего не хватает, чтобы измерить цикл: контекст, дифф, провалы гейтов — одним списком.
+ * @param {CycleSummary} cycle
+ * @returns {string[]}
+ */
+function cycleGaps(cycle) {
+  const gaps = [...(cycle.context?.missing ?? [])];
+  // «manifest.<n>.json» от диффа и перечень `manifest.<n>.json` от контекста — один и тот же
+  // факт в двух записях: в списке он остаётся один раз.
+  const manifestsListed = gaps.some((name) => name.startsWith('manifest.'));
+  for (const name of cycle.diff?.missing ?? []) {
+    if (name === 'manifest.<n>.json' && manifestsListed) continue;
+    if (!gaps.includes(name)) gaps.push(name);
+  }
+  if ((cycle.checks ?? null) === null) gaps.push('gates.<n>.json');
+  return gaps;
+}
+
+/**
  * Шапка отчёта в markdown: откуда снят, сколько прочитано и пропущено, каким ядром, и правило
  * «факт — прогон». Всё — из блока `source`; без значения — прочерк, а не догадка.
  * @param {ReportSource} source
@@ -1197,7 +1526,8 @@ function sourceMarkdown(source) {
  * @returns {string}
  */
 export function renderMarkdown(report) {
-  const { source, cycles, pending, stops, cost, findings, verification, gates } = report;
+  const { source, cycles, pending, stops, cost, findings, verification, diff, checks, gates } =
+    report;
   /** @type {string[]} */
   const lines = ['# Отчёт по циклам', '', ...sourceMarkdown(source)];
 
@@ -1212,9 +1542,10 @@ export function renderMarkdown(report) {
         ` (${percentText(findings.percent)}).`,
       '',
       ...verificationMarkdown(verification),
+      ...diffAndChecksMarkdown(diff, checks),
       '',
-      '| Цикл | Стадия | Итераций | Время, с | Расход, ₽ | Input-токены | Доля кэша | Размер пакета | Рост evidence | Только оценщик | Только ревью | Оба | Дефекты оценщика B/M/m | Неразрешённые ссылки | Незакрытые этапы | Не проверено |',
-      '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
+      '| Цикл | Стадия | Итераций | Время, с | Расход, ₽ | Input-токены | Доля кэша | Размер пакета | Рост evidence | Только оценщик | Только ревью | Оба | Дефекты оценщика B/M/m | Неразрешённые ссылки | Незакрытые этапы | Дифф, строк | Рост диффа | Провалы fail/not_run | Не проверено |',
+      '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
     );
 
     for (const cycle of cycles) {
@@ -1228,11 +1559,13 @@ export function renderMarkdown(report) {
           ` | ${cycle.findings.only_evaluator} | ${cycle.findings.only_review} | ${cycle.findings.both}` +
           ` | ${defects.BLOCKER}/${defects.MAJOR}/${defects.MINOR}` +
           ` | ${cycle.unresolved_refs} | ${cycle.unclosed_stages}` +
+          ` | ${diffText(cycle.diff)} | ${diffGrowthText(cycle.diff)}` +
+          ` | ${checksText(cycle.checks)}` +
           ` | ${unverifiedText(cycle.verification)} |`,
       );
     }
 
-    lines.push('', ...contextGapsMarkdown(cycles));
+    lines.push('', ...gapsMarkdown(cycles));
 
     const withStages = cyclesWithStages(cycles);
     if (withStages.length > 0) {
@@ -1490,7 +1823,8 @@ function sourceHtml(source) {
  * @returns {string}
  */
 export function renderHtml(report) {
-  const { source, cycles, pending, stops, cost, findings, verification, gates } = report;
+  const { source, cycles, pending, stops, cost, findings, verification, diff, checks, gates } =
+    report;
   /** @type {string[]} */
   const body = ['<h1>Отчёт по циклам</h1>', ...sourceHtml(source)];
 
@@ -1503,6 +1837,7 @@ export function renderHtml(report) {
       `<p>Находок только у оценщика: ${findings.evaluator_only} из ${findings.total}` +
         ` (${percentText(findings.percent)}).</p>`,
       ...verificationHtml(verification),
+      ...diffAndChecksHtml(diff, checks),
     );
 
     const measured = cycles.filter((cycle) => cycle.cost_rub !== null);
@@ -1543,6 +1878,9 @@ export function renderHtml(report) {
       'Дефекты оценщика B/M/m',
       'Неразрешённые ссылки',
       'Незакрытые этапы',
+      'Дифф, строк',
+      'Рост диффа',
+      'Провалы fail/not_run',
       'Не проверено',
     ]) {
       body.push(`<th scope="col">${escapeHtml(title)}</th>`);
@@ -1568,6 +1906,9 @@ export function renderHtml(report) {
             `${defects.BLOCKER}/${defects.MAJOR}/${defects.MINOR}`,
             `${cycle.unresolved_refs}`,
             `${cycle.unclosed_stages}`,
+            diffText(cycle.diff),
+            diffGrowthText(cycle.diff),
+            checksText(cycle.checks),
             unverifiedText(cycle.verification),
           ]
             .map((cell) => `<td>${cell}</td>`)
@@ -1603,12 +1944,14 @@ export function renderHtml(report) {
       body.push('</tbody>', '</table>');
     }
 
-    const gaps = cycles.filter((cycle) => cycle.context.missing.length > 0);
+    const gaps = cycles
+      .map((cycle) => ({ name: cycle.name, missing: cycleGaps(cycle) }))
+      .filter((entry) => entry.missing.length > 0);
     if (gaps.length > 0) {
       body.push('<p class="insufficient"><strong>Нечем мерить (insufficient_data):</strong>');
-      for (const cycle of gaps) {
+      for (const gap of gaps) {
         body.push(
-          `<br><code>${escapeHtml(cycle.name)}</code> — ${escapeHtml(cycle.context.missing.join(', '))}`,
+          `<br><code>${escapeHtml(gap.name)}</code> — ${escapeHtml(gap.missing.join(', '))}`,
         );
       }
       body.push('</p>');
@@ -1749,6 +2092,8 @@ function main() {
         cycles.push({
           ...summarizeCycle(name, metrics),
           verification: summarizeVerification(collected),
+          diff: summarizeDiff(cycleDir, name),
+          checks: summarizeChecks(collected),
         });
         stopNames.push(name);
         continue;
