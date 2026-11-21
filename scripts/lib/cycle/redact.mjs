@@ -22,12 +22,23 @@ const AUTH_HEADER = new RegExp(
 /** JWT: три сегмента base64url, первый начинается с `eyJ`. */
 const JWT = /\beyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g;
 
-/** Строка подключения с паролем: `postgres(ql)://user:pass@` → `postgresql://[secret]@`. */
-const PG_URL = /\bpostgres(?:ql)?:\/\/[^\s:/@]+:([^\s@/]+)@/gi;
+/**
+ * Строка подключения с паролем: `scheme://user:pass@` → `scheme://user:[secret]@`.
+ * Схема сохраняется (раньше Postgres переписывался в `postgresql://`), а пароль берётся
+ * до **последнего** `@` в authority: внутри пароля `@` встречается, и маскирование
+ * до первого оставляло хвост в логе.
+ */
+const PASSWORD_URL_MASK =
+  /(\b(?:postgres(?:ql)?|mongodb(?:\+srv)?|rediss?|mysql|amqps?):\/\/)[^\s:/@]+:([^\s/]+)(@)/gi;
+
+/** PEM-блок целиком: тело ключа многострочное, и заголовок без тела — утечка. */
+const PEM_BLOCK =
+  /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|$)/g;
 
 /** Присвоение секрета: значение от 8 символов после `=` или `:`. */
 const SECRET_ASSIGNMENT = new RegExp(
-  `(?<![A-Za-z0-9])(key|token|secret|password|passwd|pwd)(["']?${H}*[:=]${H}*["']?)([^\\s"',;]{8,})`,
+  `(?<![A-Za-z0-9])(api[-_]?key|key|token|secret|password|passwd|pass|pwd)` +
+    `(["']?${H}*[:=]${H}*)(?:"([^"]{8,})"|'([^']{8,})'|([^\\s"',;]{8,}))`,
   'gi',
 );
 
@@ -95,6 +106,15 @@ const BEARER_TOKEN =
 const CODE_REFERENCE = /^(?:[A-Za-z_$][\w$]*\.)+[A-Za-z_$][\w$]*$/;
 
 /**
+ * Тот же набор префиксных токенов, но для замены в тексте: альтернатива из источников
+ * шаблонов (границы `\b` уже внутри). Список один — детектор и маскирование не разъедутся.
+ */
+const PROVIDER_TOKEN_MASK = new RegExp(
+  PROVIDER_TOKENS.map((pattern) => pattern.source).join('|'),
+  'g',
+);
+
+/**
  * Явные заглушки: похожи на секрет, но им не являются (§5.5). Проверка идёт по всему
  * значению, а не по подстроке: боевой секрет, внутри которого встречается `example`
  * (`prodexample12345678`), обязан давать находку. Суффикс через `-`/`_` допускается
@@ -119,6 +139,44 @@ function keepKey(_match, name, separator) {
 }
 
 /**
+ * Маскирование присвоения: кавычки значения сохраняются (`"api_key": "x"` →
+ * `"api_key": "[secret]"`), иначе маскирование ломало бы JSON/YAML в логе.
+ * @param {string} _match
+ * @param {string} name имя ключа
+ * @param {string} separator `=`/`:` с окружающими пробелами и кавычкой имени
+ * @param {string} [doubleQuoted] значение в двойных кавычках
+ * @param {string} [singleQuoted] значение в одинарных кавычках
+ * @returns {string}
+ */
+function maskAssignedSecret(_match, name, separator, doubleQuoted, singleQuoted) {
+  const quote = doubleQuoted !== undefined ? '"' : singleQuoted !== undefined ? "'" : '';
+  return `${name}${separator}${quote}[secret]${quote}`;
+}
+
+/**
+ * Маскирует PEM-блок, сохраняя число строк: тело ключа многострочное, а нумерация строк
+ * в логе и диффе должна совпадать с исходником (§5.4).
+ * @param {string} match
+ * @returns {string}
+ */
+function maskPemBlock(match) {
+  return `[secret]${match.replace(/[^\n]/g, '')}`;
+}
+
+/**
+ * Маскирование строки подключения по таблице §5.4: `scheme://user:pass@` → `scheme://[secret]@`.
+ * Пользователь и пароль уходят вместе, хост остаётся — лог не теряет адреса БД.
+ * @param {string} _match
+ * @param {string} scheme `scheme://`
+ * @param {string} _password пароль (с `@` внутри — берётся до последнего `@` в authority)
+ * @param {string} at `@`
+ * @returns {string}
+ */
+function maskPasswordUrl(_match, scheme, _password, at) {
+  return `${scheme}[secret]${at}`;
+}
+
+/**
  * Маскирует телефон, только если цифр в нём достаточно для номера.
  * @param {string} match
  * @returns {string}
@@ -139,10 +197,13 @@ export function redactLog(text) {
   // Порядок важен: секреты вычищаются раньше контактов, чтобы значение-секрет,
   // содержащее e-mail или телефон, не превратилось в `[email]`/`[phone]`.
   return text
+    .replace(PEM_BLOCK, maskPemBlock)
     .replace(AUTH_HEADER, keepKey)
     .replace(JWT, '[secret]')
-    .replace(PG_URL, 'postgresql://[secret]@')
-    .replace(SECRET_ASSIGNMENT, keepKey)
+    .replace(AWS_ACCESS_KEY, '[secret]')
+    .replace(PROVIDER_TOKEN_MASK, '[secret]')
+    .replace(PASSWORD_URL_MASK, maskPasswordUrl)
+    .replace(SECRET_ASSIGNMENT, maskAssignedSecret)
     .replace(EMAIL, '[email]')
     .replace(PHONE_INTL, maskPhone)
     .replace(PHONE_LOCAL, '[phone]');
