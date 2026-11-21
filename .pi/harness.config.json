@@ -20,6 +20,22 @@
       "env": {}
     },
     {
+      "id": "check_harness",
+      "executable": "node",
+      "args": ["scripts/check-harness.mjs"],
+      "required": true,
+      "dependsOn": [],
+      "pathPrefixes": [".pi/", "templates/", "AGENTS.md", "scripts/check-harness.mjs"],
+      "env": {}
+    },
+    {
+      "id": "secrets_scan",
+      "builtin": "secrets_scan",
+      "required": true,
+      "dependsOn": [],
+      "pathPrefixes": []
+    },
+    {
       "id": "format_check",
       "executable": "pnpm",
       "args": ["exec", "prettier", "--check", "."],
@@ -43,7 +59,9 @@
   "gateTimeouts": {
     "test": 600000,
     "format_check": 120000,
-    "typecheck": 180000
+    "typecheck": 180000,
+    "check_harness": 120000,
+    "secrets_scan": 60000
   },
   "integrity": {
     "testPaths": ["**/*.test.mjs"],
