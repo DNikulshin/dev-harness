@@ -42,7 +42,9 @@
  *
  * **«Не проверено» (#115).** Сводка отвечает, сколько решений принято без проверки:
  * число `PROCEED_WITH_UNVERIFIED` и его доля от решений, рядом — `REWORK` и `ESCALATE`, плюс
- * сколько пунктов осталось владельцу (сумма, медиана, максимум, из них гейты `not_run`).
+ * сколько пунктов осталось владельцу (сумма, медиана, максимум) и из чего они пришли —
+ * разрезом по источникам (#137): гейты `not_run`, понижения `unproven:`, критерии без статуса
+ * `criteria:<id> missing`, прочее. Разрез полный: сумма четырёх групп равна числу пунктов.
  * Колонка «Не проверено» — число пунктов на цикл. Источник — `decision.unverified[]` и
  * `evaluation.unverified[]`, дедуплицированные общим правилом (`lib/cycle/unverified.mjs`): один факт из двух артефактов считается один раз. Гейты `skipped` (условие проекта
  * не применимо) в это число не входят — только `not_run`; в таблице гейтов они и раньше шли
@@ -89,7 +91,7 @@ import { loadConfig, takeConfigOption } from './lib/cycle/config.mjs';
 import { headRevision } from './lib/cycle/git.mjs';
 import { readJson } from './lib/cycle/io.mjs';
 import { FIXED_NAMES, artifactsDir, repoRoot } from './lib/cycle/paths.mjs';
-import { dedupeUnverified } from './lib/cycle/unverified.mjs';
+import { dedupeUnverified, unverifiedSource } from './lib/cycle/unverified.mjs';
 import {
   validateDecision,
   validateEscalation,
@@ -128,12 +130,6 @@ const VERDICTS_SHOWN = Object.freeze(['PROCEED_WITH_UNVERIFIED', 'REWORK', 'ESCA
 
 /** Завершённые циклы: по ним считается доля вердиктов (#115). */
 const COMPLETED_STAGES = Object.freeze(['DONE', 'ESCALATED']);
-
-/**
- * Пункт «не проверено», оставшийся от гейта: `gate:<id> not_run` (§5.6). `skipped` по условию
- * проекта сюда не попадает — «условие не применимо» и «проверка не выполнена» — разные факты.
- */
-const GATE_NOT_RUN = /^gate:\S+\s+not_run\b/u;
 
 /** Нет данных: в ячейке честная прочерк, а не ноль. */
 const NO_VALUE = '—';
@@ -177,6 +173,9 @@ const MODEL_STAGES = Object.freeze(['plan', 'code', 'review', 'evaluate']);
  * @property {string|null} action действие `decision.<n>.json`; `null` — решения нет
  * @property {number|null} items пунктов «не проверено» после дедупликации; `null` — считать не из чего
  * @property {number|null} gate_not_run из пунктов — гейты `not_run`
+ * @property {number|null} unproven из пунктов — понижения `unproven:` (#125)
+ * @property {number|null} criteria_missing из пунктов — критерии без статуса `criteria:<id> missing` (#124)
+ * @property {number|null} other из пунктов — остальные источники (оценщик, ревью, QA, integrity)
  */
 
 /**
@@ -267,7 +266,10 @@ const MODEL_STAGES = Object.freeze(['plan', 'code', 'review', 'evaluate']);
  * @property {number|null} items_total пунктов всего
  * @property {number|null} items_median медиана пунктов на цикл
  * @property {number|null} items_max максимум пунктов на цикл
- * @property {number} gate_not_run из пунктов — гейты `not_run`
+ * @property {number|null} gate_not_run из пунктов — гейты `not_run`; `null` — считать не из чего
+ * @property {number|null} unproven из пунктов — понижения `unproven:` (#125)
+ * @property {number|null} criteria_missing из пунктов — критерии без статуса (#124)
+ * @property {number|null} other из пунктов — остальные источники
  */
 
 /**
@@ -838,12 +840,25 @@ export function summarizeStop(name, artifacts) {
  *
  * Нет `decision.<n>.json` — `null`, а не ноль: «нечего считать» и «всё проверено» — разные
  * факты, и решение о пороге (`verification_tax`) не должно опираться на выданный за факт ноль.
+ *
+ * Число пунктов разложено по источникам (#137, `UNVERIFIED_SOURCES`): гейт, понижение, критерий
+ * без статуса и остальное. Разрез полный и взаимоисключающий, поэтому сумма четырёх групп равна
+ * `items` — это позволяет сравнивать базы разных версий ядра, где состав списка менялся (#124,
+ * #125, ADR 0012).
  * @param {ReturnType<typeof collectStopArtifacts>} artifacts артефакты цикла
  * @returns {CycleVerification}
  */
 export function summarizeVerification(artifacts) {
   const { decision, evaluation } = artifacts;
-  if (decision === null) return { action: null, items: null, gate_not_run: null };
+  if (decision === null)
+    return {
+      action: null,
+      items: null,
+      gate_not_run: null,
+      unproven: null,
+      criteria_missing: null,
+      other: null,
+    };
 
   const fromDecision = Array.isArray(decision.unverified) ? decision.unverified : [];
   const fromEvaluation =
@@ -852,10 +867,17 @@ export function summarizeVerification(artifacts) {
       : evaluation.unverified.map((item) => item.what);
   const items = dedupeUnverified([...fromDecision, ...fromEvaluation]);
 
+  /** @type {Record<ReturnType<typeof unverifiedSource>, number>} */
+  const sources = { gate: 0, unproven: 0, criteria_missing: 0, other: 0 };
+  for (const item of items) sources[unverifiedSource(item)] += 1;
+
   return {
     action: decision.action,
     items: items.length,
-    gate_not_run: items.filter((item) => GATE_NOT_RUN.test(item)).length,
+    gate_not_run: sources.gate,
+    unproven: sources.unproven,
+    criteria_missing: sources.criteria_missing,
+    other: sources.other,
   };
 }
 
@@ -865,6 +887,10 @@ export function summarizeVerification(artifacts) {
  * Знаменатель доли — **решения**, а не каталоги: цикл без `decision.<n>.json` не голосует
  * «за», но и не пропадает — он в `missing`. Сумма счётчиков действий равна `decided`, поэтому
  * подменить одну цифру, не соврав в сумме, нельзя.
+ *
+ * Разрез по источникам суммируется в `items_total` и живёт рядом с ним (#137): сумма, медиана
+ * и доля решений без проверки на новом определении `items` (ADR 0012) между базами несопоставимы,
+ * а разрез — сопоставим. Нет измеренных циклов — `null` во всех полях разреза, а не нули.
  * @param {CycleSummary[]} cycles
  * @returns {VerificationSummary}
  */
@@ -891,6 +917,17 @@ export function summarizeVerdicts(cycles) {
   const measured = cycles.filter((cycle) => (cycle.verification?.items ?? null) !== null);
   const items = measured.map((cycle) => cycle.verification?.items ?? 0);
 
+  /**
+   * Сумма одного источника по измеренным циклам. Нет измеренных — `null`, а не ноль: ноль
+   * означал бы «всё проверено», а это другой факт.
+   * @param {'gate_not_run'|'unproven'|'criteria_missing'|'other'} field поле разреза
+   * @returns {number|null}
+   */
+  const sourceTotal = (field) =>
+    measured.length === 0
+      ? null
+      : measured.reduce((sum, cycle) => sum + (cycle.verification?.[field] ?? 0), 0);
+
   return {
     completed,
     decided,
@@ -901,7 +938,10 @@ export function summarizeVerdicts(cycles) {
     items_total: measured.length === 0 ? null : items.reduce((sum, value) => sum + value, 0),
     items_median: median(items),
     items_max: items.length === 0 ? null : Math.max(...items),
-    gate_not_run: measured.reduce((sum, cycle) => sum + (cycle.verification?.gate_not_run ?? 0), 0),
+    gate_not_run: sourceTotal('gate_not_run'),
+    unproven: sourceTotal('unproven'),
+    criteria_missing: sourceTotal('criteria_missing'),
+    other: sourceTotal('other'),
   };
 }
 
@@ -1278,6 +1318,20 @@ function verdictNumbers(verification) {
 }
 
 /**
+ * Разрез «не проверено» по источникам одной строкой (#137): сумма групп равна `items_total`.
+ * @param {VerificationSummary} verification
+ * @returns {string}
+ */
+function sourcesText(verification) {
+  return (
+    `из них гейты \`not_run\`: ${verification.gate_not_run},` +
+    ` понижения \`unproven:\`: ${verification.unproven},` +
+    ` критерии без статуса \`missing\`: ${verification.criteria_missing},` +
+    ` прочие источники: ${verification.other}`
+  );
+}
+
+/**
  * Строки сводки markdown про вердикты и «не проверено» (#115).
  * @param {VerificationSummary} verification
  * @returns {string[]}
@@ -1307,7 +1361,11 @@ function verificationMarkdown(verification) {
     lines.push(
       `Пунктов «не проверено»: ${verification.items_total}` +
         ` (медиана ${verification.items_median}, максимум ${verification.items_max};` +
-        ` из них гейты \`not_run\`: ${verification.gate_not_run}).`,
+        ` ${sourcesText(verification)}).`,
+    );
+    lines.push(
+      'Сумма, медиана и доля посчитаны на определении `items` после #124/#125: с базой 17 циклов' +
+        ' ADR 0010 сравнимы только разрезы по источникам, не сумма (ADR 0012).',
     );
   }
 
@@ -1353,7 +1411,14 @@ function verificationHtml(verification) {
     lines.push(
       `<p>Пунктов «не проверено»: ${verification.items_total}` +
         ` (медиана ${verification.items_median}, максимум ${verification.items_max};` +
-        ` из них гейты <code>not_run</code>: ${verification.gate_not_run}).</p>`,
+        ` из них гейты <code>not_run</code>: ${verification.gate_not_run},` +
+        ` понижения <code>unproven:</code>: ${verification.unproven},` +
+        ` критерии без статуса <code>missing</code>: ${verification.criteria_missing},` +
+        ` прочие источники: ${verification.other}).</p>`,
+    );
+    lines.push(
+      '<p>Сумма, медиана и доля посчитаны на определении <code>items</code> после #124/#125:' +
+        ' с базой 17 циклов ADR 0010 сравнимы только разрезы по источникам, не сумма (ADR 0012).</p>',
     );
   }
 

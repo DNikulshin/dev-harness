@@ -56,6 +56,18 @@ export type CycleVerification = {
      * из пунктов — гейты `not_run`
      */
     gate_not_run: number | null;
+    /**
+     * из пунктов — понижения `unproven:` (#125)
+     */
+    unproven: number | null;
+    /**
+     * из пунктов — критерии без статуса `criteria:<id> missing` (#124)
+     */
+    criteria_missing: number | null;
+    /**
+     * из пунктов — остальные источники (оценщик, ревью, QA, integrity)
+     */
+    other: number | null;
 };
 export type CycleDiff = {
     /**
@@ -265,9 +277,21 @@ export type VerificationSummary = {
      */
     items_max: number | null;
     /**
-     * из пунктов — гейты `not_run`
+     * из пунктов — гейты `not_run`; `null` — считать не из чего
      */
-    gate_not_run: number;
+    gate_not_run: number | null;
+    /**
+     * из пунктов — понижения `unproven:` (#125)
+     */
+    unproven: number | null;
+    /**
+     * из пунктов — критерии без статуса (#124)
+     */
+    criteria_missing: number | null;
+    /**
+     * из пунктов — остальные источники
+     */
+    other: number | null;
 };
 export type DiffFacts = {
     /**
@@ -516,6 +540,11 @@ export declare function summarizeStop(name: string, artifacts: ReturnType<typeof
  *
  * Нет `decision.<n>.json` — `null`, а не ноль: «нечего считать» и «всё проверено» — разные
  * факты, и решение о пороге (`verification_tax`) не должно опираться на выданный за факт ноль.
+ *
+ * Число пунктов разложено по источникам (#137, `UNVERIFIED_SOURCES`): гейт, понижение, критерий
+ * без статуса и остальное. Разрез полный и взаимоисключающий, поэтому сумма четырёх групп равна
+ * `items` — это позволяет сравнивать базы разных версий ядра, где состав списка менялся (#124,
+ * #125, ADR 0012).
  * @param {ReturnType<typeof collectStopArtifacts>} artifacts артефакты цикла
  * @returns {CycleVerification}
  */
@@ -526,6 +555,10 @@ export declare function summarizeVerification(artifacts: ReturnType<typeof colle
  * Знаменатель доли — **решения**, а не каталоги: цикл без `decision.<n>.json` не голосует
  * «за», но и не пропадает — он в `missing`. Сумма счётчиков действий равна `decided`, поэтому
  * подменить одну цифру, не соврав в сумме, нельзя.
+ *
+ * Разрез по источникам суммируется в `items_total` и живёт рядом с ним (#137): сумма, медиана
+ * и доля решений без проверки на новом определении `items` (ADR 0012) между базами несопоставимы,
+ * а разрез — сопоставим. Нет измеренных циклов — `null` во всех полях разреза, а не нули.
  * @param {CycleSummary[]} cycles
  * @returns {VerificationSummary}
  */

@@ -1240,7 +1240,41 @@ describe('cycle-report: вердикты и «не проверено» (#115)',
       action: 'PROCEED_WITH_UNVERIFIED',
       items: 3,
       gate_not_run: 1,
+      unproven: 0,
+      criteria_missing: 0,
+      other: 2,
     });
+  });
+
+  test('summarizeVerification: понижение и критерий без статуса — свои источники (#137)', () => {
+    const verification = summarizeVerification(
+      artifacts({
+        decision: decisionDoc({
+          action: 'PROCEED_WITH_UNVERIFIED',
+          unverified: [
+            'unproven: R1 [BLOCKER] ссылка не разрешается',
+            'unproven: C2 [partial]',
+            'criteria:C3 missing',
+            'gate:test_int not_run (no_database)',
+            'integrity: tests deleted src/old.test.mjs',
+          ],
+        }),
+      }),
+    );
+
+    assert.equal(verification.items, 5, 'понижение тоже пункт «не проверено» (#125)');
+    assert.equal(verification.unproven, 2);
+    assert.equal(verification.criteria_missing, 1);
+    assert.equal(verification.gate_not_run, 1);
+    assert.equal(verification.other, 1, 'integrity — не гейт, не понижение и не missing');
+    assert.equal(
+      Number(verification.gate_not_run) +
+        Number(verification.unproven) +
+        Number(verification.criteria_missing) +
+        Number(verification.other),
+      verification.items,
+      'разрез полный: сумма групп равна числу пунктов',
+    );
   });
 
   test('summarizeVerification: только оценка — тоже факт, считается без решения', () => {
@@ -1251,7 +1285,14 @@ describe('cycle-report: вердикты и «не проверено» (#115)',
       }),
     );
 
-    assert.deepEqual(verification, { action: 'PROCEED', items: 2, gate_not_run: 0 });
+    assert.deepEqual(verification, {
+      action: 'PROCEED',
+      items: 2,
+      gate_not_run: 0,
+      unproven: 0,
+      criteria_missing: 0,
+      other: 2,
+    });
   });
 
   test('summarizeVerification: нет решения — null, а не ноль', () => {
@@ -1259,6 +1300,9 @@ describe('cycle-report: вердикты и «не проверено» (#115)',
       action: null,
       items: null,
       gate_not_run: null,
+      unproven: null,
+      criteria_missing: null,
+      other: null,
     });
   });
 
@@ -1298,22 +1342,69 @@ describe('cycle-report: вердикты и «не проверено» (#115)',
   function mixedCycles() {
     return [
       cycleWith('a', {
-        verification: { action: 'PROCEED_WITH_UNVERIFIED', items: 3, gate_not_run: 1 },
+        verification: {
+          action: 'PROCEED_WITH_UNVERIFIED',
+          items: 3,
+          gate_not_run: 1,
+          unproven: 1,
+          criteria_missing: 1,
+          other: 0,
+        },
       }),
       cycleWith('b', {
-        verification: { action: 'PROCEED_WITH_UNVERIFIED', items: 0, gate_not_run: 0 },
+        verification: {
+          action: 'PROCEED_WITH_UNVERIFIED',
+          items: 0,
+          gate_not_run: 0,
+          unproven: 0,
+          criteria_missing: 0,
+          other: 0,
+        },
       }),
-      cycleWith('c', { verification: { action: 'REWORK', items: 1, gate_not_run: 0 } }),
-      cycleWith('d', { verification: { action: null, items: null, gate_not_run: null } }),
-      cycleWith('e', { verification: { action: 'PROCEED', items: 2, gate_not_run: 0 } }),
+      cycleWith('c', {
+        verification: {
+          action: 'REWORK',
+          items: 1,
+          gate_not_run: 0,
+          unproven: 1,
+          criteria_missing: 0,
+          other: 0,
+        },
+      }),
+      cycleWith('d', {
+        verification: {
+          action: null,
+          items: null,
+          gate_not_run: null,
+          unproven: null,
+          criteria_missing: null,
+          other: null,
+        },
+      }),
+      cycleWith('e', {
+        verification: {
+          action: 'PROCEED',
+          items: 2,
+          gate_not_run: 0,
+          unproven: 0,
+          criteria_missing: 0,
+          other: 2,
+        },
+      }),
       cycleWith('f', {
         final_stage: 'ESCALATED',
-        verification: { action: 'PROCEED_WITH_UNVERIFIED', items: 5, gate_not_run: 0 },
+        verification: {
+          action: 'PROCEED_WITH_UNVERIFIED',
+          items: 5,
+          gate_not_run: 0,
+          unproven: 2,
+          criteria_missing: 1,
+          other: 2,
+        },
       }),
       cycleWith('g', { final_stage: 'DECIDE' }),
     ];
   }
-
   test('summarizeVerdicts: доля от решений, сумма пунктов, медиана и максимум', () => {
     const verification = summarizeVerdicts(mixedCycles());
 
@@ -1334,11 +1425,51 @@ describe('cycle-report: вердикты и «не проверено» (#115)',
     assert.equal(verification.items_median, 2);
     assert.equal(verification.items_max, 5);
     assert.equal(verification.gate_not_run, 1);
+    assert.equal(verification.unproven, 4, 'понижения из a, c и f');
+    assert.equal(verification.criteria_missing, 2);
+    assert.equal(verification.other, 4);
+    assert.equal(
+      Number(verification.gate_not_run) +
+        Number(verification.unproven) +
+        Number(verification.criteria_missing) +
+        Number(verification.other),
+      verification.items_total,
+      'разрез по источникам суммируется в items_total (#137)',
+    );
+  });
+
+  test('summarizeVerdicts: решений нет — разрез null, а не нули', () => {
+    const verification = summarizeVerdicts([
+      cycleWith('a', {
+        verification: {
+          action: null,
+          items: null,
+          gate_not_run: null,
+          unproven: null,
+          criteria_missing: null,
+          other: null,
+        },
+      }),
+    ]);
+
+    assert.equal(verification.gate_not_run, null);
+    assert.equal(verification.unproven, null);
+    assert.equal(verification.criteria_missing, null);
+    assert.equal(verification.other, null);
   });
 
   test('summarizeVerdicts: решений нет — доля null, а не ноль процентов', () => {
     const verification = summarizeVerdicts([
-      cycleWith('a', { verification: { action: null, items: null, gate_not_run: null } }),
+      cycleWith('a', {
+        verification: {
+          action: null,
+          items: null,
+          gate_not_run: null,
+          unproven: null,
+          criteria_missing: null,
+          other: null,
+        },
+      }),
     ]);
 
     assert.equal(verification.completed, 1);
@@ -1361,8 +1492,17 @@ describe('cycle-report: вердикты и «не проверено» (#115)',
     );
     assert.ok(
       text.includes(
-        'Пунктов «не проверено»: 11 (медиана 2, максимум 5; из них гейты `not_run`: 1).',
+        'Пунктов «не проверено»: 11 (медиана 2, максимум 5; из них гейты `not_run`: 1,' +
+          ' понижения `unproven:`: 4, критерии без статуса `missing`: 2, прочие источники: 4).',
       ),
+      'разрез по источникам рядом с суммой (#137)',
+    );
+    assert.ok(
+      text.includes(
+        'Сумма, медиана и доля посчитаны на определении `items` после #124/#125:' +
+          ' с базой 17 циклов ADR 0010 сравнимы только разрезы по источникам, не сумма (ADR 0012).',
+      ),
+      'отчёт говорит, с чем сравнивать прошлые замеры',
     );
     assert.ok(text.includes('Нет `decision.<n>.json`: d, g — вердикт и число пунктов неизвестны.'));
     assert.ok(text.includes('| Провалы fail/not_run | Не проверено |'), 'колонка объявлена');
@@ -1376,6 +1516,10 @@ describe('cycle-report: вердикты и «не проверено» (#115)',
     assert.ok(html.includes('Завершённых циклов (<code>DONE</code>/<code>ESCALATED</code>): 6'));
     assert.ok(html.includes('<code>PROCEED_WITH_UNVERIFIED</code> 3 (60.0%)'));
     assert.ok(html.includes('Пунктов «не проверено»: 11 (медиана 2, максимум 5;'));
+    assert.ok(
+      html.includes('понижения <code>unproven:</code>: 4,'),
+      'разрез по источникам и в --html (#137)',
+    );
     assert.ok(html.includes('<th scope="col">Не проверено</th>'));
     assert.ok(html.includes('<td>3</td>'), 'число пунктов в строке цикла');
     assert.ok(html.includes('Нет <code>decision.&lt;n&gt;.json</code>: d, g'));
@@ -1465,12 +1609,29 @@ describe('cycle-report: вердикты и «не проверено» (#115)',
       items_median: 1,
       items_max: 2,
       gate_not_run: 1,
+      unproven: 0,
+      criteria_missing: 0,
+      other: 1,
     });
     assert.deepEqual(
       report.cycles.map((cycle) => cycle.verification),
       [
-        { action: 'PROCEED_WITH_UNVERIFIED', items: 2, gate_not_run: 1 },
-        { action: 'PROCEED', items: 0, gate_not_run: 0 },
+        {
+          action: 'PROCEED_WITH_UNVERIFIED',
+          items: 2,
+          gate_not_run: 1,
+          unproven: 0,
+          criteria_missing: 0,
+          other: 1,
+        },
+        {
+          action: 'PROCEED',
+          items: 0,
+          gate_not_run: 0,
+          unproven: 0,
+          criteria_missing: 0,
+          other: 0,
+        },
       ],
     );
     assert.deepEqual(
