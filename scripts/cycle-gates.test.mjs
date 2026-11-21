@@ -631,20 +631,31 @@ describe('cycle-gates: secrets_scan', () => {
     assert.equal(log.includes(SAMPLE.jwt), false, 'значение JWT в лог не попадает');
   });
 
-  test('.env.example — единственное исключение, остальные .env* проверяются', () => {
-    const envLine = assignmentLine('PASSWORD');
-    const cases = [
-      ['.env.example', 0],
-      ['.ENV.EXAMPLE', 0],
-      ['apps/service/.env.example', 0],
-      ['.env', 1],
-      ['.env.local', 1],
-      ['apps/service/.env.production', 1],
+  test('.env.example сканируется по значению, а не по имени файла (#127)', () => {
+    // Исключений по имени больше нет: образец молчит потому, что значение — заглушка,
+    // а не потому, что файл так называется.
+    const secret = assignmentLine('PASSWORD');
+    const placeholder = 'PASSWORD="example-token-value"';
+    const files = [
+      '.env.example',
+      '.ENV.EXAMPLE',
+      'apps/service/.env.example',
+      '.env',
+      '.env.local',
+      'apps/service/.env.production',
     ];
 
-    for (const [file, expected] of /** @type {[string, number][]} */ (cases)) {
-      const findings = scanAddedLines([{ file, lines: [{ line: 7, text: envLine }] }]);
-      assert.equal(findings.length > 0 ? 1 : 0, expected, `файл ${file}`);
+    for (const file of files) {
+      assert.deepEqual(
+        scanAddedLines([{ file, lines: [{ line: 7, text: secret }] }]),
+        [{ file, line: 7, kind: 'assigned_secret' }],
+        `секрет в ${file}`,
+      );
+      assert.deepEqual(
+        scanAddedLines([{ file, lines: [{ line: 7, text: placeholder }] }]),
+        [],
+        `заглушка в ${file}`,
+      );
     }
   });
 
@@ -658,7 +669,10 @@ describe('cycle-gates: secrets_scan', () => {
           { line: 14, text: assignmentLine('password') },
         ],
       },
-      { file: '.env.example', lines: [{ line: 1, text: assignmentLine('API_KEY') }] },
+      {
+        file: '.env.example',
+        lines: [{ line: 1, text: 'API_KEY="example-token-value"' }],
+      },
     ]);
 
     assert.deepEqual(findings, [

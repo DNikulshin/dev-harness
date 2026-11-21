@@ -276,7 +276,8 @@ describe('scanSecrets', () => {
       [],
     );
     // Литерал в кавычках — по-прежнему находка: там значение записано целиком.
-    assert.deepEqual(scanSecrets(['password: "hunter2hunter2hunter2"']), [
+    const literal = 'hunter2hunter2hunter2';
+    assert.deepEqual(scanSecrets([`password: "${literal}"`]), [
       { line: 1, kind: 'assigned_secret' },
     ]);
   });
