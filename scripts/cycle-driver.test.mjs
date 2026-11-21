@@ -14,7 +14,9 @@ import { join } from 'node:path';
 import { describe, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+import { loadConfig } from './lib/cycle/config.mjs';
 import { criteriaDigest, parseCriteria } from './lib/cycle/criteria.mjs';
+import { nextPlan, nextStep } from './cycle-driver.mjs';
 
 const CLI = fileURLToPath(new URL('./cycle-driver.mjs', import.meta.url));
 const METRICS_CLI = fileURLToPath(new URL('./cycle-metrics.mjs', import.meta.url));
@@ -39,14 +41,33 @@ function runCli(args) {
 }
 
 /**
+ * Ответ `next` целиком: контракт, состояние цикла, шаг и «что сделано» (#151).
+ * @typedef {import('./lib/cycle/driver.mjs').DriverStep & {
+ *   contract: string,
+ *   cycle: import('./lib/cycle/driver.mjs').DriverCycle,
+ *   commands: string[],
+ *   done: import('./lib/cycle/driver.mjs').DriverDone,
+ * }} NextReport
+ */
+
+/**
  * Отчёт `run`: исполненные команды и следующий шаг.
  * @typedef {object} RunReport
  * @property {string} driver
  * @property {string} dir
  * @property {{ command: string, code: number, output: string }[]} executed
- * @property {import('./lib/cycle/driver.mjs').DriverStep & { commands: string[] }} [next]
+ * @property {NextReport} [next]
  * @property {string} [error]
  */
+
+/**
+ * Разбирает stdout `next`.
+ * @param {string} stdout
+ * @returns {NextReport}
+ */
+function parseNext(stdout) {
+  return /** @type {NextReport} */ (JSON.parse(stdout));
+}
 
 /**
  * Разбирает stdout `run` в типизированный отчёт.
@@ -474,5 +495,116 @@ describe('cycle-driver: идемпотентность и журнал', () => {
     const report = parseRun(result.stdout);
     assert.equal(report.executed[0]?.code, 3);
     assert.match(/** @type {string} */ (report.executed[0]?.command), /cycle-state\.mjs finish/u);
+  });
+});
+
+describe('контракт вывода next для адаптера (#151)', () => {
+  test('next отдаёт contract, состояние цикла и «что сделано»', (t) => {
+    const repo = makeRepo(t);
+    const { dir } = writeCycle(repo, { stage: 'PLAN', stage_status: 'running' });
+    const state = readState(join(dir, 'state.json'));
+
+    const result = runCli(['next', '--dir', dir, '--root', repo]);
+    assert.equal(result.code, 0, result.stderr);
+    const out = parseNext(result.stdout);
+
+    assert.equal(out.contract, 'cycle-driver.next/1');
+    assert.deepEqual(out.cycle, {
+      issue: state.issue,
+      branch: state.branch,
+      dir,
+      iteration: state.iteration,
+      max_iterations: state.max_iterations,
+      stage: state.stage,
+      stage_status: state.stage_status,
+      owner_approved: state.owner_approved,
+      escalation: null,
+    });
+    // Шаг остаётся на верхнем уровне: блок `cycle` добавлен рядом, а не вместо него.
+    assert.equal(out.stage, out.cycle.stage);
+    assert.equal(out.action, 'spawn');
+    assert.equal(out.reason, 'plan_missing');
+
+    const last = state.history.at(-1);
+    assert.deepEqual(out.done.stages.at(-1), {
+      stage: last.stage,
+      iteration: last.iteration,
+      status: last.status,
+      finished_at: last.finished_at,
+    });
+    assert.equal(out.done.stages.length, state.history.length);
+    assert.deepEqual(out.done.driver, { steps: 1, executed: 0, handed_off: 1, mismatch: 0 });
+  });
+
+  test('done.stages — последние десять этапов истории, в порядке файла', (t) => {
+    const repo = makeRepo(t);
+    const history = Array.from({ length: 14 }, (_, index) => ({
+      stage: 'CODE',
+      iteration: 1,
+      started_at: '2026-11-20T10:00:00Z',
+      finished_at: index === 13 ? null : '2026-11-20T10:01:00Z',
+      status: index === 13 ? 'running' : 'done',
+    }));
+    history[0] = {
+      stage: 'INIT',
+      iteration: 1,
+      started_at: '2026-11-20T09:00:00Z',
+      finished_at: '2026-11-20T09:01:00Z',
+      status: 'done',
+    };
+    const { dir } = writeCycle(repo, { stage: 'CODE', stage_status: 'running', history });
+
+    const out = parseNext(runCli(['next', '--dir', dir, '--root', repo]).stdout);
+    assert.equal(out.done.stages.length, 10, 'вывод не растёт вместе с историей');
+    assert.deepEqual(out.done.stages[0], {
+      stage: 'CODE',
+      iteration: 1,
+      status: 'done',
+      finished_at: '2026-11-20T10:01:00Z',
+    });
+    assert.equal(out.done.stages.at(-1)?.finished_at, null);
+  });
+
+  test('run отдаёт тот же контракт в next', (t) => {
+    const repo = makeRepo(t);
+    // INIT закрыт с критериями: `run` исполнит переход в PLAN и остановится на `spawn`
+    // (плана ещё нет) — в отчёте будет `next` с тем же контрактом.
+    const { dir } = writeCycle(repo, { stage: 'INIT', stage_status: 'done' });
+    mkdirSync(join(dir, 'evidence'), { recursive: true });
+    writeFileSync(join(dir, 'evidence', 'criteria.md'), '# критерии\n');
+
+    const result = runCli(['run', '--dir', dir, '--root', repo, '--max-steps', '5']);
+    const report = parseRun(result.stdout);
+    assert.equal(result.code, 0, result.stderr);
+    assert.ok(report.next !== undefined, result.stdout);
+    assert.equal(report.next.contract, 'cycle-driver.next/1');
+    assert.equal(report.next.cycle.stage, 'PLAN');
+    assert.deepEqual(report.next.cycle.issue, 152);
+    assert.ok(report.next.done.stages.length > 0);
+    assert.ok((report.next.done.driver?.steps ?? 0) >= 1);
+  });
+
+  test('next не меняет state.json: состояние цикла — чтение, а не запись', (t) => {
+    const repo = makeRepo(t);
+    const { dir } = writeCycle(repo, { stage: 'PLAN', stage_status: 'running' });
+    const file = join(dir, 'state.json');
+    const before = readFileSync(file, 'utf8');
+
+    runCli(['next', '--dir', dir, '--root', repo]);
+    assert.equal(readFileSync(file, 'utf8'), before);
+  });
+});
+
+describe('совместимость nextStep и nextPlan (#151)', () => {
+  test('nextStep отдаёт прежнюю форму — только шаг, без состояния', (t) => {
+    const repo = makeRepo(t);
+    const { dir } = writeCycle(repo, { stage: 'PLAN', stage_status: 'running' });
+    const context = { dir, root: repo, config: loadConfig(repo) };
+
+    const plan = nextPlan(context);
+    assert.equal(plan.state.stage, 'PLAN');
+    assert.equal(plan.step.action, 'spawn');
+    assert.deepEqual(nextStep(context), plan.step);
+    assert.equal('state' in nextStep(context), false);
   });
 });

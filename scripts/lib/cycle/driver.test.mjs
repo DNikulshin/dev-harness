@@ -6,9 +6,12 @@ import { TRANSITIONS, advanceTargets } from '../../cycle-state.mjs';
 /** Все стадии автомата — из таблицы переходов §5.3, а не из копии списка. */
 const STAGES = Object.keys(TRANSITIONS);
 import {
+  CONTRACT_ID,
   STEP_ACTIONS,
   buildJournalEntry,
+  cycleSnapshot,
   describeStep,
+  doneStages,
   expectedAfter,
   isExecutable,
   mismatchAfter,
@@ -546,5 +549,80 @@ describe('planStep: переход только по таблице §5.3', () =
       const step = plan({ stage, stage_status: 'done' });
       assert.notEqual(step.action, 'blocked', `${stage}: нет перехода после закрытой стадии`);
     }
+  });
+});
+
+describe('контракт вывода next: состояние цикла и «что сделано» (#151)', () => {
+  test('CONTRACT_ID называет контракт и версию', () => {
+    assert.match(CONTRACT_ID, /^cycle-driver\.next\/\d+$/u);
+  });
+
+  test('cycleSnapshot переносит поля state.json как есть', () => {
+    const snapshot = cycleSnapshot(
+      {
+        issue: 152,
+        branch: 'feat/152-driver',
+        iteration: 2,
+        max_iterations: 3,
+        stage: 'REVIEW',
+        stage_status: 'done',
+        owner_approved: true,
+        escalation: { reason: 'budget', draft_pr: null },
+      },
+      '/tmp/cycle',
+    );
+
+    assert.deepEqual(snapshot, {
+      issue: 152,
+      branch: 'feat/152-driver',
+      dir: '/tmp/cycle',
+      iteration: 2,
+      max_iterations: 3,
+      stage: 'REVIEW',
+      stage_status: 'done',
+      owner_approved: true,
+      escalation: { reason: 'budget', draft_pr: null },
+    });
+  });
+
+  test('cycleSnapshot не выдумывает значения: нет поля — null', () => {
+    const snapshot = cycleSnapshot({ iteration: 1, stage: 'INIT', stage_status: 'running' }, 'd');
+    assert.equal(snapshot.issue, null);
+    assert.equal(snapshot.branch, '');
+    assert.equal(snapshot.max_iterations, null);
+    assert.equal(snapshot.owner_approved, null);
+    assert.equal(snapshot.escalation, null);
+  });
+
+  test('doneStages отдаёт последние этапы в порядке файла и не растёт с историей', () => {
+    const history = Array.from({ length: 14 }, (_, index) => ({
+      stage: index === 13 ? 'CODE' : 'PLAN',
+      iteration: 1,
+      status: index === 13 ? 'running' : 'done',
+      started_at: '2026-11-20T10:00:00Z',
+      finished_at: index === 13 ? null : '2026-11-20T10:01:00Z',
+    }));
+
+    const stages = doneStages({ iteration: 1, history }, 10);
+    assert.equal(stages.length, 10);
+    assert.equal(stages.at(-1)?.stage, 'CODE');
+    assert.equal(stages.at(-1)?.finished_at, null);
+    assert.ok(
+      stages.every((entry) =>
+        ['stage', 'iteration', 'status', 'finished_at'].every((key) => key in entry),
+      ),
+    );
+  });
+
+  test('doneStages пропускает мусор в истории, а не падает', () => {
+    const stages = doneStages({
+      iteration: 2,
+      history: [null, 'мусор', { stage: 'PLAN', status: 'done' }, { status: 'done' }],
+    });
+    assert.deepEqual(stages, [{ stage: 'PLAN', iteration: 2, status: 'done', finished_at: null }]);
+  });
+
+  test('нет истории — пустой список, а не ошибка', () => {
+    assert.deepEqual(doneStages({ iteration: 1 }), []);
   });
 });

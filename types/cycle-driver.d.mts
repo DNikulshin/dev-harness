@@ -43,11 +43,29 @@ export declare function renderCommands(step: import('./lib/cycle/driver.mjs').Dr
  */
 export declare function readWebDiff(base: string, root: string, config: ReturnType<typeof loadConfig>): boolean;
 /**
- * Собирает дескриптор шага по текущему состоянию каталога.
+ * Собирает дескриптор шага и состояние цикла по текущему каталогу.
+ * @param {{ dir: string, root: string, config: ReturnType<typeof loadConfig> }} context
+ * @returns {{
+ *   step: import('./lib/cycle/driver.mjs').DriverStep,
+ *   state: Record<string, any>,
+ * }} шаг и разобранный `state.json`, который он прочитал
+ */
+export declare function nextPlan({ dir, root, config }: {
+    dir: string;
+    root: string;
+    config: ReturnType<typeof loadConfig>;
+}): {
+    step: import('./lib/cycle/driver.mjs').DriverStep;
+    state: Record<string, any>;
+};
+/**
+ * Прежняя форма ответа — только шаг. Оставлена ради совместимости: `nextStep` объявлен в
+ * `package.json#exports` (`./scripts/cycle-driver`), и смена возвращаемого типа сломала бы
+ * потребителя, который импортирует функцию. Новым вызывающим — `nextPlan` (#151).
  * @param {{ dir: string, root: string, config: ReturnType<typeof loadConfig> }} context
  * @returns {import('./lib/cycle/driver.mjs').DriverStep}
  */
-export declare function nextStep({ dir, root, config }: {
+export declare function nextStep(context: {
     dir: string;
     root: string;
     config: ReturnType<typeof loadConfig>;
