@@ -202,6 +202,12 @@ const METRICS_INVALID = {
   'metrics/metrics.invalid.final-stage.json': /metrics\.final_stage: ожидается одно из INIT/,
   'metrics/metrics.invalid.family.json':
     /metrics\.evaluator_shares_family_with_plan: ожидается boolean/,
+  'metrics/metrics.invalid.context-cache-share.json':
+    /context\.tokens\.code\.cache_share: при нулевом input ожидается null/,
+  'metrics/metrics.invalid.context-cycle-sum.json':
+    /context\.tokens\.cycle\.input: не равен сумме стадий/,
+  'metrics/metrics.invalid.context-partial.json':
+    /context\.iterations\[1\]: evidence_files\/bytes\/lines заполняются вместе/,
 };
 
 /** Нарушения `escalation.json`: по одному на файл. */
@@ -519,6 +525,31 @@ describe('validateMetrics', () => {
 
   // Каждый файл — отдельный тест: одна фикстура, одно нарушение Приложения A.
   checkInvalidFixtures(validateMetrics, METRICS_INVALID);
+
+  test('блок context валиден, но необязателен: старые артефакты остаются валидными', () => {
+    assert.deepEqual(validateMetrics(fixture('metrics/metrics.valid.json')), {
+      ok: true,
+      errors: [],
+    });
+    assert.deepEqual(validateMetrics(fixture('metrics/metrics.valid.context.json')), {
+      ok: true,
+      errors: [],
+    });
+
+    const doc = fixture('metrics/metrics.valid.context.json');
+    delete doc.context;
+    assert.deepEqual(validateMetrics(doc), { ok: true, errors: [] });
+  });
+
+  test('context проверяется целиком, если он есть', () => {
+    const doc = fixture('metrics/metrics.valid.context.json');
+    doc.context.iterations[0].new_files = 'evidence/criteria.md';
+
+    assertInvalidWith(
+      validateMetrics(doc),
+      /context\.iterations\[0\]\.new_files: ожидается массив/,
+    );
+  });
 
   test('tokens и cost_rub в фазе 1 строго null, а не отсутствуют', () => {
     const doc = fixture('metrics/metrics.valid.json');

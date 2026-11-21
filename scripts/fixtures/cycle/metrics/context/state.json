@@ -1,0 +1,42 @@
+{
+  "issue": 107,
+  "slug": "metrics-context",
+  "branch": "feat/107-metrics-context",
+  "base_sha": "0123456789abcdef0123456789abcdef01234567",
+  "iteration": 2,
+  "max_iterations": 2,
+  "stage": "DONE",
+  "stage_status": "done",
+  "criteria_source": "issue",
+  "retries": {
+    "REVIEW": 0,
+    "EVALUATE": 0,
+    "evidence": 0
+  },
+  "owner_approved": false,
+  "models": {
+    "plan": "acme-ai/deepseek/planner-lite",
+    "code": "acme-ai/deepseek/coder-lite",
+    "review": "acme-ai/openai/reviewer-lite",
+    "evaluate": "acme-ai/deepseek/evaluator-lite"
+  },
+  "history": [
+    {
+      "stage": "INIT",
+      "iteration": 1,
+      "started_at": "2026-11-18T09:00:00Z",
+      "finished_at": "2026-11-18T09:01:00Z",
+      "status": "done"
+    },
+    {
+      "stage": "REVIEW",
+      "iteration": 2,
+      "started_at": "2026-11-18T10:00:00Z",
+      "finished_at": "2026-11-18T10:02:00Z",
+      "status": "done"
+    }
+  ],
+  "escalation": null,
+  "started_at": "2026-11-18T09:00:00Z",
+  "updated_at": "2026-11-18T10:02:00Z"
+}

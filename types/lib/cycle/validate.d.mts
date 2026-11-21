@@ -14,6 +14,13 @@ export type ValidationResult = {
     errors: string[];
 };
 /**
+ * Блок `context` файла `metrics.json` (ADR 0009, #107). Описывается отдельно от
+ * `validateMetrics`, чтобы правило «не мерили — не ноль» проверялось целиком.
+ * @param {unknown} doc
+ * @returns {ValidationResult}
+ */
+export declare function validateContext(doc: unknown): ValidationResult;
+/**
  * `state.json` (Приложение A). Счётчики `retries` — целые ≥ 0, `iteration` не больше
  * `max_iterations`, кроме случая явного одобрения владельца (`owner_approved`).
  * @param {unknown} doc
