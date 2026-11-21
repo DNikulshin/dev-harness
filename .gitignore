@@ -3,3 +3,5 @@ coverage/
 .pi/artifacts/
 *.log
 docs/local/
+# Кэш резолва ссылок на issues (tooling/check-issue-refs.mjs)
+.cache/
