@@ -107,7 +107,7 @@ scripts/
   check-harness.mjs
   lib/cycle/
     paths.mjs  io.mjs  validate.mjs  refs.mjs  git.mjs  redact.mjs  config.mjs
-    limits.mjs  cli.mjs  cost.mjs  criteria.mjs  integrity.mjs
+    limits.mjs  cli.mjs  cost.mjs  criteria.mjs  integrity.mjs  unverified.mjs
     *.test.mjs                       # рядом с модулем
   fixtures/cycle/**                  # только .json и .md, отформатированные prettier
 ```
@@ -131,6 +131,7 @@ scripts/
 | `criteria.mjs` | `parseCriteria(md)` — разбор `evidence/criteria.md` (`- C1: …`); `criteriaDigest(criteria)` — `sha256` пар `[id, текст]` в порядке файла; `CRITERIA_FILE`, `CRITERIA_OWNER_APPROVED`. Один разбор на три скрипта: `cycle-evidence`, `cycle-state`, `cycle-decide` |
 | `cost.mjs`     | `normalizeUsage`, `priceUsage`, `priceKeyFor`, `readUsage`, `readPriceSnapshot`, `cycleCostRub`: расход и его стоимость по `usage.json` и `evals/prices.json` — одна формула и для `metrics.json`, и для бюджетного порога                               |
 | `driver.mjs`   | `planStep({ state, artifacts })` — чистая маршрутизация: какой шаг следующий (`run`/`advance`/`finish`/`spawn`/`handoff`/`stop`/`blocked`), какая стадия и почему; `isExecutable`, `describeStep`; журнал решений: `buildJournalEntry`, `mismatchAfter`, `expectedAfter`, `sameAnswer`, `parseJournal`, `summarizeJournal` (§5.3a). Ни файлов, ни процессов, ни моделей: наличие артефактов приходит готовым |
+| `unverified.mjs` | `dedupeUnverified(items)` и `singleLine(text)`: один факт «не проверено» приходит из `decision.unverified[]` и `evaluation.unverified[]`, сравнение — по нормализованной форме без префикса источника, регистра и разницы в пробелах; из пары остаётся более полная формулировка на позиции первого вхождения (#204). Одно правило на `cycle-pr-body` (блок «не проверено») и `cycle-report` (число пунктов и доля решений без проверки, #115) |
 | `integrity.mjs` | `matchesPath(pattern, path)` — правила путей: `*` внутри сегмента, `**` через сегменты, правило без wildcard задевает и всё вложенное; `classifyIntegrity({ changes, integrity })` — пути из `changedFilesWithStatus` раскладываются по `added`/`modified`/`deleted` раздельно для тестов и защищённых файлов; `integrityConfigured`. Чистые функции: ни файлов, ни git, ни времени |
 
 **Где искать конфиг (ADR 0005, б).** Единственная фиксированная точка раскладки — путь к конфигу.
@@ -678,6 +679,34 @@ node scripts/cycle-report.mjs [--dir <каталог артефактов>] [--j
 отдельно; битый или не прошедший схему артефакт (метрики, состояние, решение, оценка, гейты,
 эскалация) — код 2, а не тихий пропуск (испорченный артефакт занизил бы расход или выдумал
 причину). Порядок — по имени каталога и таблице §5.5.
+
+**Вердикты и «не проверено» (#115).** Отчёт отвечает «сколько решений принято без проверки и
+сколько пунктов осталось владельцу». В `--json` это блок `verification` и поле
+`cycles[].verification`:
+
+| Поле | Что это |
+| --- | --- |
+| `verification.completed` | завершённых циклов (`final_stage` = `DONE`/`ESCALATED`) |
+| `verification.decided` | из них с `decision.<n>.json` — знаменатель доли |
+| `verification.missing` | циклы без решения: вердикт и число пунктов неизвестны |
+| `verification.actions` | счётчики по всем действиям §5.6 (сумма = `decided`) |
+| `verification.proceed_with_unverified_share` | доля `PROCEED_WITH_UNVERIFIED` от `decided`, `null` без решений |
+| `verification.measured` / `items_total` / `items_median` / `items_max` | циклов с посчитанным числом пунктов и агрегаты по ним |
+| `verification.gate_not_run` | из пунктов — гейты `not_run` |
+| `cycles[].verification.action` | действие решения; `null` — решения нет |
+| `cycles[].verification.items` | пунктов «не проверено» после дедупликации; `null` — считать не из чего |
+| `cycles[].verification.gate_not_run` | из них гейты `not_run` |
+
+Пункты берутся из `decision.unverified[]` и `evaluation.unverified[]` и дедуплицируются по
+нормализованной форме (`lib/cycle/unverified.mjs`, правило #204): `cycle-decide` кладёт в решение
+копию `evaluation unverified: <what>`, и без дедупликации один факт считался бы дважды.
+**`skipped` ≠ `not_run`:** «не проверено» — это `not_run` (в том числе `blocked_by:<id>`), а
+`skipped` по условию проекта (`not_applicable`) долгом проверки не является и в число не входит;
+в таблице исходов гейтов эти статусы и раньше шли разными колонками. Нет `decision.<n>.json` —
+в ячейке `insufficient_data`, цикл в перечне «вердикт и число пунктов неизвестны», а в
+`--json` — `null`, а не `0`: решение о пороге (`verification_tax`, #116) не должно опираться на
+выданный за факт ноль. В markdown и `--html` те же числа — сводкой над таблицей и колонкой
+«Не проверено»; что представления не разошлись, проверяет тест: оба собираются из `--json`.
 
 ### 5.9 `check-harness.mjs`
 
