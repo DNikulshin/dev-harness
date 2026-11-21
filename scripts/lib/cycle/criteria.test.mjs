@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
-import { CRITERIA_FILE, CRITERION_LINE, criteriaDigest, parseCriteria } from './criteria.mjs';
+import {
+  CRITERIA_FILE,
+  CRITERION_LINE,
+  criteriaDigest,
+  parseCriteria,
+  unratedCriterionIds,
+} from './criteria.mjs';
 
 describe('parseCriteria', () => {
   test('читает строки `- C1: …` в порядке файла и обрезает пробелы', () => {
@@ -116,5 +122,40 @@ describe('criteriaDigest', () => {
 
   test('не массив — TypeError', () => {
     assert.throws(() => criteriaDigest(/** @type {any} */ ('- C1: x')), /ожидается массив/u);
+  });
+});
+
+describe('unratedCriterionIds', () => {
+  const frozen = [criterion('C1', 'первый'), criterion('C2', 'второй')];
+
+  test('id без статуса — в порядке criteria.md', () => {
+    assert.deepEqual(unratedCriterionIds(frozen, [{ id: 'C2' }]), ['C1']);
+  });
+
+  test('полное покрытие — пустой список', () => {
+    assert.deepEqual(unratedCriterionIds(frozen, [{ id: 'C1' }, { id: 'C2' }]), []);
+  });
+
+  test('пустая оценка — все критерии без статуса (случай #124)', () => {
+    assert.deepEqual(unratedCriterionIds(frozen, []), ['C1', 'C2']);
+  });
+
+  test('лишний id оценщика полноту не восполняет', () => {
+    assert.deepEqual(unratedCriterionIds([criterion('C1', 'x')], [{ id: 'C9' }]), ['C1']);
+  });
+
+  test('форма оценки не гарантирована: мусор в элементах не считается статусом', () => {
+    assert.deepEqual(
+      unratedCriterionIds([criterion('C1', 'x')], [null, {}, { id: 7 }, 'C1', { id: 'C1' }]),
+      [],
+    );
+  });
+
+  test('дубль id в оценке не ломает порядок и счёт', () => {
+    assert.deepEqual(unratedCriterionIds(frozen, [{ id: 'C1' }, { id: 'C1' }]), ['C2']);
+  });
+
+  test('не массив критериев — TypeError', () => {
+    assert.throws(() => unratedCriterionIds(/** @type {any} */ (null), []), /ожидается массив/u);
   });
 });

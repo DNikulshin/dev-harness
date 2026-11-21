@@ -64,7 +64,8 @@
  *   `gate:<id> [fail] — обязательный гейт не прошёл; лог: gates/<id>.<n>.log` (гейт);
  * - `unverified[]`: `gate:<id> not_run (<reason>)`, `qa-web not_run (<reason>)`
  *   (`<reason>` — причина из файла, `web-diff` — файла нет, `reason_missing` — причина пуста),
- *   `criteria:<id> unverified`, `evaluation unverified: <what>`,
+ *   `criteria:<id> unverified`, `criteria:<id> missing` (критерий заморожен, а статуса
+ *   в оценке нет — полнота оценивания, #124), `evaluation unverified: <what>`,
  *   `integrity: protected <путь> (<added|modified|deleted>)`,
  *   `integrity: tests deleted <путь>`, `integrity: tests changed (<N>)`;
  * - `downgraded[]`: `<id> [<SEV>] <причина>` (у критерия вместо `SEV` — статус `unmet`);
@@ -93,6 +94,7 @@ import {
   criteriaMismatch,
   frozenDigest,
   parseCriteria,
+  unratedCriterionIds,
 } from './lib/cycle/criteria.mjs';
 import { changedFiles } from './lib/cycle/git.mjs';
 import { cycleCostRub, readPriceSnapshot } from './lib/cycle/cost.mjs';
@@ -168,6 +170,9 @@ const DOWNGRADE_REASONS = Object.freeze({
  *   проверенный `qa-web.json` или `null`, если файла нет
  * @property {Record<string, any>|null} [integrity] проверенный `evidence/integrity.json`
  *   или `null` (по умолчанию): правил `integrity` в проекте нет или пакет собран без них
+ * @property {readonly import('./lib/cycle/criteria.mjs').Criterion[]|null} [frozenCriteria]
+ *   критерии из `evidence/criteria.md`, закреплённые `state.criteria_sha256`; `null`
+ *   (по умолчанию) — заморозки не было (старый цикл), сверять полноту не с чем
  * @property {boolean} webDiff дифф затрагивает `apps/frontend`
  * @property {string} root корень репозитория для разрешения ссылок
  * @property {number|null} [costRub] стоимость цикла по `usage.json` и `evals/prices.json`:
@@ -461,6 +466,7 @@ export function decide(inputs) {
     gates,
     review,
     evaluation,
+    frozenCriteria = null,
     qaWeb,
     integrity = null,
     webDiff,
@@ -705,6 +711,17 @@ export function decide(inputs) {
   }
 
   unverified.push(...criteriaUnverified);
+
+  // Полнота оценивания (#124): критерий из замороженного `criteria.md` без статуса — не
+  // «проверено». Проверка стоит в решении, а не только в `cycle-pr-body`: тело PR собирается
+  // после решения, и цикл успевал получить `PROCEED` по оценке, где критериев нет вовсе.
+  // Добором это не лечится (`acquire[]` не пополняется): статус даёт оценщик, а не данные.
+  if (frozenCriteria !== null) {
+    for (const id of unratedCriterionIds(frozenCriteria, criteria)) {
+      unverified.push(`criteria:${id} missing`);
+    }
+  }
+
   for (const item of evalUnverified)
     unverified.push(`evaluation unverified: ${redacted(item.what)}`);
 
@@ -827,8 +844,10 @@ function readOptionalJson(file, validator, label) {
 /**
  * Критерии не изменились после заморозки (#22). Дайджест в `state.json` пишет
  * `cycle-state freeze-criteria`; его нет — цикл старый, сверять нечего.
+ * Возвращает разобранные критерии: по ним же считается полнота оценивания (#124),
+ * и второй разбор того же файла в решении был бы вторым источником истины.
  * @param {{ dir: string, config: ReturnType<typeof loadConfig>, state: Record<string, any> }} options
- * @returns {void}
+ * @returns {import('./lib/cycle/criteria.mjs').Criterion[]|null} критерии или `null` без заморозки
  * @throws {Error} при расхождении: решение считалось бы по подменённой цели
  */
 function assertCriteriaFrozen({ dir, config, state }) {
@@ -844,7 +863,7 @@ function assertCriteriaFrozen({ dir, config, state }) {
         'цель итерации не закреплена, шаг freeze-criteria пропущен\n',
     );
   }
-  if (frozen === null) return;
+  if (frozen === null) return null;
 
   if (!existsSync(file)) {
     throw new Error(
@@ -852,13 +871,16 @@ function assertCriteriaFrozen({ dir, config, state }) {
     );
   }
 
-  const mismatch = criteriaMismatch(parseCriteria(readFileSync(file, 'utf8')), state);
+  const criteria = parseCriteria(readFileSync(file, 'utf8'));
+  const mismatch = criteriaMismatch(criteria, state);
   if (mismatch !== null) {
     throw new Error(
       'criteria_drift: критерии приёмки изменились после заморозки ' +
         `(${mismatch.slice(0, 12)}…): решение по подменённой цели не принимается`,
     );
   }
+
+  return criteria;
 }
 
 /**
@@ -905,8 +927,9 @@ function main() {
 
     const state = readRequiredJson(join(dir, FIXED_NAMES.state), validateState, 'state.json');
     // Решение по незамороженной цели бессмысленно: сверка критериев с закреплённым
-    // дайджестом — до любых правил (§5.6, #22).
-    assertCriteriaFrozen({ dir, config, state });
+    // дайджестом — до любых правил (§5.6, #22). Разбор этого же файла даёт полноту
+    // оценивания (#124): критерий без статуса не считается проверенным.
+    const frozenCriteria = assertCriteriaFrozen({ dir, config, state });
     const iteration = args.iteration ?? state.iteration;
     const names = iterNames(iteration);
 
@@ -961,6 +984,7 @@ function main() {
       gates,
       review,
       evaluation,
+      frozenCriteria,
       qaWeb,
       integrity,
       webDiff,

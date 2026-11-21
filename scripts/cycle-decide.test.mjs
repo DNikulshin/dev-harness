@@ -756,6 +756,51 @@ describe('decide: правило 4 — unverified и acquire', () => {
       },
     },
     {
+      name: 'замороженный критерий без статуса — не проверено (#124)',
+      setup: {
+        frozenCriteria: [
+          { id: 'C1', text: 'первый' },
+          { id: 'C2', text: 'второй' },
+        ],
+        evaluation: evaluationDoc({ criteria: [criterion({ id: 'C1' })] }),
+      },
+      expected: {
+        action: 'PROCEED_WITH_UNVERIFIED',
+        unverified: ['criteria:C2 missing'],
+        acquire: [],
+      },
+    },
+    {
+      name: 'оценка без критериев при заморозке — решения PROCEED нет',
+      setup: {
+        frozenCriteria: [{ id: 'C1', text: 'первый' }],
+        evaluation: evaluationDoc({ criteria: [] }),
+      },
+      expected: {
+        action: 'PROCEED_WITH_UNVERIFIED',
+        unverified: ['criteria:C1 missing'],
+        acquire: [],
+      },
+    },
+    {
+      name: 'лишний id оценщика полноту не восполняет и решению не мешает',
+      setup: {
+        frozenCriteria: [{ id: 'C1', text: 'первый' }],
+        evaluation: evaluationDoc({
+          criteria: [criterion({ id: 'C1' }), criterion({ id: 'C9', note: 'свой пункт' })],
+        }),
+      },
+      expected: { action: 'PROCEED', unverified: [], acquire: [] },
+    },
+    {
+      name: 'без заморозки полнота не сверяется: старые циклы не ломаются',
+      setup: {
+        frozenCriteria: null,
+        evaluation: evaluationDoc({ criteria: [] }),
+      },
+      expected: { action: 'PROCEED', unverified: [], acquire: [] },
+    },
+    {
       name: 'unverified оценщика попадает в решение',
       setup: {
         evaluation: evaluationDoc({
@@ -1469,6 +1514,46 @@ describe('CLI: запись решения', () => {
 
     const result = runCli(repo.root, ['--dir', dir]);
     assert.equal(result.status, 0, result.stderr);
+  });
+
+  test('оценка без критериев при заморозке — PROCEED_WITH_UNVERIFIED, а не PROCEED (#124)', (t) => {
+    const repo = makeRepo(t);
+    const criteriaText = '# Критерии приёмки\n\n- C1: первый\n- C2: второй\n';
+    const dir = makeCycleDir(repo.root, {
+      // Заморозка совпадает с файлом: дрейфа нет, сверять полноту есть с чем.
+      state: stateDoc(repo.baseSha, {
+        criteria_sha256: criteriaDigest(parseCriteria(criteriaText)),
+      }),
+      gates: gatesDoc([gate('typecheck', 'pass')]),
+      reviewMd: mdBlock(reviewDoc()),
+      evaluationMd: mdBlock(
+        evaluationDoc({
+          criteria: [criterion({ id: 'C1' })],
+          scores: {
+            coverage: 3,
+            correctness: 3,
+            tests: 3,
+            data: null,
+            pii_security: 3,
+            architecture: 3,
+            scope: 3,
+            docs: 3,
+            evidence: 3,
+          },
+        }),
+      ),
+    });
+    mkdirSync(join(dir, 'evidence'), { recursive: true });
+    writeFileSync(join(dir, 'evidence', 'criteria.md'), criteriaText);
+
+    const result = runCli(repo.root, ['--dir', dir]);
+
+    assert.equal(result.status, 0, result.stderr);
+    const decision = JSON.parse(result.stdout);
+    assert.equal(decision.action, 'PROCEED_WITH_UNVERIFIED');
+    assert.deepEqual(decision.unverified, ['criteria:C2 missing']);
+    assert.deepEqual(decision.acquire, [], 'статус даёт оценщик, а не добор данных');
+    assert.deepEqual(decision.counts, counts());
   });
 
   test('без блока json в md — правило 1 и никаких review/evaluation json', (t) => {
