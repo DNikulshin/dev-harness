@@ -31,6 +31,10 @@ import {
   renderMarkdown,
   summarizeContext,
   summarizeCycle,
+  summarizeChecks,
+  summarizeCheckFacts,
+  summarizeDiff,
+  summarizeDiffFacts,
   summarizePending,
   summarizeStop,
   summarizeVerdicts,
@@ -1361,7 +1365,7 @@ describe('cycle-report: вердикты и «не проверено» (#115)',
       ),
     );
     assert.ok(text.includes('Нет `decision.<n>.json`: d, g — вердикт и число пунктов неизвестны.'));
-    assert.ok(text.includes('| Незакрытые этапы | Не проверено |'), 'колонка объявлена');
+    assert.ok(text.includes('| Провалы fail/not_run | Не проверено |'), 'колонка объявлена');
     assert.match(text, /\| 3 \|$/mu, 'число пунктов в строке цикла');
     assert.match(text, /\| insufficient_data \|$/mu, 'нет решения — insufficient_data');
   });
@@ -1490,5 +1494,358 @@ describe('cycle-report: вердикты и «не проверено» (#115)',
     assert.equal(report.verification.measured, 0, 'мерить нечего — не ноль пунктов');
     assert.equal(report.verification.items_total, null);
     assert.equal(report.verification.proceed_with_unverified_share, null);
+  });
+});
+
+describe('cycle-report: дифф и провалы обязательных гейтов (#120)', () => {
+  /**
+   * Снимок пакета с диффом: `totals` обязан сходиться с `files[]` (схема манифеста).
+   * @param {number} iteration
+   * @param {{ diffBytes: number, diffLines: number }} sizes
+   */
+  function manifestDoc(iteration, { diffBytes, diffLines }) {
+    const files = [
+      { path: 'evidence/criteria.md', bytes: 48, lines: 3 },
+      { path: 'evidence/diff.patch', bytes: diffBytes, lines: diffLines },
+    ];
+    return {
+      iteration,
+      base_sha: '1f0c3d8b7a6e5d4c3b2a190807f6e5d4c3b2a190',
+      files,
+      totals: {
+        files: files.length,
+        bytes: files.reduce((sum, file) => sum + file.bytes, 0),
+        lines: files.reduce((sum, file) => sum + file.lines, 0),
+      },
+    };
+  }
+
+  /**
+   * Гейт с нужным статусом и признаком обязательности.
+   * @param {string} id
+   * @param {string} status
+   * @param {boolean} [required]
+   * @param {string|null} [reason]
+   */
+  function gate(id, status, required = true, reason = null) {
+    return {
+      id,
+      cmd: 'true',
+      required,
+      status,
+      exit: status === 'pass' ? 0 : null,
+      duration_s: 0,
+      log: null,
+      reason,
+    };
+  }
+
+  /**
+   * Документ `gates.<n>.json`.
+   * @param {Record<string, any>[]} gates
+   * @param {number} [iteration]
+   */
+  function gatesDoc(gates, iteration = 1) {
+    return {
+      iteration,
+      base_sha: '0123456789abcdef0123456789abcdef01234567',
+      head: '89abcdef0123456789abcdef0123456789abcdef',
+      started_at: '2026-11-16T09:10:00Z',
+      gates,
+    };
+  }
+
+  /**
+   * Каталог цикла во временном каталоге артефактов с набором файлов.
+   * @param {import('node:test').TestContext} t
+   * @param {string} dir каталог артефактов
+   * @param {string} name имя цикла
+   * @param {Record<string, Record<string, any>>} files имя файла → документ
+   * @returns {string}
+   */
+  function cycleDir(t, dir, name, files) {
+    const target = join(dir, name);
+    mkdirSync(target, { recursive: true });
+    for (const [fileName, doc] of Object.entries(files)) {
+      writeFileSync(join(target, fileName), `${JSON.stringify(doc, null, 2)}\n`);
+    }
+    return target;
+  }
+
+  test('summarizeDiff: размер последней измеренной итерации и рост к предыдущей', (t) => {
+    const dir = makeDir(t);
+    const target = cycleDir(t, dir, 'c', {
+      'manifest.1.json': manifestDoc(1, { diffBytes: 1024, diffLines: 24 }),
+      'manifest.2.json': manifestDoc(2, { diffBytes: 1536, diffLines: 36 }),
+    });
+
+    assert.deepEqual(summarizeDiff(target, 'c'), {
+      iteration: 2,
+      bytes: 1536,
+      lines: 36,
+      growth: 1.5,
+      measured: 2,
+      missing: [],
+    });
+  });
+
+  test('summarizeDiff: порядок итераций числовой, а не строковый', (t) => {
+    const dir = makeDir(t);
+    const target = cycleDir(t, dir, 'c', {
+      'manifest.2.json': manifestDoc(2, { diffBytes: 100, diffLines: 10 }),
+      'manifest.10.json': manifestDoc(10, { diffBytes: 300, diffLines: 30 }),
+    });
+
+    const diff = summarizeDiff(target, 'c');
+
+    assert.equal(diff.iteration, 10, 'manifest.10.json — последняя итерация');
+    assert.equal(diff.growth, 3);
+  });
+
+  test('summarizeDiff: одна итерация роста не даёт, нет снимков — missing', (t) => {
+    const dir = makeDir(t);
+    const one = cycleDir(t, dir, 'one', {
+      'manifest.1.json': manifestDoc(1, { diffBytes: 100, diffLines: 10 }),
+    });
+    const none = cycleDir(t, dir, 'none', {});
+
+    const single = summarizeDiff(one, 'one');
+    assert.equal(single.growth, null, 'сравнивать не с чем — прочерк, а не единица');
+    assert.equal(single.lines, 10);
+
+    const empty = summarizeDiff(none, 'none');
+    assert.equal(empty.lines, null);
+    assert.deepEqual(empty.missing, ['manifest.<n>.json']);
+  });
+
+  test('summarizeDiff: снимок без диффа — missing с именем файла, а не ноль', (t) => {
+    const dir = makeDir(t);
+    const target = cycleDir(t, dir, 'c', {
+      'manifest.1.json': {
+        iteration: 1,
+        base_sha: '1f0c3d8b7a6e5d4c3b2a190807f6e5d4c3b2a190',
+        files: [{ path: 'evidence/criteria.md', bytes: 48, lines: 3 }],
+        totals: { files: 1, bytes: 48, lines: 3 },
+      },
+    });
+
+    const diff = summarizeDiff(target, 'c');
+
+    assert.equal(diff.lines, null);
+    assert.deepEqual(diff.missing, ['manifest.1.json: нет evidence/diff.patch']);
+  });
+
+  test('summarizeChecks: только обязательные; skipped — не провал', () => {
+    const checks = summarizeChecks({
+      decision: null,
+      evaluation: null,
+      escalation: null,
+      gates: gatesDoc([
+        gate('typecheck', 'fail'),
+        gate('test_int', 'not_run', true, 'no_database'),
+        gate('lint', 'skipped', true, 'not_applicable'),
+        gate('optional_lint', 'fail', false),
+        gate('secrets_scan', 'pass'),
+      ]),
+    });
+
+    assert.deepEqual(checks, { fail: 1, not_run: 1, skipped: 1 });
+  });
+
+  test('summarizeChecks: нет gates.<n>.json — null, а не нули', () => {
+    assert.equal(
+      summarizeChecks({ decision: null, evaluation: null, escalation: null, gates: null }),
+      null,
+    );
+  });
+
+  /** Метрики с блоком `context` без недостающих файлов: замеры контекста не мешают. */
+  function contextMetrics() {
+    return JSON.parse(readFileSync(join(METRICS_FIXTURES, 'metrics.valid.context.json'), 'utf8'));
+  }
+
+  /**
+   * Цикл с метриками и подставленными фактами диффа и провалов.
+   * @param {string} name
+   * @param {{ diff?: import('./cycle-report.mjs').CycleDiff, checks?: import('./cycle-report.mjs').CycleChecks|null, final_stage?: string }} [options]
+   */
+  function cycleWith(name, { diff, checks, final_stage = 'DONE' } = {}) {
+    const summary = summarizeCycle(name, { ...contextMetrics(), final_stage });
+    const merged = { ...summary };
+    if (diff !== undefined) merged.diff = diff;
+    if (checks !== undefined) merged.checks = checks;
+    return merged;
+  }
+
+  test('summarizeDiffFacts и summarizeCheckFacts: агрегаты и «мерить нечем»', () => {
+    const cycles = [
+      cycleWith('a', {
+        diff: { iteration: 2, bytes: 1, lines: 10, growth: 2, measured: 2, missing: [] },
+        checks: { fail: 1, not_run: 0, skipped: 1 },
+      }),
+      cycleWith('b', {
+        diff: { iteration: 1, bytes: 1, lines: 30, growth: null, measured: 1, missing: [] },
+        checks: { fail: 0, not_run: 2, skipped: 0 },
+      }),
+      cycleWith('c', {
+        diff: {
+          iteration: null,
+          bytes: null,
+          lines: null,
+          growth: null,
+          measured: 0,
+          missing: ['manifest.<n>.json'],
+        },
+        checks: null,
+      }),
+      cycleWith('d', {
+        diff: { iteration: 1, bytes: 1, lines: 20, growth: null, measured: 1, missing: [] },
+        checks: { fail: 0, not_run: 0, skipped: 2 },
+      }),
+    ];
+
+    assert.deepEqual(summarizeDiffFacts(cycles), {
+      measured: 3,
+      lines_median: 20,
+      lines_max: 30,
+      growth_median: 2,
+      unmeasured: ['c'],
+    });
+    assert.deepEqual(summarizeCheckFacts(cycles), {
+      measured: 3,
+      failing: 2,
+      fail_total: 1,
+      not_run_total: 2,
+      skipped_total: 3,
+      unmeasured: ['c'],
+    });
+  });
+
+  test('markdown: колонки диффа и провалов, сводка и insufficient_data', () => {
+    const text = renderMarkdown(
+      buildReport([
+        cycleWith('a', {
+          diff: { iteration: 2, bytes: 1536, lines: 36, growth: 1.5, measured: 2, missing: [] },
+          checks: { fail: 1, not_run: 0, skipped: 1 },
+        }),
+        cycleWith('b', {
+          diff: {
+            iteration: null,
+            bytes: null,
+            lines: null,
+            growth: null,
+            measured: 0,
+            missing: ['manifest.<n>.json'],
+          },
+          checks: null,
+        }),
+      ]),
+    );
+
+    assert.ok(
+      text.includes('| Дифф, строк | Рост диффа | Провалы fail/not_run |'),
+      'колонки объявлены',
+    );
+    assert.ok(text.includes('| 36 (1.5 КБ) | ×1.5 | 1/0 |'));
+    assert.ok(text.includes('| insufficient_data | insufficient_data | insufficient_data |'));
+    assert.ok(
+      text.includes(
+        'Провалы обязательных гейтов: циклов с провалом — 1 из 1 (fail 1, not_run 0;' +
+          ' skipped 1 — не провал).',
+      ),
+    );
+    assert.ok(
+      text.includes('Дифф: медиана 36, максимум 36 строк (замеров: 1); рост — медиана ×1.5.'),
+    );
+    assert.ok(
+      text.includes('- `b` — manifest.<n>.json, gates.<n>.json'),
+      'перечень «нечем мерить»',
+    );
+  });
+
+  test('--html: те же числа и те же колонки', () => {
+    const html = renderHtml(
+      buildReport([
+        cycleWith('a', {
+          diff: { iteration: 2, bytes: 1536, lines: 36, growth: 1.5, measured: 2, missing: [] },
+          checks: { fail: 1, not_run: 0, skipped: 1 },
+        }),
+      ]),
+    );
+
+    assert.ok(html.includes('<th scope="col">Дифф, строк</th>'));
+    assert.ok(html.includes('<th scope="col">Рост диффа</th>'));
+    assert.ok(html.includes('<th scope="col">Провалы fail/not_run</th>'));
+    assert.ok(html.includes('<td>36 (1.5 КБ)</td>'));
+    assert.ok(html.includes('<td>×1.5</td>'));
+    assert.ok(html.includes('<td>1/0</td>'));
+    assert.ok(
+      html.includes('Провалы обязательных гейтов: циклов с провалом — 1 из 1 (fail 1, not_run 0;'),
+    );
+  });
+
+  test('CLI: --json отдаёт дифф и провалы, markdown и --html — из того же объекта', (t) => {
+    const dir = makeDir(t);
+    const target = cycleDir(t, dir, 'a-diff', {
+      'metrics.json': metricsDoc({ cost_rub: 4.72 }),
+      'manifest.1.json': manifestDoc(1, { diffBytes: 1024, diffLines: 24 }),
+      'manifest.2.json': manifestDoc(2, { diffBytes: 1536, diffLines: 36 }),
+      'gates.1.json': gatesDoc([
+        gate('typecheck', 'fail'),
+        gate('lint', 'skipped', true, 'not_applicable'),
+      ]),
+      'gates.2.json': gatesDoc(
+        [gate('typecheck', 'pass'), gate('lint', 'skipped', true, 'not_applicable')],
+        2,
+      ),
+    });
+
+    const result = runCli(['--dir', dir, '--json']);
+    const second = runCli(['--dir', dir, '--json']);
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, second.stdout, 'два прогона дают побайтно равный JSON');
+
+    const report = JSON.parse(result.stdout.trim());
+    assert.deepEqual(report.cycles[0].diff, {
+      iteration: 2,
+      bytes: 1536,
+      lines: 36,
+      growth: 1.5,
+      measured: 2,
+      missing: [],
+    });
+    assert.deepEqual(
+      report.cycles[0].checks,
+      { fail: 0, not_run: 0, skipped: 1 },
+      'последняя итерация',
+    );
+    assert.equal(report.diff.measured, 1);
+    assert.equal(report.checks.skipped_total, 1);
+    assert.equal(report.checks.failing, 0, 'skipped — не провал');
+
+    assert.equal(runCli(['--dir', dir]).stdout, renderMarkdown(report));
+    assert.equal(runCli(['--dir', dir, '--html']).stdout, renderHtml(report));
+    assert.ok(target.length > 0);
+  });
+
+  test('CLI: нет манифестов и gates — insufficient_data, а не нули', (t) => {
+    const dir = makeDir(t);
+    writeCycle(dir, 'bare', metricsDoc({ cost_rub: 1 }));
+
+    const result = runCli(['--dir', dir, '--json']);
+
+    assert.equal(result.status, 0, result.stderr);
+    const report = JSON.parse(result.stdout.trim());
+    assert.equal(report.cycles[0].diff.lines, null);
+    assert.equal(report.cycles[0].checks, null);
+    assert.equal(report.diff.measured, 0);
+    assert.equal(report.diff.lines_median, null);
+    assert.equal(report.checks.measured, 0);
+    assert.deepEqual(report.checks.unmeasured, ['bare']);
+
+    const markdown = runCli(['--dir', dir]).stdout;
+    assert.ok(markdown.includes('Дифф: insufficient_data — нет `manifest.<n>.json`.'));
+    assert.ok(markdown.includes('Провалы обязательных гейтов: insufficient_data'));
   });
 });
