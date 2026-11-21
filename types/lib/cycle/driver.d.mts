@@ -262,6 +262,101 @@ export type DriverJournalSummary = {
  * @property {number} mismatch сколько раз состояние разошлось с ответом драйвера
  */
 /**
+ * Идентификатор контракта вывода `next` (§5.3a `docs/orchestrator-core.md`). Адаптер (ADR 0004,
+ * issue #74) читает вывод, не импортируя код ядра, поэтому ему нужно обещание формы, а не набор
+ * полей текущей ревизии. Добавление поля версию не меняет; удаление, переименование или смена
+ * смысла — меняет, и адаптер обязан на чужой версии отказать, а не угадывать.
+ * @type {string}
+ */
+export declare const CONTRACT_ID: string;
+export type DriverCycle = {
+    /**
+     * номер issue цикла
+     */
+    issue: number | null;
+    /**
+     * ветка цикла
+     */
+    branch: string;
+    /**
+     * каталог артефактов цикла
+     */
+    dir: string;
+    /**
+     * текущая итерация
+     */
+    iteration: number;
+    /**
+     * лимит итераций цикла
+     */
+    max_iterations: number | null;
+    /**
+     * стадия (дубль `stage` шага — чтобы блок читался сам по себе)
+     */
+    stage: string;
+    /**
+     * статус стадии
+     */
+    stage_status: string;
+    /**
+     * подтверждение владельца на текущей стадии
+     */
+    owner_approved: boolean | null;
+    /**
+     * эскалация из `state.json`, если была
+     */
+    escalation: Record<string, any> | null;
+};
+export type DriverDoneStage = {
+    stage: string;
+    iteration: number;
+    status: string;
+    /**
+     * `null` — этап ещё идёт
+     */
+    finished_at: string | null;
+};
+export type DriverDone = {
+    /**
+     * последние этапы `state.history`, в порядке файла
+     */
+    stages: DriverDoneStage[];
+    /**
+     * сводка `driver.jsonl`; `null` — журнала нет
+     */
+    driver: DriverJournalSummary | null;
+};
+/**
+ * Состояние цикла для человека и адаптера: то, что лежит в `state.json` и не входит в дескриптор
+ * шага. Отдельный блок, а не поля верхнего уровня, — чтобы `action`/`step`/`reason` оставались
+ * ответом на один вопрос «что делать сейчас», а не смешивались с «где мы».
+ * @typedef {object} DriverCycle
+ * @property {number|null} issue номер issue цикла
+ * @property {string} branch ветка цикла
+ * @property {string} dir каталог артефактов цикла
+ * @property {number} iteration текущая итерация
+ * @property {number|null} max_iterations лимит итераций цикла
+ * @property {string} stage стадия (дубль `stage` шага — чтобы блок читался сам по себе)
+ * @property {string} stage_status статус стадии
+ * @property {boolean|null} owner_approved подтверждение владельца на текущей стадии
+ * @property {Record<string, any>|null} escalation эскалация из `state.json`, если была
+ */
+/**
+ * Завершённый (или идущий) этап истории цикла: «что сделано».
+ * @typedef {object} DriverDoneStage
+ * @property {string} stage
+ * @property {number} iteration
+ * @property {string} status
+ * @property {string|null} finished_at `null` — этап ещё идёт
+ */
+/**
+ * Блок «что сделано»: история стадий и счётчики журнала решений. Второй элемент важен отдельно:
+ * он отвечает, сколько шагов драйвер выдал и сколько исполнял сам (§5.3a).
+ * @typedef {object} DriverDone
+ * @property {DriverDoneStage[]} stages последние этапы `state.history`, в порядке файла
+ * @property {DriverJournalSummary|null} driver сводка `driver.jsonl`; `null` — журнала нет
+ */
+/**
  * Куда состояние обязано прийти после шага. `null` — сверять нечего: шаг не двигает стадию
  * сам (`apply-decision` переводит автомат по решению, а `stop`/`blocked` ничего не обещают).
  * Форма входа — минимум полей шага, а не весь `DriverStep`: по этой функции сверяется и запись
@@ -317,6 +412,24 @@ export declare function parseJournal(text: string): DriverJournalEntry[];
  * @returns {DriverJournalSummary}
  */
 export declare function summarizeJournal(entries: DriverJournalEntry[]): DriverJournalSummary;
+/**
+ * Блок `cycle` вывода `next`: где цикл сейчас. Поля берутся из `state.json` как есть — валидатор
+ * уже проверил их типы, а вычислять здесь нечего: производное число вместо замера показывало бы
+ * уверенность там, где её нет.
+ * @param {Record<string, any>} state разобранный `state.json` (уже прошёл `validateState`)
+ * @param {string} dir каталог артефактов цикла
+ * @returns {DriverCycle}
+ */
+export declare function cycleSnapshot(state: Record<string, any>, dir: string): DriverCycle;
+/**
+ * Блок «что сделано»: последние `limit` записей `state.history` в порядке файла (старые → новые).
+ * Потолок нужен для длинных циклов: вторая итерация `review`/`evaluate` не должна раздувать
+ * вывод, который читает человек.
+ * @param {Record<string, any>} state разобранный `state.json`
+ * @param {number} [limit] сколько последних этапов оставить
+ * @returns {DriverDoneStage[]}
+ */
+export declare function doneStages(state: Record<string, any>, limit?: number): DriverDoneStage[];
 /**
  * Определяет следующий шаг цикла. Чистая функция: одинаковый вход — одинаковый выход.
  * @param {{ state: DriverState, artifacts: DriverArtifacts }} input

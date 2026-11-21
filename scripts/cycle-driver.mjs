@@ -10,15 +10,21 @@
  * Подкоманды:
  *
  * ```
- * next [--dir D] [--root R] [--json]   что делать прямо сейчас; ничего не пишет и не меняет
+ * next [--dir D] [--root R]   что делать прямо сейчас; ничего не пишет и не меняет
  * run  [--dir D] [--root R] [--max-steps N]  исполнить детерминированные шаги подряд
  * ```
  *
+ * Вывод — всегда JSON, флага `--json` нет: машинное чтение не режим, а сам контракт (§5.3a).
  * `next` возвращает дескриптор шага (`lib/cycle/driver.mjs`): `action` — что делать, `step` —
  * какой детерминированный скрипт, `target` — стадия перехода, `spawn` — кому передать работу,
- * `commands` — готовые команды для человека и супервизора. `run` исполняет `run`/`advance`/
- * `finish` шаги и останавливается на `spawn`/`handoff`/`stop`/`blocked`: работу модели драйвер
- * не изобретает.
+ * `commands` — готовые команды для человека и супервизора. Рядом — `cycle` (итерация, ветка,
+ * подтверждение владельца, эскалация) и `done` (последние этапы истории и счётчики журнала):
+ * без них адаптер (ADR 0004, #74) либо читал бы `state.json` сам, дублируя схему, либо показывал
+ * человеку шаг без контекста. `contract` — версия этой формы, по ней адаптер отказывает на чужой
+ * ревизии ядра, а не угадывает.
+ *
+ * `run` исполняет `run`/`advance`/`finish` шаги и останавливается на `spawn`/`handoff`/`stop`/
+ * `blocked`: работу модели драйвер не изобретает.
  *
  * Побочный эффект у обеих подкоманд один — журнал `driver.jsonl` в каталоге цикла: запись
  * каждого отличающегося от предыдущего решения (повторный `next` на том же дереве журнал не
@@ -45,12 +51,16 @@ import { isDirectRun } from './lib/cycle/cli.mjs';
 import { loadConfig, takeConfigOption } from './lib/cycle/config.mjs';
 import { CRITERIA_FILE } from './lib/cycle/criteria.mjs';
 import {
+  CONTRACT_ID,
   buildJournalEntry,
+  cycleSnapshot,
   describeStep,
+  doneStages,
   isExecutable,
   parseJournal,
   planStep,
   sameAnswer,
+  summarizeJournal,
 } from './lib/cycle/driver.mjs';
 import { changedFiles } from './lib/cycle/git.mjs';
 import { readJson } from './lib/cycle/io.mjs';
@@ -243,11 +253,14 @@ export function readWebDiff(base, root, config) {
 }
 
 /**
- * Собирает дескриптор шага по текущему состоянию каталога.
+ * Собирает дескриптор шага и состояние цикла по текущему каталогу.
  * @param {{ dir: string, root: string, config: ReturnType<typeof loadConfig> }} context
- * @returns {import('./lib/cycle/driver.mjs').DriverStep}
+ * @returns {{
+ *   step: import('./lib/cycle/driver.mjs').DriverStep,
+ *   state: Record<string, any>,
+ * }} шаг и разобранный `state.json`, который он прочитал
  */
-export function nextStep({ dir, root, config }) {
+export function nextPlan({ dir, root, config }) {
   const stateFile = join(dir, FIXED_NAMES.state);
   if (!existsSync(stateFile)) {
     throw new UsageError(`state.json не найден: ${stateFile}`);
@@ -257,14 +270,31 @@ export function nextStep({ dir, root, config }) {
   if (!verdict.ok) {
     throw new UsageError(`state.json не прошёл проверку: ${verdict.errors.join('; ')}`);
   }
-  const state = /** @type {import('./lib/cycle/driver.mjs').DriverState} */ (raw);
+  const state = /** @type {Record<string, any>} */ (raw);
 
   const artifactsDir = dirname(resolve(dir));
   const base = typeof state.base_sha === 'string' ? state.base_sha : null;
   const webDiff = base === null ? false : readWebDiff(base, root, config);
 
   const artifacts = readArtifacts(dir, artifactsDir, config, state.iteration, webDiff);
-  return planStep({ state, artifacts });
+  const step = planStep({
+    state: /** @type {import('./lib/cycle/driver.mjs').DriverState} */ (state),
+    artifacts,
+  });
+  // Состояние отдаётся вместе с шагом: читать `state.json` второй раз ради блока `cycle` значило
+  // бы показывать человеку два снимка одного файла из разных моментов.
+  return { step, state };
+}
+
+/**
+ * Прежняя форма ответа — только шаг. Оставлена ради совместимости: `nextStep` объявлен в
+ * `package.json#exports` (`./scripts/cycle-driver`), и смена возвращаемого типа сломала бы
+ * потребителя, который импортирует функцию. Новым вызывающим — `nextPlan` (#151).
+ * @param {{ dir: string, root: string, config: ReturnType<typeof loadConfig> }} context
+ * @returns {import('./lib/cycle/driver.mjs').DriverStep}
+ */
+export function nextStep(context) {
+  return nextPlan(context).step;
 }
 
 /**
@@ -276,6 +306,26 @@ export function nextStep({ dir, root, config }) {
  */
 function withCommands(step, dir, root) {
   return { ...step, commands: renderCommands(step, dir, root) };
+}
+
+/**
+ * Полный ответ драйвера: контракт, состояние цикла, шаг и «что сделано» (§5.3a).
+ * @param {{
+ *   step: import('./lib/cycle/driver.mjs').DriverStep,
+ *   state: Record<string, any>,
+ *   dir: string,
+ *   root: string,
+ *   journal: import('./lib/cycle/driver.mjs').DriverJournalEntry[],
+ * }} input
+ * @returns {Record<string, unknown>}
+ */
+function describeState({ step, state, dir, root, journal }) {
+  return {
+    contract: CONTRACT_ID,
+    cycle: cycleSnapshot(state, dir),
+    ...withCommands(step, dir, root),
+    done: { stages: doneStages(state), driver: summarizeJournal(journal) },
+  };
 }
 
 /**
@@ -385,9 +435,10 @@ function main() {
   }
 
   if (args.command === 'next') {
-    const step = nextStep({ dir, root, config });
+    const { step, state } = nextPlan({ dir, root, config });
     recordStep(journalFile, journal, step);
-    process.stdout.write(`${JSON.stringify(withCommands(step, dir, root), null, 2)}\n`);
+    const output = describeState({ step, state, dir, root, journal });
+    process.stdout.write(`${JSON.stringify(output, null, 2)}\n`);
     return step.action === 'blocked' ? 1 : 0;
   }
 
@@ -395,12 +446,11 @@ function main() {
   const executed = [];
   let count = 0;
   for (;;) {
-    const step = nextStep({ dir, root, config });
+    const { step, state } = nextPlan({ dir, root, config });
     recordStep(journalFile, journal, step);
     if (!isExecutable(step)) {
-      process.stdout.write(
-        `${JSON.stringify({ driver: 'run', dir, executed, next: withCommands(step, dir, root) }, null, 2)}\n`,
-      );
+      const next = describeState({ step, state, dir, root, journal });
+      process.stdout.write(`${JSON.stringify({ driver: 'run', dir, executed, next }, null, 2)}\n`);
       return step.action === 'blocked' ? 1 : 0;
     }
     if (count >= args.maxSteps) {

@@ -314,6 +314,41 @@ node scripts/cycle-driver.mjs run  [--dir D] [--max-steps N]  исполнить
 `commands` (готовые команды с путями), `waiting_for`, `allowed_next`. Решение принимает чистая
 функция `lib/cycle/driver.mjs`; CLI только рендерит команды и исполняет их.
 
+**Контракт вывода для адаптера (#151).** Вывод — всегда JSON, флага `--json` нет: машинное
+чтение не режим, а сам контракт. Человекочитаемую сводку рисует адаптер (ADR
+[0004](./adr/0004-core-runtime-adapters.md), [#74](https://github.com/DNikulshin/dev-harness/issues/74)),
+он живёт только на CLI и артефактах, поэтому состояние цикла приходит в том же ответе, что и шаг.
+
+| Поле                   | Тип                                         | Смысл                                                                                  |
+| ---------------------- | ------------------------------------------- | -------------------------------------------------------------------------------------- |
+| `contract`             | string                                      | `cycle-driver.next/1` — версия формы                                                   |
+| `cycle.issue`          | number \| null                              | номер issue цикла                                                                      |
+| `cycle.branch`         | string                                      | ветка цикла                                                                            |
+| `cycle.dir`            | string                                      | каталог артефактов цикла                                                               |
+| `cycle.iteration`      | number                                      | текущая итерация                                                                       |
+| `cycle.max_iterations` | number \| null                              | лимит итераций                                                                         |
+| `cycle.stage`          | string                                      | стадия; дубль `stage` шага, чтобы блок читался сам по себе                             |
+| `cycle.stage_status`   | string                                      | статус стадии                                                                          |
+| `cycle.owner_approved` | boolean \| null                             | подтверждение владельца на текущей стадии                                              |
+| `cycle.escalation`     | object \| null                              | эскалация из `state.json`                                                              |
+| `done.stages[]`        | `{ stage, iteration, status, finished_at }` | последние 10 записей `state.history` в порядке файла; `finished_at: null` — этап идёт |
+| `done.driver`          | `{ steps, executed, handed_off, mismatch }` | сводка журнала `driver.jsonl`; `null` — журнала нет                                    |
+
+Поля шага (`stage`, `status`, `action`, `reason`, `step`, `target`, `gate`, `spawn`,
+`allowed_next`, `waiting_for`, `notes`, `commands`) остаются на верхнем уровне — те же, что до
+#151; правило совместимости ниже распространяется и на них.
+
+Правило совместимости: поле не удаляется и не меняет смысл; новое поле — добавление в той же
+версии контракта; удаление или смена смысла — `cycle-driver.next/2`, и адаптер на чужой версии
+обязан отказать, а не угадывать. Поля шага остаются на верхнем уровне: `cycle` и `done` добавлены
+рядом, поэтому текущие читатели (тесты, `run`) не ломаются — `run` отдаёт тот же блок в `next`.
+Обещание «`next` ничего не пишет» не меняется: `state.json` и артефакты не трогаются, пишется
+только журнал.
+
+Внутри модуля шаг и состояние отдаёт `nextPlan({ dir, root, config })` → `{ step, state }`;
+`nextStep` остаётся прежней формой ответа (только `step`) ради совместимости именованного экспорта
+`./scripts/cycle-driver` (`docs/release.md`). Новым вызывающим — `nextPlan`.
+
 - `next` — только чтение состояния: не меняет `state.json` и артефакты, не запускает процессов
   и не зовёт моделей. Единственный побочный эффект — запись в журнал `driver.jsonl` (ниже).
 - `run` — исполняет `run`/`advance`/`finish` подряд до первого `spawn`/`handoff`/`stop`/

@@ -169,6 +169,48 @@ export function isExecutable(step) {
  */
 
 /**
+ * Идентификатор контракта вывода `next` (§5.3a `docs/orchestrator-core.md`). Адаптер (ADR 0004,
+ * issue #74) читает вывод, не импортируя код ядра, поэтому ему нужно обещание формы, а не набор
+ * полей текущей ревизии. Добавление поля версию не меняет; удаление, переименование или смена
+ * смысла — меняет, и адаптер обязан на чужой версии отказать, а не угадывать.
+ * @type {string}
+ */
+export const CONTRACT_ID = 'cycle-driver.next/1';
+
+/**
+ * Состояние цикла для человека и адаптера: то, что лежит в `state.json` и не входит в дескриптор
+ * шага. Отдельный блок, а не поля верхнего уровня, — чтобы `action`/`step`/`reason` оставались
+ * ответом на один вопрос «что делать сейчас», а не смешивались с «где мы».
+ * @typedef {object} DriverCycle
+ * @property {number|null} issue номер issue цикла
+ * @property {string} branch ветка цикла
+ * @property {string} dir каталог артефактов цикла
+ * @property {number} iteration текущая итерация
+ * @property {number|null} max_iterations лимит итераций цикла
+ * @property {string} stage стадия (дубль `stage` шага — чтобы блок читался сам по себе)
+ * @property {string} stage_status статус стадии
+ * @property {boolean|null} owner_approved подтверждение владельца на текущей стадии
+ * @property {Record<string, any>|null} escalation эскалация из `state.json`, если была
+ */
+
+/**
+ * Завершённый (или идущий) этап истории цикла: «что сделано».
+ * @typedef {object} DriverDoneStage
+ * @property {string} stage
+ * @property {number} iteration
+ * @property {string} status
+ * @property {string|null} finished_at `null` — этап ещё идёт
+ */
+
+/**
+ * Блок «что сделано»: история стадий и счётчики журнала решений. Второй элемент важен отдельно:
+ * он отвечает, сколько шагов драйвер выдал и сколько исполнял сам (§5.3a).
+ * @typedef {object} DriverDone
+ * @property {DriverDoneStage[]} stages последние этапы `state.history`, в порядке файла
+ * @property {DriverJournalSummary|null} driver сводка `driver.jsonl`; `null` — журнала нет
+ */
+
+/**
  * Куда состояние обязано прийти после шага. `null` — сверять нечего: шаг не двигает стадию
  * сам (`apply-decision` переводит автомат по решению, а `stop`/`blocked` ничего не обещают).
  * Форма входа — минимум полей шага, а не весь `DriverStep`: по этой функции сверяется и запись
@@ -312,6 +354,54 @@ export function summarizeJournal(entries) {
       .length,
     mismatch: entries.filter((entry) => entry.mismatch).length,
   };
+}
+
+/**
+ * Блок `cycle` вывода `next`: где цикл сейчас. Поля берутся из `state.json` как есть — валидатор
+ * уже проверил их типы, а вычислять здесь нечего: производное число вместо замера показывало бы
+ * уверенность там, где её нет.
+ * @param {Record<string, any>} state разобранный `state.json` (уже прошёл `validateState`)
+ * @param {string} dir каталог артефактов цикла
+ * @returns {DriverCycle}
+ */
+export function cycleSnapshot(state, dir) {
+  return {
+    issue: typeof state.issue === 'number' ? state.issue : null,
+    branch: typeof state.branch === 'string' ? state.branch : '',
+    dir,
+    iteration: state.iteration,
+    max_iterations: typeof state.max_iterations === 'number' ? state.max_iterations : null,
+    stage: state.stage,
+    stage_status: state.stage_status,
+    owner_approved: typeof state.owner_approved === 'boolean' ? state.owner_approved : null,
+    escalation: state.escalation ?? null,
+  };
+}
+
+/**
+ * Блок «что сделано»: последние `limit` записей `state.history` в порядке файла (старые → новые).
+ * Потолок нужен для длинных циклов: вторая итерация `review`/`evaluate` не должна раздувать
+ * вывод, который читает человек.
+ * @param {Record<string, any>} state разобранный `state.json`
+ * @param {number} [limit] сколько последних этапов оставить
+ * @returns {DriverDoneStage[]}
+ */
+export function doneStages(state, limit = 10) {
+  const history = Array.isArray(state.history) ? state.history : [];
+  /** @type {DriverDoneStage[]} */
+  const stages = [];
+
+  for (const entry of history) {
+    if (entry === null || typeof entry !== 'object') continue;
+    if (typeof entry.stage !== 'string') continue;
+    stages.push({
+      stage: entry.stage,
+      iteration: typeof entry.iteration === 'number' ? entry.iteration : state.iteration,
+      status: typeof entry.status === 'string' ? entry.status : '',
+      finished_at: typeof entry.finished_at === 'string' ? entry.finished_at : null,
+    });
+  }
+  return stages.slice(-Math.max(1, Math.trunc(limit)));
 }
 
 /**
