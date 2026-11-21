@@ -1,14 +1,8 @@
 #!/usr/bin/env node
 import { parseCriteria } from './lib/cycle/criteria.mjs';
 import { iterNames } from './lib/cycle/paths.mjs';
-/**
- * Дедупликация пунктов «не проверено» из `decision.unverified[]` и
- * `evaluation.unverified[]`. Из пары остаётся более полная формулировка, позиция — первого
- * вхождения (порядок артефактов сохраняется, вывод детерминирован).
- * @param {string[]} items
- * @returns {string[]}
- */
-export declare function dedupeUnverified(items: string[]): string[];
+import { dedupeUnverified } from './lib/cycle/unverified.mjs';
+export { dedupeUnverified };
 /**
  * Элементы markdown-списка. Строки без маркера — продолжение текущего пункта (пункт
  * остаётся одной строкой); пустая строка или заголовок закрывают пункт.

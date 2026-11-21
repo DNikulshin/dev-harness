@@ -75,6 +75,7 @@ import { readJson } from './lib/cycle/io.mjs';
 import { FIXED_NAMES, findActiveCycle, iterNames, repoRoot } from './lib/cycle/paths.mjs';
 import { redactLog } from './lib/cycle/redact.mjs';
 import { resolveRef } from './lib/cycle/refs.mjs';
+import { dedupeUnverified, singleLine } from './lib/cycle/unverified.mjs';
 import {
   validateDecision,
   validateEscalation,
@@ -147,13 +148,6 @@ const HEADING = /^#{1,6}[ \t]/;
 const HEADING_LEVEL = /^(#{1,6})[ \t]+/;
 
 /**
- * Префикс источника в `decision.unverified[]`: `cycle-decide` пишет `evaluation unverified: <what>`
- * (§5.6). При сборке тела PR тот же факт приходит и из `evaluation.unverified[]` — префикс
- * снимается при сравнении, иначе один пункт попадает в PR дважды (#204).
- */
-const SOURCE_PREFIX = /^(?:evaluation|review|decision)[ \t]+unverified:[ \t]*/iu;
-
-/**
  * Непустая строка после обрезки пробелов.
  * @param {unknown} value
  * @returns {value is string} сужает тип вызывающего кода
@@ -173,15 +167,6 @@ function redacted(value) {
 }
 
 /**
- * Текст в одну строку: пробельные последовательности, включая переводы строк, — один пробел.
- * @param {string} text
- * @returns {string}
- */
-function singleLine(text) {
-  return text.replace(/\s+/g, ' ').trim();
-}
-
-/**
  * Ячейка markdown-таблицы: одна строка, ограничение длины, экранированный `|`.
  * @param {string} text
  * @returns {string}
@@ -192,55 +177,9 @@ function cell(text) {
   return shortened.replace(/\|/g, '\\|');
 }
 
-/**
- * Нормализованная форма пункта «не проверено»: без префикса источника и без разницы
- * в регистре/пробелах. Сравнение по ней, а не по сырому тексту — иначе формулировки
- * одного и того же факта из двух артефактов считаются разными.
- * @param {string} text
- * @returns {string}
- */
-function unverifiedKey(text) {
-  return singleLine(text).replace(SOURCE_PREFIX, '').toLowerCase();
-}
-
-/**
- * Один ли это факт в двух формулировках: точное совпадение или более короткая версия —
- * начало более полной на границе слова (`<what>` против `<what> — <why>`).
- * @param {string} left
- * @param {string} right
- * @returns {boolean}
- */
-function sameUnverified(left, right) {
-  if (left === right) return true;
-  const [shorter, longer] = left.length <= right.length ? [left, right] : [right, left];
-  if (!longer.startsWith(shorter)) return false;
-  return /^[\s—–-]/u.test(longer.slice(shorter.length));
-}
-
-/**
- * Дедупликация пунктов «не проверено» из `decision.unverified[]` и
- * `evaluation.unverified[]`. Из пары остаётся более полная формулировка, позиция — первого
- * вхождения (порядок артефактов сохраняется, вывод детерминирован).
- * @param {string[]} items
- * @returns {string[]}
- */
-export function dedupeUnverified(items) {
-  if (!Array.isArray(items)) throw new TypeError('dedupeUnverified: ожидается массив');
-
-  /** @type {{ key: string, text: string }[]} */
-  const kept = [];
-  for (const item of items) {
-    if (!isText(item)) continue;
-    const text = singleLine(item);
-    const key = unverifiedKey(text);
-    const index = kept.findIndex((entry) => sameUnverified(entry.key, key));
-    const existing = kept[index];
-    if (existing === undefined) kept.push({ key, text });
-    else if (text.length > existing.text.length) kept[index] = { key, text };
-  }
-
-  return kept.map((entry) => entry.text);
-}
+// Правило дедупликации «не проверено» живёт в общем модуле: им же считает `cycle-report`.
+// Реэкспорт оставлен, чтобы API этого CLI не менялся при вынесении правила (#204, #115).
+export { dedupeUnverified };
 
 /**
  * Элементы markdown-списка. Строки без маркера — продолжение текущего пункта (пункт
