@@ -70,7 +70,12 @@ import { join, resolve } from 'node:path';
 
 import { isDirectRun } from './lib/cycle/cli.mjs';
 import { loadConfig, takeConfigOption } from './lib/cycle/config.mjs';
-import { CRITERIA_FILE, criteriaMismatch, parseCriteria } from './lib/cycle/criteria.mjs';
+import {
+  CRITERIA_FILE,
+  criteriaMismatch,
+  parseCriteria,
+  unratedCriterionIds,
+} from './lib/cycle/criteria.mjs';
 import { readJson } from './lib/cycle/io.mjs';
 import { FIXED_NAMES, findActiveCycle, iterNames, repoRoot } from './lib/cycle/paths.mjs';
 import { redactLog } from './lib/cycle/redact.mjs';
@@ -544,13 +549,13 @@ export function renderPrBody(inputs) {
   }
 
   // Полнота оценивания: критерий из `criteria.md` без статуса — ошибка сборки тела PR
-  // (код 2), а не строка со `—`: PR обязан показывать статус каждого критерия.
-  const unrated = criteria.filter((criterion) => !criteriaById.has(criterion.id));
+  // (код 2), а не строка со `—`: PR обязан показывать статус каждого критерия. Правило
+  // общее с `cycle-decide` (`unratedCriterionIds`): решение и его публикация не могут
+  // расходиться в том, что считать полным оцениванием (#124).
+  const unrated = unratedCriterionIds(criteria, evaluationCriteria);
   if (unrated.length > 0) {
     throw new Error(
-      `evaluation.criteria: нет статуса для критериев из ${CRITERIA_FILE}: ${unrated
-        .map((criterion) => criterion.id)
-        .join(', ')}`,
+      `evaluation.criteria: нет статуса для критериев из ${CRITERIA_FILE}: ${unrated.join(', ')}`,
     );
   }
 

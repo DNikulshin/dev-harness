@@ -78,6 +78,40 @@ export function criteriaMismatch(criteria, state) {
 }
 
 /**
+ * Критерии из `criteria.md`, по которым оценщик не дал статуса. Одна проверка на два
+ * потребителя: `cycle-decide` (решение не выдаётся по неполному оцениванию) и
+ * `cycle-pr-body` (таблица критериев обязана показать статус каждого).
+ *
+ * Порядок — как в `criteria.md`: он задаёт вывод и сообщение об ошибке. Лишние `id`
+ * в `evaluation.criteria` не являются ошибкой: оценщик вправе завести свой пункт, но
+ * полноту это не восполняет. Форма `evaluation.criteria` не гарантирована (документ
+ * приходит от агента), поэтому разбор терпимый: элемент без строкового `id` не считается
+ * статусом ни для одного критерия.
+ * @param {readonly Criterion[]} criteria критерии из `evidence/criteria.md`
+ * @param {unknown} rated `evaluation.criteria`
+ * @returns {string[]} `id` без статуса в порядке `criteria.md`
+ */
+export function unratedCriterionIds(criteria, rated) {
+  if (!Array.isArray(criteria)) {
+    throw new TypeError('unratedCriterionIds: ожидается массив критериев');
+  }
+
+  /** @type {Set<string>} */
+  const ratedIds = new Set();
+  if (Array.isArray(rated)) {
+    for (const item of rated) {
+      if (item !== null && typeof item === 'object' && typeof item.id === 'string') {
+        ratedIds.add(item.id);
+      }
+    }
+  }
+
+  return criteria
+    .filter((criterion) => !ratedIds.has(criterion.id))
+    .map((criterion) => criterion.id);
+}
+
+/**
  * `sha256` канонической формы критериев: пары `[id, text]` в порядке файла.
  *
  * Канон — не текст файла, а именно пары: заголовок, источник (`Источник: секция …`) и

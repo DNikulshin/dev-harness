@@ -534,9 +534,14 @@ node scripts/cycle-decide.mjs --dir D [--iteration N]
      иначе                       → ESCALATE(iteration_limit)
 4. Нет блокеров. unverified = required-гейты not_run (кроме no_database) ∪ web-дифф без qa-web done
                               ∪ критерии unverified ∪ evaluation.unverified
+                              ∪ критерии замороженного criteria.md без статуса (#124)
                               ∪ факты integrity (§5.4, #36)
    (у `qa-web not_run (<reason>)`: `reason` из файла, `web-diff` — файла нет,
    `reason_missing` — причина пуста, #30)
+   Полнота оценивания (#124): если `state.criteria_sha256` закреплён, каждый критерий из
+   `evidence/criteria.md` обязан иметь статус в `evaluation.criteria`; иначе строка
+   `criteria:<id> missing`. Лишние `id` оценщика в решении не участвуют и ошибкой не являются.
+   Добором это не решается: `acquire[]` не пополняется — статус даёт оценщик, а не данные.
    unverified ≠ ∅:
      есть исполнимое (required-гейт not_run не по no_database; QA не выполнен при web-диффе;
      правка защищённых файлов или удаление теста) и retries.evidence < 1
