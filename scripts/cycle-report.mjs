@@ -40,6 +40,16 @@
  * Ширина полоски расхода — доля от максимума в отчёте, число подписано рядом; всё считается
  * из данных, поэтому два запуска дают побайтно одинаковую страницу.
  *
+ * **«Не проверено» (#115).** Сводка отвечает, сколько решений принято без проверки:
+ * число `PROCEED_WITH_UNVERIFIED` и его доля от решений, рядом — `REWORK` и `ESCALATE`, плюс
+ * сколько пунктов осталось владельцу (сумма, медиана, максимум, из них гейты `not_run`).
+ * Колонка «Не проверено» — число пунктов на цикл. Источник — `decision.unverified[]` и
+ * `evaluation.unverified[]`, дедуплицированные общим правилом (`lib/cycle/unverified.mjs`,
+ * #204): один факт из двух артефактов считается один раз. Гейты `skipped` (условие проекта
+ * не применимо) в это число не входят — только `not_run`; в таблице гейтов они и раньше шли
+ * разными колонками. Нет `decision.<n>.json` — в ячейке и в сводке `insufficient_data`
+ * с именем цикла, а не ноль: решение о пороге не должно опираться на выданный за факт ноль.
+ *
  * **Наблюдаемый минимум (#85, ADR [0006](./adr/0006-ui-presentation.md)).** Отчёт отвечает на
  * вопрос «почему цикл встал», а не только «сколько стоил»: каталоги с `state.json` без
  * `metrics.json` перечисляются блоком «Незавершённые циклы» (стадия, статус, итерация,
@@ -72,6 +82,7 @@ import { loadConfig, takeConfigOption } from './lib/cycle/config.mjs';
 import { headRevision } from './lib/cycle/git.mjs';
 import { readJson } from './lib/cycle/io.mjs';
 import { FIXED_NAMES, artifactsDir, repoRoot } from './lib/cycle/paths.mjs';
+import { dedupeUnverified } from './lib/cycle/unverified.mjs';
 import {
   validateDecision,
   validateEscalation,
@@ -86,6 +97,35 @@ const DEFECT_SEVERITIES = Object.freeze(['BLOCKER', 'MAJOR', 'MINOR']);
 
 /** Статусы гейта (§5.5) — по ним ведутся исходы. */
 const GATE_STATUSES = Object.freeze(['pass', 'fail', 'skipped', 'not_run']);
+
+/** Действия `decision.<n>.json` (§5.6) в порядке схемы: по нему печатаются вердикты. */
+const DECISION_ACTIONS = Object.freeze([
+  'REWORK',
+  'ACQUIRE_EVIDENCE',
+  'RETRY_STAGE',
+  'PROCEED',
+  'PROCEED_WITH_UNVERIFIED',
+  'ESCALATE',
+]);
+
+/** Действие решения, которым цикл принят без проверки (#115). */
+const PROCEED_WITH_UNVERIFIED = 'PROCEED_WITH_UNVERIFIED';
+
+/**
+ * Действия, которые печатаются в сводке всегда: доля принятых без проверки и то, с чем её
+ * сравнивают при принятии решения о пороге (`verification_tax`, #116). Остальные действия
+ * появляются только когда они были.
+ */
+const VERDICTS_SHOWN = Object.freeze(['PROCEED_WITH_UNVERIFIED', 'REWORK', 'ESCALATE']);
+
+/** Завершённые циклы: по ним считается доля вердиктов (#115). */
+const COMPLETED_STAGES = Object.freeze(['DONE', 'ESCALATED']);
+
+/**
+ * Пункт «не проверено», оставшийся от гейта: `gate:<id> not_run` (§5.6). `skipped` по условию
+ * проекта сюда не попадает — «условие не применимо» и «проверка не выполнена» — разные факты.
+ */
+const GATE_NOT_RUN = /^gate:\S+\s+not_run\b/u;
 
 /** Нет данных: в ячейке честная прочерк, а не ноль. */
 const NO_VALUE = '—';
@@ -121,6 +161,14 @@ const MODEL_STAGES = Object.freeze(['plan', 'code', 'review', 'evaluate']);
  */
 
 /**
+ * Проверено ли решение: что осталось непроверенным (#115).
+ * @typedef {object} CycleVerification
+ * @property {string|null} action действие `decision.<n>.json`; `null` — решения нет
+ * @property {number|null} items пунктов «не проверено» после дедупликации; `null` — считать не из чего
+ * @property {number|null} gate_not_run из пунктов — гейты `not_run`
+ */
+
+/**
  * @typedef {object} CycleSummary
  * @property {string} name имя каталога цикла
  * @property {string} final_stage `final_stage` из `metrics.json`
@@ -135,6 +183,7 @@ const MODEL_STAGES = Object.freeze(['plan', 'code', 'review', 'evaluate']);
  * @property {number} unclosed_stages
  * @property {Record<string, Record<string, number>>} gate_outcomes
  * @property {ContextSummary} context контекст и кэш (ADR 0009)
+ * @property {CycleVerification|null} [verification] решение и «не проверено» (#115)
  */
 
 /**
@@ -175,6 +224,21 @@ const MODEL_STAGES = Object.freeze(['plan', 'code', 'review', 'evaluate']);
  */
 
 /**
+ * Вердикты и «не проверено» по всем циклам отчёта (#115).
+ * @typedef {object} VerificationSummary
+ * @property {number} completed завершённых циклов (`DONE`/`ESCALATED`)
+ * @property {number} decided из них с решением
+ * @property {string[]} missing циклы без `decision.<n>.json`: вердикт и число пунктов неизвестны
+ * @property {Record<string, number>} actions счётчики по действиям §5.6
+ * @property {number|null} proceed_with_unverified_share доля принятых без проверки от решений
+ * @property {number} measured циклов с посчитанным числом пунктов
+ * @property {number|null} items_total пунктов всего
+ * @property {number|null} items_median медиана пунктов на цикл
+ * @property {number|null} items_max максимум пунктов на цикл
+ * @property {number} gate_not_run из пунктов — гейты `not_run`
+ */
+
+/**
  * @typedef {object} ReportSource
  * @property {string|null} dir абсолютный каталог артефактов, из которого снят отчёт
  * @property {number} cycles_read прочитано каталогов цикла (`state.json` или `metrics.json`)
@@ -190,6 +254,7 @@ const MODEL_STAGES = Object.freeze(['plan', 'code', 'review', 'evaluate']);
  * @property {Stop[]} stops почему остановились циклы (завершённые и эскалированные)
  * @property {{ measured: number, total: number, sum: number|null, median: number|null }} cost
  * @property {{ evaluator_only: number, total: number, percent: number|null }} findings
+ * @property {VerificationSummary} verification вердикты и «не проверено» (#115)
  * @property {{ id: string, pass: number, fail: number, skipped: number, not_run: number }[]} gates
  */
 
@@ -695,6 +760,84 @@ export function summarizeStop(name, artifacts) {
 }
 
 /**
+ * Что осталось непроверенным в цикле (#115). Чистая функция: файлов не читает.
+ *
+ * Два источника одного списка (§5.6–5.7): `decision.unverified[]` (строки, в том числе
+ * `gate:<id> not_run`, `criteria:<id> unverified` и копия `evaluation unverified: <what>`)
+ * и `evaluation.unverified[]` (объекты `{what, why}`). Один факт приходит двумя формулировками,
+ * поэтому перед счётом они дедуплицируются тем же правилом, что и в теле PR (#204): иначе
+ * число «сколько осталось владельцу» было бы больше, чем есть.
+ *
+ * Нет `decision.<n>.json` — `null`, а не ноль: «нечего считать» и «всё проверено» — разные
+ * факты, и решение о пороге (`verification_tax`) не должно опираться на выданный за факт ноль.
+ * @param {ReturnType<typeof collectStopArtifacts>} artifacts артефакты цикла
+ * @returns {CycleVerification}
+ */
+export function summarizeVerification(artifacts) {
+  const { decision, evaluation } = artifacts;
+  if (decision === null) return { action: null, items: null, gate_not_run: null };
+
+  const fromDecision = Array.isArray(decision.unverified) ? decision.unverified : [];
+  const fromEvaluation =
+    evaluation === null || !Array.isArray(evaluation.unverified)
+      ? []
+      : evaluation.unverified.map((item) => item.what);
+  const items = dedupeUnverified([...fromDecision, ...fromEvaluation]);
+
+  return {
+    action: decision.action,
+    items: items.length,
+    gate_not_run: items.filter((item) => GATE_NOT_RUN.test(item)).length,
+  };
+}
+
+/**
+ * Вердикты и «не проверено» по всем циклам (#115). Чистая функция.
+ *
+ * Знаменатель доли — **решения**, а не каталоги: цикл без `decision.<n>.json` не голосует
+ * «за», но и не пропадает — он в `missing`. Сумма счётчиков действий равна `decided`, поэтому
+ * подменить одну цифру, не соврав в сумме, нельзя.
+ * @param {CycleSummary[]} cycles
+ * @returns {VerificationSummary}
+ */
+export function summarizeVerdicts(cycles) {
+  /** @type {Record<string, number>} */
+  const actions = Object.fromEntries(DECISION_ACTIONS.map((action) => [action, 0]));
+  /** @type {string[]} */
+  const missing = [];
+  let completed = 0;
+  let decided = 0;
+
+  for (const cycle of cycles) {
+    const verification = cycle.verification ?? null;
+    if (verification === null || verification.action === null) missing.push(cycle.name);
+
+    const finished = COMPLETED_STAGES.includes(cycle.final_stage);
+    if (finished) completed += 1;
+    if (!finished || verification === null || verification.action === null) continue;
+
+    decided += 1;
+    actions[verification.action] = (actions[verification.action] ?? 0) + 1;
+  }
+
+  const measured = cycles.filter((cycle) => (cycle.verification?.items ?? null) !== null);
+  const items = measured.map((cycle) => cycle.verification?.items ?? 0);
+
+  return {
+    completed,
+    decided,
+    missing,
+    actions,
+    proceed_with_unverified_share: percent(actions[PROCEED_WITH_UNVERIFIED] ?? 0, decided),
+    measured: measured.length,
+    items_total: measured.length === 0 ? null : items.reduce((sum, value) => sum + value, 0),
+    items_median: median(items),
+    items_max: items.length === 0 ? null : Math.max(...items),
+    gate_not_run: measured.reduce((sum, cycle) => sum + (cycle.verification?.gate_not_run ?? 0), 0),
+  };
+}
+
+/**
  * Исходы гейтов по всем циклам: суммы по `id`, порядок — таблица §5.5, затем алфавит.
  * @param {CycleSummary[]} cycles
  * @param {readonly string[]} [gateIds] порядок id из конфига проекта
@@ -786,6 +929,7 @@ export function buildReport(
       total: totalFindings,
       percent: percent(evaluatorOnly, totalFindings),
     },
+    verification: summarizeVerdicts(cycles),
     gates: aggregateGates(cycles, gateIds),
   };
 }
@@ -892,6 +1036,140 @@ function stopsMarkdown(stops) {
 }
 
 /**
+ * Ячейка «Не проверено»: пунктов на цикл. `insufficient_data` — нет `decision.<n>.json`:
+ * писать здесь `0` значило бы выдать «нечего считать» за «всё проверено» (#115).
+ * @param {CycleVerification|null|undefined} verification
+ * @returns {string}
+ */
+function unverifiedText(verification) {
+  if (verification === null || verification === undefined || verification.items === null) {
+    return INSUFFICIENT;
+  }
+  return String(verification.items);
+}
+
+/**
+ * Действия с счётом для печати: сначала названные в §11 (в этом порядке — доля принятых
+ * без проверки первая), затем остальные, если они были. Действие без счёта не печатается:
+ * список из шести нулей читать незачем.
+ * @param {VerificationSummary} verification
+ * @returns {{ action: string, count: number }[]}
+ */
+function verdictCounts(verification) {
+  const rest = DECISION_ACTIONS.filter(
+    (action) => !VERDICTS_SHOWN.includes(action) && (verification.actions[action] ?? 0) > 0,
+  );
+  return [...VERDICTS_SHOWN, ...rest].map((action) => ({
+    action,
+    count: verification.actions[action] ?? 0,
+  }));
+}
+
+/**
+ * Вердикты одной строкой: `PROCEED_WITH_UNVERIFIED 3 из 5 (60.0% решений), REWORK 1, …`.
+ * Чистый текст без разметки — markdown и `--html` подставляют свою.
+ * @param {VerificationSummary} verification
+ * @returns {{ action: string, count: number, share: number|null }[]}
+ */
+function verdictNumbers(verification) {
+  return verdictCounts(verification).map(({ action, count }) => ({
+    action,
+    count,
+    share: action === PROCEED_WITH_UNVERIFIED ? verification.proceed_with_unverified_share : null,
+  }));
+}
+
+/**
+ * Строки сводки markdown про вердикты и «не проверено» (#115).
+ * @param {VerificationSummary} verification
+ * @returns {string[]}
+ */
+function verificationMarkdown(verification) {
+  const { completed, decided, missing, measured } = verification;
+  const lines = [
+    `Завершённых циклов (\`DONE\`/\`ESCALATED\`): ${completed}, с решением: ${decided}.`,
+  ];
+
+  if (decided === 0) {
+    lines.push('Вердиктов нет: считать долю принятых без проверки не из чего.');
+  } else {
+    const verdicts = verdictNumbers(verification)
+      .map(({ action, count, share }) =>
+        share === null
+          ? `\`${action}\` ${count}`
+          : `\`${action}\` ${count} (${percentText(share)})`,
+      )
+      .join(', ');
+    lines.push(`Вердикты: ${verdicts}.`);
+  }
+
+  if (measured === 0) {
+    lines.push(`Пунктов «не проверено»: ${INSUFFICIENT} — решений нет, считать не из чего.`);
+  } else {
+    lines.push(
+      `Пунктов «не проверено»: ${verification.items_total}` +
+        ` (медиана ${verification.items_median}, максимум ${verification.items_max};` +
+        ` из них гейты \`not_run\`: ${verification.gate_not_run}).`,
+    );
+  }
+
+  if (missing.length > 0) {
+    lines.push(
+      `Нет \`decision.<n>.json\`: ${missing.join(', ')} — вердикт и число пунктов неизвестны.`,
+    );
+  }
+
+  return lines;
+}
+
+/**
+ * Строки сводки `--html` про вердикты и «не проверено»: те же числа, что в markdown.
+ * @param {VerificationSummary} verification
+ * @returns {string[]}
+ */
+function verificationHtml(verification) {
+  const { completed, decided, missing, measured } = verification;
+  const lines = [
+    `<p>Завершённых циклов (<code>DONE</code>/<code>ESCALATED</code>): ${completed},` +
+      ` с решением: ${decided}.</p>`,
+  ];
+
+  if (decided === 0) {
+    lines.push('<p>Вердиктов нет: считать долю принятых без проверки не из чего.</p>');
+  } else {
+    const verdicts = verdictNumbers(verification)
+      .map(({ action, count, share }) =>
+        share === null
+          ? `<code>${escapeHtml(action)}</code> ${count}`
+          : `<code>${escapeHtml(action)}</code> ${count} (${percentText(share)})`,
+      )
+      .join(', ');
+    lines.push(`<p>Вердикты: ${verdicts}.</p>`);
+  }
+
+  if (measured === 0) {
+    lines.push(
+      `<p>Пунктов «не проверено»: ${escapeHtml(INSUFFICIENT)} — решений нет, считать не из чего.</p>`,
+    );
+  } else {
+    lines.push(
+      `<p>Пунктов «не проверено»: ${verification.items_total}` +
+        ` (медиана ${verification.items_median}, максимум ${verification.items_max};` +
+        ` из них гейты <code>not_run</code>: ${verification.gate_not_run}).</p>`,
+    );
+  }
+
+  if (missing.length > 0) {
+    lines.push(
+      `<p class="insufficient">Нет <code>decision.&lt;n&gt;.json</code>: ` +
+        `${escapeHtml(missing.join(', '))} — вердикт и число пунктов неизвестны.</p>`,
+    );
+  }
+
+  return lines;
+}
+
+/**
  * Шапка отчёта в markdown: откуда снят, сколько прочитано и пропущено, каким ядром, и правило
  * «факт — прогон». Всё — из блока `source`; без значения — прочерк, а не догадка.
  * @param {ReportSource} source
@@ -919,7 +1197,7 @@ function sourceMarkdown(source) {
  * @returns {string}
  */
 export function renderMarkdown(report) {
-  const { source, cycles, pending, stops, cost, findings, gates } = report;
+  const { source, cycles, pending, stops, cost, findings, verification, gates } = report;
   /** @type {string[]} */
   const lines = ['# Отчёт по циклам', '', ...sourceMarkdown(source)];
 
@@ -933,8 +1211,10 @@ export function renderMarkdown(report) {
       `Находок только у оценщика: ${findings.evaluator_only} из ${findings.total}` +
         ` (${percentText(findings.percent)}).`,
       '',
-      '| Цикл | Стадия | Итераций | Время, с | Расход, ₽ | Input-токены | Доля кэша | Размер пакета | Рост evidence | Только оценщик | Только ревью | Оба | Дефекты оценщика B/M/m | Неразрешённые ссылки | Незакрытые этапы |',
-      '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
+      ...verificationMarkdown(verification),
+      '',
+      '| Цикл | Стадия | Итераций | Время, с | Расход, ₽ | Input-токены | Доля кэша | Размер пакета | Рост evidence | Только оценщик | Только ревью | Оба | Дефекты оценщика B/M/m | Неразрешённые ссылки | Незакрытые этапы | Не проверено |',
+      '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
     );
 
     for (const cycle of cycles) {
@@ -947,7 +1227,8 @@ export function renderMarkdown(report) {
           ` | ${evidenceText(cycle.context)} | ${growthText(cycle.context)}` +
           ` | ${cycle.findings.only_evaluator} | ${cycle.findings.only_review} | ${cycle.findings.both}` +
           ` | ${defects.BLOCKER}/${defects.MAJOR}/${defects.MINOR}` +
-          ` | ${cycle.unresolved_refs} | ${cycle.unclosed_stages} |`,
+          ` | ${cycle.unresolved_refs} | ${cycle.unclosed_stages}` +
+          ` | ${unverifiedText(cycle.verification)} |`,
       );
     }
 
@@ -1209,7 +1490,7 @@ function sourceHtml(source) {
  * @returns {string}
  */
 export function renderHtml(report) {
-  const { source, cycles, pending, stops, cost, findings, gates } = report;
+  const { source, cycles, pending, stops, cost, findings, verification, gates } = report;
   /** @type {string[]} */
   const body = ['<h1>Отчёт по циклам</h1>', ...sourceHtml(source)];
 
@@ -1221,6 +1502,7 @@ export function renderHtml(report) {
         ` Расход: ${rub(cost.sum)} ₽, медиана: ${rub(cost.median)} ₽.</p>`,
       `<p>Находок только у оценщика: ${findings.evaluator_only} из ${findings.total}` +
         ` (${percentText(findings.percent)}).</p>`,
+      ...verificationHtml(verification),
     );
 
     const measured = cycles.filter((cycle) => cycle.cost_rub !== null);
@@ -1261,6 +1543,7 @@ export function renderHtml(report) {
       'Дефекты оценщика B/M/m',
       'Неразрешённые ссылки',
       'Незакрытые этапы',
+      'Не проверено',
     ]) {
       body.push(`<th scope="col">${escapeHtml(title)}</th>`);
     }
@@ -1285,6 +1568,7 @@ export function renderHtml(report) {
             `${defects.BLOCKER}/${defects.MAJOR}/${defects.MINOR}`,
             `${cycle.unresolved_refs}`,
             `${cycle.unclosed_stages}`,
+            unverifiedText(cycle.verification),
           ]
             .map((cell) => `<td>${cell}</td>`)
             .join('') +
@@ -1444,6 +1728,9 @@ function main() {
     const states = new Map();
     /** @type {string[]} */
     const stopNames = [];
+    /** Артефакты остановки по имени цикла: читаются один раз — для вердикта и для причин. */
+    /** @type {Map<string, ReturnType<typeof collectStopArtifacts>>} */
+    const artifacts = new Map();
     let skipped = 0;
 
     for (const name of names) {
@@ -1451,12 +1738,18 @@ function main() {
       const statePath = join(cycleDir, FIXED_NAMES.state);
 
       if (existsSync(join(cycleDir, FIXED_NAMES.metrics))) {
-        cycles.push(
-          summarizeCycle(name, readArtifact(cycleDir, name, FIXED_NAMES.metrics, validateMetrics)),
-        );
-        if (existsSync(statePath)) {
-          states.set(name, readArtifact(cycleDir, name, FIXED_NAMES.state, validateState));
-        }
+        const metrics = readArtifact(cycleDir, name, FIXED_NAMES.metrics, validateMetrics);
+        const state = existsSync(statePath)
+          ? readArtifact(cycleDir, name, FIXED_NAMES.state, validateState)
+          : null;
+        if (state !== null) states.set(name, state);
+
+        const collected = collectStopArtifacts(cycleDir, name, { state });
+        artifacts.set(name, collected);
+        cycles.push({
+          ...summarizeCycle(name, metrics),
+          verification: summarizeVerification(collected),
+        });
         stopNames.push(name);
         continue;
       }
@@ -1479,7 +1772,8 @@ function main() {
       .map((name) =>
         summarizeStop(
           name,
-          collectStopArtifacts(join(dir, name), name, { state: states.get(name) ?? null }),
+          artifacts.get(name) ??
+            collectStopArtifacts(join(dir, name), name, { state: states.get(name) ?? null }),
         ),
       );
 
