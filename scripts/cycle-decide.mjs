@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Решение цикла по docs/orchestrator-core.md §5.6 (issue #156, задача T5).
+ * Решение цикла по docs/orchestrator-core.md §5.6 (задача T5).
  *
  * Вход: `state.json`, `gates.<n>.json`, `review.<n>.md`, `evaluation.<n>.md`, `qa-web.json`,
  * `evidence/integrity.json` (необязательный, #36).
@@ -31,7 +31,7 @@
  *
  * Ссылки на `.env*` (кроме `.env.example`) не читаются (AGENTS.md, «Персональные данные
  * и безопасность»). Запрет держат два рубежа: `refs.mjs` отбивает такие пути, включая
- * симлинки и канонические пути (issue #167), а проверка здесь остаётся как ранний
+ * симлинки и канонические пути, а проверка здесь остаётся как ранний
  * лексический фильтр до вызова resolver. Ссылка становится неразрешимой: элемент
  * не блокирует и идёт в `downgraded`/`unresolved_refs` по общим правилам, а сам путь
  * в решение не попадает.
@@ -124,7 +124,7 @@ import {
 
 /** Этапы, повтор которых описан правилом 1 §5.6. */
 /**
- * Сколько ошибок схемы попадает в `reasons[]` при невалидном выводе агента (#247):
+ * Сколько ошибок схемы попадает в `reasons[]` при невалидном выводе агента:
  * полный список уходит в stderr, решение говорит только кодом причины.
  */
 const INVALID_OUTPUT_LIMIT = 5;
@@ -194,7 +194,7 @@ const EXCLUSION_REASONS = new Set([DOWNGRADE_REASONS.preexisting, DOWNGRADE_REAS
  *   `null` (по умолчанию) — замера нет (нет `usage.json`, неизвестна модель или цены),
  *   и тогда бюджетный порог не проверяется: ноль был бы выдуманными данными
  * @property {Record<string, string[]>} [agentErrors] сообщения валидаторов по этапам
- *   (`REVIEW`/`EVALUATE`): из них строятся подсказки `invalid:<STAGE> …` (#247)
+ *   (`REVIEW`/`EVALUATE`): из них строятся подсказки `invalid:<STAGE> …`
  * @property {{ maxCycleCostRub: number }} [limits] лимиты проекта (по умолчанию из DEFAULTS)
  * @property {Record<string, { value: number, source: import('./lib/cycle/limits.mjs').LimitSource }>} [appliedLimits] применённые
  *   лимиты с источниками для `decision.applied_limits`; считает CLI, а не эта функция
@@ -385,7 +385,7 @@ function isForbiddenEnvRef(ref) {
 /**
  * Разрешает ссылку, не читая `.env*` (AGENTS.md: `.env*`, кроме `.env.example`,
  * не читать и не печатать). Ранний лексический фильтр до вызова resolver: основной
- * запрет — включая симлинки и канонические пути (issue #167) — держит `refs.mjs`,
+ * запрет — включая симлинки и канонические пути — держит `refs.mjs`,
  * здесь он остаётся как defense in depth, чтобы путь в `.env*` не доходил до чтения файла.
  * @param {string} ref
  * @param {import('./lib/cycle/refs.mjs').RefContext} ctx
@@ -565,7 +565,7 @@ export function decide(inputs) {
     const stageRetries = invalidStage === REVIEW_STAGE ? retries.REVIEW : retries.EVALUATE;
     if (stageRetries < 1) {
       reasons.push(`retry:${invalidStage} agent_output_invalid`);
-      // Причина «agent_output_invalid» сама по себе не говорит, что чинить (#247):
+      // Причина «agent_output_invalid» сама по себе не говорит, что чинить:
       // рядом кладём пути полей из валидатора, полный список — в stderr CLI.
       for (const detail of invalidOutputDetails(agentErrors, invalidStage)) {
         reasons.push(`invalid:${invalidStage} ${detail}`);
@@ -932,7 +932,7 @@ function assertCriteriaFrozen({ dir, config, state }) {
 
 /**
  * Блок `json` из md-вывода агента: `doc: null`, если файла нет, блока нет, JSON битый
- * или схема нарушена, плюс причина для подсказки в `reasons[]` (#247). Это вход правила 1,
+ * или схема нарушена, плюс причина для подсказки в `reasons[]`. Это вход правила 1,
  * а не отказ CLI: полный список ошибок печатается в stderr.
  * @param {string} file
  * @param {(doc: unknown) => { ok: boolean, errors: string[] }} validator
@@ -1008,7 +1008,7 @@ function main() {
       prices: readPriceSnapshot(root, config.evals.prices),
     });
 
-    // Лимиты проекта (#235): CLI → env → конфиг → дефолт. Значения и источники уходят
+    // Лимиты проекта: CLI → env → конфиг → дефолт. Значения и источники уходят
     // в артефакт, поэтому по `decision.json` видно, с каким порогом считали.
     const resolvedLimits = resolveLimits({
       config: config.limits,
@@ -1042,7 +1042,7 @@ function main() {
       appliedLimits: describedLimits(resolvedLimits),
     });
 
-    // Полный список ошибок схемы — в stderr (решение говорит только кодом причины, #247).
+    // Полный список ошибок схемы — в stderr (решение говорит только кодом причины).
     for (const message of [...reviewBlock.errors, ...evaluationBlock.errors]) {
       process.stderr.write(`cycle-decide: ${message}\n`);
     }

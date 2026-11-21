@@ -74,7 +74,7 @@ export type DecideInputs = {
     costRub?: number | null;
     /**
      * сообщения валидаторов по этапам
-     * (`REVIEW`/`EVALUATE`): из них строятся подсказки `invalid:<STAGE> …` (#247)
+     * (`REVIEW`/`EVALUATE`): из них строятся подсказки `invalid:<STAGE> …`
      */
     agentErrors?: Record<string, string[]>;
     /**
@@ -155,7 +155,7 @@ export type Decision = {
  *   `null` (по умолчанию) — замера нет (нет `usage.json`, неизвестна модель или цены),
  *   и тогда бюджетный порог не проверяется: ноль был бы выдуманными данными
  * @property {Record<string, string[]>} [agentErrors] сообщения валидаторов по этапам
- *   (`REVIEW`/`EVALUATE`): из них строятся подсказки `invalid:<STAGE> …` (#247)
+ *   (`REVIEW`/`EVALUATE`): из них строятся подсказки `invalid:<STAGE> …`
  * @property {{ maxCycleCostRub: number }} [limits] лимиты проекта (по умолчанию из DEFAULTS)
  * @property {Record<string, { value: number, source: import('./lib/cycle/limits.mjs').LimitSource }>} [appliedLimits] применённые
  *   лимиты с источниками для `decision.applied_limits`; считает CLI, а не эта функция

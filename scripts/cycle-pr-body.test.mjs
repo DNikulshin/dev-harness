@@ -407,7 +407,7 @@ describe('PROCEED_WITH_UNVERIFIED', () => {
     assert.ok(!body('proceed').includes('### Не проверено'));
   });
 
-  test('один и тот же факт из decision и evaluation — один чекбокс (#204)', () => {
+  test('один и тот же факт из decision и evaluation — один чекбокс', () => {
     const text = body('unverified');
     const lines = text.split('\n').filter((line) => line.startsWith('- [ ]'));
     const entry = lines.filter((line) => line.includes('Поведение на битом JSON'));

@@ -1,5 +1,5 @@
 /**
- * Пункты «не проверено»: нормализация и дедупликация (`docs/orchestrator-core.md` §5.6–5.7, #204).
+ * Пункты «не проверено»: нормализация и дедупликация (`docs/orchestrator-core.md` §5.6–5.7).
  *
  * Один и тот же факт приходит из двух артефактов: `cycle-decide` пишет в `decision.unverified[]`
  * строку `evaluation unverified: <what>`, а `evaluation.unverified[]` хранит `what` и `why`

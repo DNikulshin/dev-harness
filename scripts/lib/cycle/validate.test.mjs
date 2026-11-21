@@ -185,7 +185,7 @@ const DECISION_INVALID = {
 
 /**
  * `metrics.json` живёт в подкаталоге: это артефакт завершённого цикла, а не схема
- * отдельного этапа (issue #160, T8). Пути — от `scripts/fixtures/cycle/`.
+ * отдельного этапа (T8). Пути — от `scripts/fixtures/cycle/`.
  */
 const METRICS_INVALID = {
   'metrics/metrics.invalid.tokens.json': /metrics\.tokens: ожидается объект этапов или null/,

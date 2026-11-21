@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Раннер гейтов цикла по docs/orchestrator-core.md §5.5 (issue #154, задача T3).
+ * Раннер гейтов цикла по docs/orchestrator-core.md §5.5 (задача T3).
  *
  * Вход: `state.json` каталога цикла (`iteration`, `base_sha`), дифф рабочего дерева от
  * базы. Выход: `gates.<n>.json` (Приложение A) и логи `gates/<id>.<n>.log`; в stdout —
@@ -313,7 +313,7 @@ export const SERVICE_ENV = Object.freeze(['PATH', 'HOME', 'TMPDIR']);
  * свидетельство, и «умное» окружение не должно его отключать.
  *
  * Без этого turbo отдаёт результат из кэша («FULL TURBO»), и `pass` в `gates.<n>.json`
- * означал бы «эти входы когда-то уже проверялись», а не живой прогон (§5.5, #216). Кэш
+ * означал бы «эти входы когда-то уже проверялись», а не живой прогон (§5.5). Кэш
  * turbo адресуется по хешу входов, но часть окружения в хеш не входит, а гейты — основное
  * свидетельство «код проверен»; цена принудительного прогона в этом репозитории — секунды
  * (contracts_build 3 с, typecheck 11 с, lint 9 с, test 12 с), поэтому выбирается свежесть.
@@ -855,7 +855,7 @@ async function main() {
     const gatesFile = join(dir, names.gates);
     const inherited = args.only === null ? {} : previousGates(gatesFile, names.gates);
 
-    // Лимиты (#235): env → конфиг → дефолт. Флагов у этого скрипта нет.
+    // Лимиты: env → конфиг → дефолт. Флагов у этого скрипта нет.
     const resolvedLimits = resolveLimits({
       config: config.limits,
       configured: config.limitsExplicit,

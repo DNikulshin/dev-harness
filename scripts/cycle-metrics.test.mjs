@@ -542,7 +542,7 @@ describe('CLI: cycle-metrics', () => {
     assert.equal(doc.cost_rub, null);
   });
 
-  test('applied_limits показывает источник лимита: окружение важнее конфига (#235)', () => {
+  test('applied_limits показывает источник лимита: окружение важнее конфига', () => {
     const root = projectWithLimits({ maxCycleCostRub: 75 });
     try {
       const run = runCli(

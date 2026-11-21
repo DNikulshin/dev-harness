@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Пакет свидетельств для независимого оценщика по docs/orchestrator-core.md §5.4
- * (issue #155, задача T4; docs/orchestrator.md §7; docs/adr/0006-independent-evaluation.md).
+ * (задача T4; docs/orchestrator.md §7; docs/adr/0006-independent-evaluation.md).
  *
  * Подкоманды:
  *
@@ -514,7 +514,7 @@ function canonicalPath(path) {
  * Проверка каталога цикла на право записи (§4: скрипты пишут только в `.pi/artifacts/<…>/`).
  * Каталог вне корня репозитория разрешён: так работают тесты и ручной smoke на временных
  * git-репозиториях. Каталог внутри корня обязан лежать в `<root>/.pi/artifacts/`.
- * Экспортируется, чтобы тот же гард (с уроком issue #155 про символические ссылки)
+ * Экспортируется, чтобы тот же гард (с уроком про символические ссылки)
  * использовал `cycle-state.mjs`, а не дублировал защиту.
  * @param {string} dir каталог цикла
  * @param {string} root корень репозитория
@@ -531,7 +531,7 @@ export function assertWritableDir(dir, root) {
 
   // Сам каталог артефактов обязан канонически лежать внутри репозитория. Иначе `.pi/artifacts`,
   // подменённый симлинком наружу, уводит и `canonicalAllowed` наружу — и «внутри артефактов»
-  // перестаёт означать «внутри репозитория» (issue #155, ревью итерации 3).
+  // перестаёт означать «внутри репозитория» (ревью итерации 3).
   if (!isInside(canonicalRoot, canonicalAllowed)) {
     throw new Error(
       `--dir: каталог артефактов ${allowed} канонически вне репозитория (${canonicalAllowed}) — ` +
@@ -542,7 +542,7 @@ export function assertWritableDir(dir, root) {
   // Каталог лексически внутри репозитория (или таковым кажется): писать можно только в
   // `<root>/.pi/artifacts/` — и по записи пути, и по каноническому пути. Раньше проверялся
   // только канонический путь, поэтому симлинк из `.pi/artifacts/` наружу выглядел как «каталог
-  // вне репозитория» и разрешался — запись уходила за пределы репозитория (issue #155).
+  // вне репозитория» и разрешался — запись уходила за пределы репозитория.
   if (isInside(lexicalRoot, lexicalDir) || isInside(canonicalRoot, lexicalDir)) {
     if (isInside(allowed, lexicalDir) && isInside(canonicalAllowed, canonicalDir)) return;
 
@@ -1150,7 +1150,7 @@ function main() {
       return;
     }
 
-    // Лимиты диффа и хвостов логов (#235): env → конфиг → дефолт.
+    // Лимиты диффа и хвостов логов: env → конфиг → дефолт.
     const resolvedLimits = resolveLimits({
       config: config.limits,
       configured: config.limitsExplicit,

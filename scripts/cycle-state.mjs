@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Состояние цикла, переходы автомата и блокировка рабочего дерева
- * (docs/orchestrator-core.md §5.3, issue #157, задача T6).
+ * (docs/orchestrator-core.md §5.3, задача T6).
  *
  * Единственный писатель `state.json`. Подкоманды §5.3:
  *
@@ -77,14 +77,14 @@
  *   `init` сразу закрывает INIT как `done`: в протоколе Приложения B у INIT нет `finish`.
  * - **Повторный вход в этап** (после сбоя, §13) — `advance --to <текущий этап>` при
  *   `stage_status = 'error'`; при `running` сначала нужен `finish`.
- * - **Выход из `ESCALATED` (#235).** Владелец может вернуть цикл в `DECIDE`
+ * - **Выход из `ESCALATED`.** Владелец может вернуть цикл в `DECIDE`
  *   (`advance --to DECIDE --owner-approved`): эскалация снимается, решение пересчитывается
  *   с поднятым лимитом. Любая другая цель и любой другой флаг — код 3; `DONE` терминален.
  * - **Защиты §5.3.** `→ DECIDE` требует `review.<n>.md` и `evaluation.<n>.md` текущей
  *   итерации; `→ PR` — `decision.<n>.json` с `action` `PROCEED` или
  *   `PROCEED_WITH_UNVERIFIED`; `advance --to ESCALATED` запрещён — только `escalate`
  *   (эскалация допустима из любого этапа таблицы, включая `QA_WEB`: причина
- *   `diff_too_large` может выясниться уже после браузерной проверки, #202).
+ *   `diff_too_large` может выясниться уже после браузерной проверки).
  * - **`escalate`.** `draft_pr_allowed` = проход `code` завершён (`history` содержит запись
  *   `CODE` со `status = 'done'`) ∧ обязательные гейты зелёные (`mandatoryGatesGreen`) ∧
  *   причина ∈ {`iteration_limit`, `budget`, `agent_output_invalid`}. «Зелёные» — fail-safe
@@ -105,7 +105,7 @@
  *   пустой файл свежее TTL → тоже код 3 (захват идёт прямо сейчас), мёртвый, битый или
  *   пустой старше `LOCK_EMPTY_TTL_MS` → восстановление.
  *
- *   Восстановление сериализовано файлом `<lock>.takeover` (issue #157, ревью 2): без него
+ *   Восстановление сериализовано файлом `<lock>.takeover` (ревью 2): без него
  *   два процесса с мёртвым lock снимали бы его по очереди и второй снёс бы уже свежую
  *   блокировку первого. Под сериализатором состояние перепроверяется, а снятие идёт через
  *   `claimStaleFile`: inode сверяется **до** переименования (issue #122) — чужой свежий файл не
@@ -208,7 +208,7 @@ const STAGES = Object.freeze([
 const TERMINAL_STAGES = Object.freeze(['DONE', 'ESCALATED']);
 
 /**
- * Выход из терминального `ESCALATED` (#235): единственное обратное ребро — в `DECIDE`,
+ * Выход из терминального `ESCALATED`: единственное обратное ребро — в `DECIDE`,
  * чтобы владелец мог поднять бюджет и досчитать решение в том же цикле. Разрешено только
  * с `--owner-approved`; `DONE` остаётся терминальным без исключений.
  */
@@ -228,7 +228,7 @@ const LOCK_NAME = '.lock';
 
 /**
  * Суффикс файла-сериализатора восстановления. Снимать устаревший lock можно только одному
- * процессу: иначе второй снимет уже свежую блокировку первого (issue #157, ревью 2).
+ * процессу: иначе второй снимет уже свежую блокировку первого (ревью 2).
  */
 const LOCK_TAKEOVER_SUFFIX = '.takeover';
 
@@ -388,7 +388,7 @@ export function startStage(state, { stage, iteration = state.iteration, now }) {
  * @returns {Record<string, any>} новое состояние
  */
 export function advanceTo(state, { to, now, ownerApproved = false, artifacts = {} }) {
-  // Возврат из `ESCALATED` в `DECIDE` (#235): только осознанно, флагом владельца.
+  // Возврат из `ESCALATED` в `DECIDE`: только осознанно, флагом владельца.
   if (state.stage === 'ESCALATED') {
     if (!ESCALATED_RECOURSE.includes(to)) {
       throw new ConflictError(
@@ -1356,7 +1356,7 @@ function assertValidEscalation(escalation) {
 }
 
 /**
- * Ветка цикла существует и является текущей (issue #274). `init` фиксирует имя ветки
+ * Ветка цикла существует и является текущей. `init` фиксирует имя ветки
  * только в `state.json` и git не трогает, поэтому рассинхрон («цикл думает, что он в
  * ветке, а HEAD на `main`») всплывал поздно — на коммите в PR-стадии. Проверка ничего
  * не мутирует: ветку создаёт человек или агент, `init` только отказывается работать в
@@ -1405,9 +1405,9 @@ function runInit(args, root, config) {
     throw new ConflictError(`цикл уже инициализирован: ${file} (повторный init запрещён)`);
   }
 
-  // Лимит итераций (#235): `--max-iterations` → env → конфиг → дефолт.
+  // Лимит итераций: `--max-iterations` → env → конфиг → дефолт.
   // Значение проверяется по диапазону из `limits.mjs`, а не принимается на веру.
-  // Ветка цикла должна существовать и быть текущей (#274): иначе коммиты и `gh pr create`
+  // Ветка цикла должна существовать и быть текущей: иначе коммиты и `gh pr create`
   // уйдут не туда, а рассинхрон всплывёт только на PR-стадии.
   assertOnCycleBranch(args.branch, root, 'init');
 
@@ -1472,7 +1472,7 @@ function runAdvance(args, root) {
   const now = resolveNow(args);
   const names = iterNames(state.iteration);
 
-  // `PR` открывается коммитами текущего `HEAD`, поэтому перед ним сверяется ветка (#274).
+  // `PR` открывается коммитами текущего `HEAD`, поэтому перед ним сверяется ветка.
   if (args.to === 'PR') assertOnCycleBranch(state.branch, root, 'advance --to PR');
 
   const next = advanceTo(state, {
@@ -1566,7 +1566,7 @@ function runApplyDecision(args, root) {
     applied_decision: marker,
   };
 
-  // `PROCEED*` открывает PR мимо `advance`, поэтому та же сверка ветки, что и там (#274):
+  // `PROCEED*` открывает PR мимо `advance`, поэтому та же сверка ветки, что и там:
   // тело PR, коммиты и `gh pr create` должны относиться к ветке цикла, а не к `main`.
   if (next.stage === 'PR' && state.stage !== 'PR') {
     assertOnCycleBranch(state.branch, root, 'apply-decision');
@@ -2072,7 +2072,7 @@ function runLock(args, root) {
   }
 
   // Восстановление — только под сериализатором: иначе два процесса снимут lock по очереди и
-  // второй снесёт уже свежую блокировку первого (issue #157, ревью 2).
+  // второй снесёт уже свежую блокировку первого (ревью 2).
   // Сериализатор держим мы сами (миллисекунды), поэтому в документе — наш pid, а не родителя.
   const takeoverDoc = { pid: process.pid, slug: args.slug, created_at: resolveNow(args) };
   if (!acquireTakeover(file, serializeArtifact(normalizeDoc(takeoverDoc)), nowMs)) {

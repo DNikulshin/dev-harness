@@ -108,7 +108,7 @@ const ESCALATION_REASONS = Object.freeze([
   'internal_error',
 ]);
 
-/** Источники значений лимитов (`applied_limits`, #235). */
+/** Источники значений лимитов (`applied_limits`). */
 const LIMIT_SOURCES = Object.freeze(['cli', 'env', 'config', 'default']);
 
 /** Счётчики блока `driver` в `metrics.json` (#47). */
@@ -594,7 +594,7 @@ function validateHistoryEntry(item, path, errors) {
 
 /**
  * Необязательный блок `applied_limits`: ключ → `{ value, source }`. Отсутствие блока —
- * валидное состояние: артефакт, записанный до #235, не переписывается.
+ * валидное состояние: артефакт, записанный до появления лимитов, не переписывается.
  * @param {Record<string, unknown>} doc
  * @param {string} name имя артефакта (`decision`/`metrics`)
  * @param {string[]} errors

@@ -968,7 +968,7 @@ describe('packet: лимиты диффа', () => {
     assert.match(evidence(dir, 'diff.patch'), /\+строка/);
   });
 
-  test('лимит строк диффа берётся из окружения (#235)', (t) => {
+  test('лимит строк диффа берётся из окружения', (t) => {
     const { root, baseSha } = makeRepo(t);
     // 200 строк проходят дефолт (2000), но не поднятый из окружения лимит.
     writeFileSync(join(root, 'middle.txt'), `${'строка\n'.repeat(200)}`);
