@@ -7,8 +7,8 @@ evals-слой.
 Ядро не знает конкретный проект. Гейты, лимиты, пути и провайдер моделей задаются в
 `.pi/harness.config.json` проекта; роли и запреты — в `AGENTS.md` проекта.
 
-**Статус:** v0.1.0. Пакет публикуется в npm; что считается публичным API и как объявляется
-несовместимое изменение — [docs/release.md](./docs/release.md).
+**Статус:** v0.2.0, опубликован в npm. Что считается публичным API и как объявляется несовместимое
+изменение — [docs/release.md](./docs/release.md).
 
 ## Требования
 
@@ -48,7 +48,7 @@ pnpm add -D @dnikulshin/harness   # дальше — команды пакета
 ```json
 {
   "devDependencies": {
-    "@dnikulshin/harness": "github:DNikulshin/dev-harness#v0.1.0"
+    "@dnikulshin/harness": "github:DNikulshin/dev-harness#v0.2.0"
   }
 }
 ```
