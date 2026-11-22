@@ -49,6 +49,25 @@ describe('closingIssues: что считается ссылкой', () => {
     assert.deepEqual(closingIssues(body), []);
   });
 
+  test('строка в обратных кавычках не засчитывается: GitHub в коде ключевое слово не видит', () => {
+    assert.deepEqual(closingIssues('`Closes #4`'), []);
+    assert.deepEqual(closingIssues('тело: `Closes: #4` и всё'), []);
+    assert.deepEqual(closingIssues('``Closes #4``'), []);
+  });
+
+  test('пример команды в кавычках — не ссылка, а настоящая строка рядом — ссылка', () => {
+    const body = [
+      'Так делать не нужно: `git commit -m "Closes #5"` — коммит issue не закрывает.',
+      '',
+      'Closes #7',
+    ].join('\n');
+    assert.deepEqual(closingIssues(body), [7]);
+  });
+
+  test('код в кавычках не мешает ссылке в том же абзаце', () => {
+    assert.deepEqual(closingIssues('правило `#N` и ссылка Closes #12'), [12]);
+  });
+
   test('ссылка вне блока кода при наличии примеров внутри — засчитывается', () => {
     const body = ['```', 'Closes #1', '```', '', 'Closes #2', ''].join('\n');
     assert.deepEqual(closingIssues(body), [2]);
@@ -70,6 +89,12 @@ describe('closingIssues: что считается ссылкой', () => {
     assert.ok(!stripped.includes('code'));
     assert.ok(stripped.includes('Текст') && stripped.includes('Конец'));
   });
+
+  test('strippedBody вырезает и inline-code, оставляя текст вокруг', () => {
+    const stripped = strippedBody('до `в кавычках` после');
+    assert.ok(!stripped.includes('в кавычках'), 'содержимое кавычек вырезано');
+    assert.match(stripped, /до\s+после/u);
+  });
 });
 
 describe('missingReferenceReason: тексты отказа', () => {
@@ -90,7 +115,8 @@ describe('missingReferenceReason: тексты отказа', () => {
     assert.match(reason, /нет ссылки на issue/u);
     assert.match(reason, /Closes #<номер>/u);
     assert.match(reason, /#5 и #15/u);
-    assert.match(reason, /ссылкой не считается/u);
+    assert.match(reason, /ссылкой не счита/u);
+    assert.match(reason, /кавычках/u);
   });
 });
 
