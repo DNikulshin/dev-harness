@@ -34,9 +34,9 @@
 ## Вызов из проекта
 
 ```bash
-pnpm exec harness-cycle-gates --dir .pi/artifacts/2026-11-22-42-short-slug
-pnpm exec harness-cycle-decide --dir .pi/artifacts/2026-11-22-42-short-slug
-pnpm exec harness-cycle-pr-body --dir .pi/artifacts/2026-11-22-42-short-slug
+pnpm exec harness-cycle-gates --dir .pi/artifacts/2026-11-22-214-invoice-export
+pnpm exec harness-cycle-decide --dir .pi/artifacts/2026-11-22-214-invoice-export
+pnpm exec harness-cycle-pr-body --dir .pi/artifacts/2026-11-22-214-invoice-export
 ```
 
 Полные флаги — README и §5 `docs/orchestrator-core.md`.

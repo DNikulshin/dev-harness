@@ -25,7 +25,7 @@
 
 ```bash
 git switch main && git pull --ff-only
-git switch -c feat/42-short-slug      # или fix/, chore/, docs/
+git switch -c feat/214-invoice-export  # или fix/, chore/, docs/
 ```
 
 - префикс — по типу задачи: `feat/`, `fix/`, `chore/`, `docs/`;
