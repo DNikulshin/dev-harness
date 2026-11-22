@@ -54,7 +54,8 @@
 
 Что кладёт `harness init` и что проверяет `harness-check-layout`:
 [ADR 0005](https://github.com/DNikulshin/dev-harness/blob/main/docs/adr/0005-layout-profile.md) и
-раздел «Установка шаблонов» в README.
+раздел «Установка шаблонов в проект» в
+[README (рус.)](https://github.com/DNikulshin/dev-harness/blob/main/README.ru.md#установка-шаблонов-в-проект-harness-init).
 
 Типичная ошибка: править поставленные шаблоны в проекте и ждать, что `harness init` это сохранит.
 Нет: `.pi/harness.version` хранит `sha256` каждого файла, расхождение видно как локальная правка.

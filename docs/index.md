@@ -9,27 +9,143 @@
 
 ## Быстрый старт
 
+Ниже — команды и **реальный вывод** каждой из них, снятый на новом проекте (ядро 0.2.1). Вывод
+сообщений ядра — на русском. Где вывод зависит от состояния проекта, состояние названо: иначе снимок
+— утверждение про чужой проект, а не про ваш.
+
+### 1. Шаблоны `.pi/` и ядро в devDependencies проекта
+
 ```bash
-# 1. Шаблоны .pi/ и ядро в devDependencies проекта
 npx @dnikulshin/harness init
 pnpm add -D @dnikulshin/harness
+```
 
-# 2. Ветка задачи: <type>/<issue>-<slug> — по ней же считается base_sha
+Проект с `AGENTS.md`:
+
+```text
+создан: .pi/agents/code.md
+создан: .pi/agents/evaluate.md
+создан: .pi/agents/plan.md
+создан: .pi/agents/review.md
+создан: .pi/harness.config.json
+создан: .pi/prompts/cycle.md
+создан: .pi/settings.json (subagents.maxSubagentSpawnsPerRun = 7)
+записан: .pi/harness.version (версия 0.2.1)
+W2: .pi/agents/evaluate.md — семейство модели совпадает с plan: z-ai (принятый риск I3, ребро не проверяется, действий не требуется; docs/orchestrator.md §18)
+проверка раскладки: нарушений нет, предупреждений 1 (информационные — действий не требуется)
+проверить отдельно: harness-check-layout --root .
+```
+
+Проект без `AGENTS.md` — проверка раскладки пропускается, и команда говорит, почему:
+
+```text
+проверка раскладки не выполнена: нет AGENTS.md — создайте его
+проверить отдельно: harness-check-layout --root .
+```
+
+`W2` — предупреждение, а не отказ: установка считает его информационным и говорит об этом в итоговой
+строке. Перед первым циклом замените примерные значения на проектные — `provider` в конфиге и
+`model:` в `.pi/agents/*.md` должны называть **вашего** провайдера (шаблоны приходят с примерным
+префиксом и моделями ядра, их ставит `harness-init`), `gates` — команды, которые проект
+действительно гоняет.
+
+### 2. Ветка задачи: `<type>/<issue>-<slug>`
+
+По ней же считается `base_sha`, а хвост после номера (схема `^[a-z0-9-]{1,60}$`) — тот самый
+`--slug`:
+
+```bash
 git switch -c feat/214-invoice-export
+```
 
-# 3. Цикл: issue, slug и ветка — три факта об одной задаче
+### 3. Цикл: issue, slug и ветка — три факта об одной задаче
+
+```bash
 pnpm exec harness-cycle-state init \
   --issue 214 \
   --slug invoice-export \
   --branch feat/214-invoice-export
-
-# 4. Что делать прямо сейчас (JSON шага, его же читает адаптер Pi)
-pnpm exec harness-cycle-driver next
 ```
 
-Пример выше согласован по всей цепочке: `--slug invoice-export` — это хвост имени ветки после номера
-(схема `^[a-z0-9-]{1,60}$`), поэтому каталог артефактов
-`.pi/artifacts/2026-11-22-214-invoice-export` читается вместе с веткой `feat/214-invoice-export`.
+```json
+{
+  "applied_decision": null,
+  "base_sha": "0ccea4cfd17a46a6660e9729d166fcd8f898b278",
+  "branch": "feat/214-invoice-export",
+  "criteria_sha256": null,
+  "criteria_source": "issue",
+  "escalation": null,
+  "history": [
+    {
+      "finished_at": "2026-11-22T11:30:30.168Z",
+      "iteration": 1,
+      "stage": "INIT",
+      "started_at": "2026-11-22T11:30:30.168Z",
+      "status": "done"
+    }
+  ],
+  "issue": 214,
+  "iteration": 1,
+  "max_iterations": 2,
+  "models": { "code": "…", "evaluate": "…", "plan": "…", "review": "…" },
+  "owner_approved": false,
+  "retries": { "EVALUATE": 0, "REVIEW": 0, "evidence": 0 },
+  "slug": "invoice-export",
+  "stage": "INIT",
+  "stage_status": "done",
+  "started_at": "2026-11-22T11:30:30.168Z",
+  "updated_at": "2026-11-22T11:30:30.168Z"
+}
+```
+
+Вывод — одна строка; здесь `models` сокращён до ключей, остальное — как напечатала команда. Каталог
+артефактов — `.pi/artifacts/2026-11-22-214-invoice-export`: дата, номер и slug читаются вместе с
+веткой `feat/214-invoice-export`.
+
+### 4. Что делать прямо сейчас
+
+JSON шага — тот же, что читает адаптер Pi; модели драйвер не запускает, он говорит, кому идти
+дальше:
+
+```json
+{
+  "contract": "cycle-driver.next/1",
+  "cycle": { "issue": 214, "branch": "feat/214-invoice-export", "iteration": 1, "stage": "INIT" },
+  "stage": "INIT",
+  "status": "done",
+  "action": "run",
+  "reason": "criteria_missing",
+  "step": "criteria",
+  "allowed_next": ["PLAN"],
+  "waiting_for": "evidence/criteria.md",
+  "commands": ["node …/cycle-evidence.mjs criteria --dir … --issue-json …/issue.json"]
+}
+```
+
+Блоки показаны сокращённо: в `cycle` остались не все поля (`owner_approved`, `escalation`,
+`max_iterations`, `dir` — в полном ответе), в `commands` — один путь из двух, а `notes` и `done`
+опущены. Формат — prettier, а не байт-в-байт вывод; значения полей — из того же прогона.
+
+`action` — контракт: `run`/`advance` — детерминированные шаги, `spawn`/`handoff` — работа моделей,
+`stop`/`blocked` — нужен человек.
+
+### 5. `cycle-gates` — гейтов ещё нет
+
+Цикл начат, секции `gates` в конфиге нет. Это валидное состояние, а не поломка: цикл говорит об этом
+словами и выходит с кодом 2 вместо ложного «проверки прошли».
+
+```bash
+pnpm exec harness-cycle-gates
+```
+
+```text
+cycle-gates: гейты не заданы: добавьте секцию gates в .pi/harness.config.json (пример конфига ставит harness-init)
+# код выхода 2
+```
+
+Пример конфига, наоборот, приходит с гейтами `acme` (`pnpm --filter @acme/core build`,
+`pnpm typecheck`, …): пока это чужие команды, они падают — это и есть повод их заменить, а не
+признак, что ядро не работает.
 
 Что важно знать до запуска:
 
@@ -37,10 +153,12 @@ pnpm exec harness-cycle-driver next
   отказывает, если ветки нет;
 - **`AGENTS.md` в проекте нужен заранее**: без него `harness init` ставит шаблоны, но пропускает
   проверку раскладки (`harness-check-layout`, H1–H6) и говорит об этом в выводе;
-- цикл стартует от `main`: `base_sha` берётся из `git rev-parse main`.
+- цикл стартует от `main`: `base_sha` берётся от ветки `main`, и если её нет — `cycle-state init`
+  говорит об этом словами, а не выводом git.
 
 Требования: Node.js 26.13.x, Linux или macOS. Подробно —
-[README репозитория](https://github.com/DNikulshin/dev-harness#readme).
+[README репозитория](https://github.com/DNikulshin/dev-harness#readme) (есть
+[английская версия](https://github.com/DNikulshin/dev-harness/blob/main/README.md)).
 
 ## Норматив
 

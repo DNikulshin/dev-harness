@@ -31,8 +31,8 @@ pnpm exec harness-check-layout
 
 Дальше добавляйте гейты проекта (`id`, `executable`, `args`, `required`, `dependsOn`,
 `pathPrefixes`, `dbGate`, `env`). Полная схема —
-[README](https://github.com/DNikulshin/dev-harness#конфигурация-piharnessconfigjson) и §5.5
-`docs/orchestrator-core.md`.
+[README (рус.)](https://github.com/DNikulshin/dev-harness/blob/main/README.ru.md#конфигурация-piharnessconfigjson)
+и §5.5 `docs/orchestrator-core.md`.
 
 ## 3. Начать цикл
 

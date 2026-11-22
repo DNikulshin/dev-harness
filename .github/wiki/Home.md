@@ -22,8 +22,9 @@
 
 Вики — вход, а не норматив. Источник правды — репозиторий:
 
-- [README](https://github.com/DNikulshin/dev-harness#readme) — требования, подключение, команды,
-  гейты;
+- [README (рус.)](https://github.com/DNikulshin/dev-harness/blob/main/README.ru.md) и
+  [README (англ.)](https://github.com/DNikulshin/dev-harness#readme) — требования, подключение,
+  команды, гейты;
 - [docs/protocol.md](https://github.com/DNikulshin/dev-harness/blob/main/docs/protocol.md) — точка
   входа в норматив протокола;
 - [docs/orchestrator-core.md](https://github.com/DNikulshin/dev-harness/blob/main/docs/orchestrator-core.md)
