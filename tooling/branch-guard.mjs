@@ -42,18 +42,31 @@ function isPushedBranch(ref) {
 }
 
 /**
+ * Пушимые ветки с их коммитами: имя и sha. Удаление (`--delete`) и теги сюда не попадают — у них
+ * нет коммита ветки. Sha нужен проверке базы (`tooling/base-guard.mjs`): сверять надо тот коммит,
+ * который уезжает, а не текущий HEAD.
+ * @param {{ localRef: string, localSha: string }[]} refs
+ * @returns {{ branch: string, sha: string }[]}
+ */
+export function pushedBranchRefs(refs) {
+  if (!Array.isArray(refs)) return [];
+
+  /** @type {Map<string, string>} */
+  const byBranch = new Map();
+  for (const ref of refs.filter(isPushedBranch)) {
+    byBranch.set(ref.localRef.slice('refs/heads/'.length), ref.localSha);
+  }
+
+  return [...byBranch].map(([branch, sha]) => ({ branch, sha }));
+}
+
+/**
  * Имена веток из stdin `pre-push`, которые git собирается запушить.
- * Удаление (`--delete`) и теги сюда не попадают: у них нет коммита ветки.
  * @param {{ localRef: string, localSha: string }[]} refs
  * @returns {string[]}
  */
 export function pushedBranches(refs) {
-  if (!Array.isArray(refs)) return [];
-
-  const branches = refs
-    .filter(isPushedBranch)
-    .map((ref) => ref.localRef.slice('refs/heads/'.length));
-  return [...new Set(branches)];
+  return pushedBranchRefs(refs).map(({ branch }) => branch);
 }
 
 /**
