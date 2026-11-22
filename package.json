@@ -39,7 +39,8 @@
     "types/",
     "templates/",
     "docs/",
-    "README.md"
+    "README.md",
+    "README.ru.md"
   ],
   "exports": {
     "./templates/*": "./templates/*",

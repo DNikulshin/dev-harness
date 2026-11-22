@@ -191,6 +191,12 @@ export function resolveRefs(
   return results;
 }
 
+/** Ширина строки из `.prettierrc` репозитория: по ней же prettier решает, где свернуть массив. */
+const PRINT_WIDTH = 100;
+
+/** Начало объявления снимка: вместе с ним prettier оценивает, влезает ли массив в одну строку. */
+const DECLARATION = 'const DEAD_REFS = Object.freeze([';
+
 /**
  * Номера в виде строк массива с отступами так, как их свернул бы prettier при `printWidth: 100`
  * (формат репозитория): заполнение строки до ширины, элементы через `, `. Сгенерированный снимок
@@ -200,7 +206,7 @@ export function resolveRefs(
  * @param {{ indent?: number, width?: number }} [options]
  * @returns {string} строки без обрамляющих скобок; пустой список — пустая строка
  */
-export function wrapNumbers(numbers, { indent = 2, width = 100 } = {}) {
+export function wrapNumbers(numbers, { indent = 2, width = PRINT_WIDTH } = {}) {
   const prefix = ' '.repeat(indent);
   /** @type {string[]} */
   const lines = [];
@@ -221,6 +227,18 @@ export function wrapNumbers(numbers, { indent = 2, width = 100 } = {}) {
   }
   if (line !== '') lines.push(line);
   return lines.join('\n');
+}
+
+/**
+ * Объявление `DEAD_REFS` в том виде, в каком его оставил бы prettier: короткий список — одной
+ * строкой, длинный — по элементам с отступами. Свернуть всегда в столбик нельзя: prettier вернёт
+ * короткий массив в строку, и снимок перестал бы воспроизводиться байт-в-байт.
+ * @param {number[]} sorted номера без дублей, по возрастанию
+ * @returns {string}
+ */
+function renderList(sorted) {
+  const inline = `${DECLARATION}${sorted.join(', ')}]);`;
+  return inline.length <= PRINT_WIDTH ? inline : `${DECLARATION}\n${wrapNumbers(sorted)}\n]);`;
 }
 
 /**
@@ -256,7 +274,6 @@ export function renderSnapshot({ text, date, deadRefs, maxRef }) {
   parseSnapshot(text);
 
   const sorted = [...new Set(deadRefs)].sort((left, right) => left - right);
-  const wrapped = wrapNumbers(sorted);
   const subs = [
     { pattern: /const SNAPSHOT_DATE = '[^']*';/u, replacement: `const SNAPSHOT_DATE = '${date}';` },
     {
@@ -265,10 +282,7 @@ export function renderSnapshot({ text, date, deadRefs, maxRef }) {
     },
     {
       pattern: /const DEAD_REFS = Object\.freeze\(\[[\s\S]*?\]\);/u,
-      replacement:
-        wrapped === ''
-          ? 'const DEAD_REFS = Object.freeze([]);'
-          : `const DEAD_REFS = Object.freeze([\n${wrapped}\n]);`,
+      replacement: sorted.length === 0 ? `${DECLARATION}]);` : renderList(sorted),
     },
   ];
 

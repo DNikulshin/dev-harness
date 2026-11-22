@@ -10,7 +10,8 @@
 
 **Репозиторий**
 
-- [README](https://github.com/DNikulshin/dev-harness#readme)
+- [README (рус.)](https://github.com/DNikulshin/dev-harness/blob/main/README.ru.md),
+  [README (англ.)](https://github.com/DNikulshin/dev-harness#readme)
 - [Норматив протокола](https://github.com/DNikulshin/dev-harness/blob/main/docs/protocol.md)
 - [Как участвовать](https://github.com/DNikulshin/dev-harness/blob/main/CONTRIBUTING.md)
 - [Политика безопасности](https://github.com/DNikulshin/dev-harness/blob/main/SECURITY.md)
