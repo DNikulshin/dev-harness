@@ -487,9 +487,13 @@ export function analyzeHarness(input) {
       warnings.push({
         rule: 'W2',
         file: agent.file,
+        // Формулировка отвечает на вопрос «мне что-то делать?»: пара — принятый риск, а не
+        // недонастройка (#196). Иначе первое, что видит человек после `harness init`, читается
+        // как ошибка конфигурации.
         message:
           `семейство модели совпадает с ${UNCHECKED_EDGE.right}: ${uncheckedLeft}` +
-          ' (риск I3, docs/orchestrator.md §18 — ребро не проверяется)',
+          ' (принятый риск I3, ребро не проверяется, действий не требуется;' +
+          ' docs/orchestrator.md §18)',
       });
     }
   }

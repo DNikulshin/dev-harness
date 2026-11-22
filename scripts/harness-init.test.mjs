@@ -633,6 +633,29 @@ describe('CLI на временном проекте', () => {
     assert.ok(result.stdout.includes('проверка раскладки: нарушений нет'));
   });
 
+  test('итог установки считает предупреждения и говорит, что делать нечего (#196)', (t) => {
+    const root = makeProject(t, {
+      'AGENTS.md': 'Роли описаны в `.pi/agents/`, гейты — в `.pi/harness.config.json`.\n',
+    });
+
+    const result = runCli(['--root', root]);
+    const summary = result.stdout
+      .split('\n')
+      .filter((line) => line.startsWith('проверка раскладки: нарушений нет'));
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(summary.length, 1, 'итог должен быть одной строкой');
+    // Шаблон держит evaluate и plan в одном семействе — это принятый риск I3, а не недонастройка.
+    assert.equal(
+      summary[0],
+      'проверка раскладки: нарушений нет, предупреждений 1 (информационные — действий не требуется)',
+    );
+    assert.ok(
+      result.stdout.includes('W2: .pi/agents/evaluate.md'),
+      'само предупреждение остаётся видимым',
+    );
+  });
+
   test('нет шаблонов и битая версия — код 2 с понятным текстом', (t) => {
     const root = makeProject(t);
 
