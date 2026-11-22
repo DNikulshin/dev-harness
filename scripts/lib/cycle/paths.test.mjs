@@ -107,6 +107,22 @@ describe('findActiveCycle', () => {
     assert.throws(() => findActiveCycle(dir), /активный цикл не найден/);
   });
 
+  test('каталога артефактов нет — «цикл не инициализирован» и команда старта (#198)', (t) => {
+    const parent = mkdtempSync(join(tmpdir(), 'harness-artifacts-'));
+    t.after(() => rmSync(parent, { recursive: true, force: true }));
+    const dir = join(parent, '.pi', 'artifacts');
+
+    assert.throws(
+      () => findActiveCycle(dir),
+      (/** @type {Error} */ error) => {
+        assert.doesNotMatch(error.message, /ENOENT/);
+        assert.match(error.message, /цикл не инициализирован/);
+        assert.match(error.message, /cycle-state init --issue/);
+        return true;
+      },
+    );
+  });
+
   test('один активный цикл — возвращается его путь', (t) => {
     const dir = makeArtifacts(t);
     makeCycle(dir, '2026-11-15-148-old', { stage: 'DONE' });

@@ -112,6 +112,16 @@ export function findActiveCycle(dir = artifactsDir()) {
   /** @type {string[]} */
   const active = [];
 
+  // Каталога артефактов ещё нет — это не сбой файловой системы, а «цикл не начат» (#198):
+  // `readdirSync` бросал `ENOENT: … scandir`, и первый запуск читался как поломка программы.
+  // Каталог создаёт первый же `cycle-state init`, поэтому ответ — команда старта.
+  if (!existsSync(dir)) {
+    throw new Error(
+      `цикл не инициализирован: каталога артефактов нет (${dir}). Начните цикл: ` +
+        'cycle-state init --issue <номер> --slug <slug> --branch <тип>/<номер>-<slug>',
+    );
+  }
+
   for (const name of readdirSync(dir).sort()) {
     const candidate = join(dir, name);
     if (!statSync(candidate).isDirectory()) continue;
