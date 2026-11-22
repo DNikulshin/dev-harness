@@ -1,6 +1,6 @@
 {
   "name": "@dnikulshin/harness",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": false,
   "description": "Переиспользуемое ядро цикла разработки: plan → code → gates → review → evaluate → decide, схема артефактов, проверка раскладки harness и evals-слой",
   "license": "MIT",
