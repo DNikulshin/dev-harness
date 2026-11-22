@@ -1,5 +1,10 @@
 # @dnikulshin/harness
 
+[![CI](https://github.com/DNikulshin/dev-harness/actions/workflows/ci.yml/badge.svg)](https://github.com/DNikulshin/dev-harness/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/@dnikulshin/harness)](https://www.npmjs.com/package/@dnikulshin/harness)
+[![Node](https://img.shields.io/badge/node-%3E%3D26.13%20%3C27-informational)](./.nvmrc)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](./LICENSE)
+
 Переиспользуемое ядро цикла разработки: детерминированные скрипты
 `plan → code → gates → review → evaluate → decide`, схема артефактов, проверка раскладки harness и
 evals-слой.
@@ -288,6 +293,13 @@ pnpm board:sync:dry     # то же, но только план: в проект
 - [docs/workflow.md](./docs/workflow.md) — процесс разработки: роли, ветки, коммиты, PR, релизы,
   Definition of Done.
 - [AGENTS.md](./AGENTS.md) — правила разработки самого dev-harness.
+- [CONTRIBUTING.md](./CONTRIBUTING.md) — как предложить изменение: issue, ветка, коммит, проверки,
+  PR.
+- [SECURITY.md](./SECURITY.md) — как приватно сообщить об уязвимости и что уязвимостью не считается.
+- [CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md) — кодекс поведения участников (Contributor Covenant
+  2.1).
+- [Вики](https://github.com/DNikulshin/dev-harness/wiki) — вход для нового участника: установка,
+  быстрый старт, FAQ; нормативные тексты остаются в `docs/`.
 
 ## Гейты — это код, который вы запускаете
 
