@@ -8,7 +8,15 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
-import { closingIssues, main, missingReferenceReason, strippedBody } from './pr-reference.mjs';
+import {
+  closingIssues,
+  commitReferenceProblems,
+  main,
+  missingReferenceReason,
+  rawClosingIssues,
+  readCommitMessages,
+  strippedBody,
+} from './pr-reference.mjs';
 
 describe('closingIssues: что считается ссылкой', () => {
   test('основные формы ключевых слов', () => {
@@ -97,6 +105,73 @@ describe('closingIssues: что считается ссылкой', () => {
   });
 });
 
+describe('rawClosingIssues: разметка в коммитах не защищает', () => {
+  test('бэктики и блок кода в сообщении коммита не спасают от закрытия', () => {
+    // GitHub сканирует сообщение как есть: на живых данных пример в теле коммита закрыл issue #16.
+    assert.deepEqual(rawClosingIssues('пример: `Closes #16` в тексте'), [16]);
+    assert.deepEqual(rawClosingIssues('```\nCloses #16\n```'), [16]);
+  });
+
+  test('формы и мусор', () => {
+    assert.deepEqual(rawClosingIssues('Closes #9'), [9]);
+    assert.deepEqual(rawClosingIssues('closes: #9 и fixes #2'), [9, 2]);
+    assert.deepEqual(rawClosingIssues('Closes #0'), []);
+    assert.deepEqual(rawClosingIssues(undefined), []);
+  });
+});
+
+describe('commitReferenceProblems: чужие номера в коммитах', () => {
+  test('номер, который PR не закрывает — проблема, с коммитом и номером', () => {
+    const problems = commitReferenceProblems({
+      messages: ['feat(x): сделано\n\nпример: `Closes #16` в тексте'],
+      closing: [181],
+    });
+
+    assert.equal(problems.length, 1);
+    assert.match(problems[0] ?? '', /коммит «feat\(x\): сделано»/u);
+    assert.match(problems[0] ?? '', /#16/u);
+    assert.match(problems[0] ?? '', /тело PR этого не делает/u);
+  });
+
+  test('номер из тела PR в коммите — не проблема: избыточность не ломает мерж', () => {
+    assert.deepEqual(
+      commitReferenceProblems({ messages: ['fix(x): Closes #181'], closing: [181] }),
+      [],
+    );
+  });
+
+  test('несколько коммитов и несколько чужих номеров сразу', () => {
+    const problems = commitReferenceProblems({
+      messages: ['a: Closes #1 и #2', 'b: ничего', 'c: fixes #3'],
+      closing: [2],
+    });
+
+    assert.equal(problems.length, 2);
+    // В список проблем попадают только чужие номера: свой (#2) остаётся в цитате коммита, но не в перечне.
+    assert.match(problems[0] ?? '', /: #1 — /u);
+    assert.match(problems[1] ?? '', /: #3 — /u);
+  });
+
+  test('мусор вместо сообщений не ломает разбор', () => {
+    assert.deepEqual(commitReferenceProblems({}), []);
+    assert.deepEqual(commitReferenceProblems({ messages: [1, null, ''], closing: undefined }), []);
+    assert.deepEqual(commitReferenceProblems({ messages: 'Closes #5', closing: [] }), [
+      'коммит «Closes #5»: #5 — GitHub закроет при мерже, а тело PR этого не делает',
+    ]);
+  });
+});
+
+describe('readCommitMessages: диапазон base..head', () => {
+  test('без SHA — пусто, без обращения к git', () => {
+    assert.deepEqual(readCommitMessages({}), []);
+    assert.deepEqual(readCommitMessages({ PR_BASE_SHA: 'abc' }), []);
+  });
+
+  test('несуществующий диапазон — пусто, а не исключение', () => {
+    assert.deepEqual(readCommitMessages({ PR_BASE_SHA: 'deadbeef', PR_HEAD_SHA: 'cafebabe' }), []);
+  });
+});
+
 describe('missingReferenceReason: тексты отказа', () => {
   test('ссылка есть — отказа нет', () => {
     assert.equal(missingReferenceReason('Closes #5'), null);
@@ -123,9 +198,9 @@ describe('missingReferenceReason: тексты отказа', () => {
 describe('main: CLI', () => {
   /**
    * Прогон CLI с перехватом вывода.
-   * @param {Record<string, string|undefined>} env
-   * @param {{ readStdIn?: () => string }} [options]
-   * @returns {{ code: number, out: string[], err: string[] }}
+   * @param {Record<string, string|undefined>} env окружение
+   * @param {{ readStdIn?: () => string, readCommits?: () => string[] }} [options] подмены зависимостей
+   * @returns {{ code: number, out: string[], err: string[] }} код и строки вывода
    */
   function runMain(env, options = {}) {
     /** @type {string[]} */
@@ -135,6 +210,7 @@ describe('main: CLI', () => {
     const code = main({
       env,
       readStdIn: options.readStdIn,
+      readCommits: options.readCommits ?? (() => []),
       log: (line) => out.push(line),
       stderr: (line) => err.push(line),
     });
@@ -154,6 +230,30 @@ describe('main: CLI', () => {
       err.some((line) => line.startsWith('::error::')),
       'аннотация для Actions',
     );
+  });
+
+  test('чужой номер в сообщении коммита — код 2 и аннотация про коммит', () => {
+    const { code, err } = runMain(
+      { PR_BODY: 'Closes #181' },
+      { readCommits: () => ['fix(x): пример `Closes #16` в тексте'] },
+    );
+
+    assert.equal(code, 2);
+    assert.ok(
+      err.some((line) => line.includes('#16')),
+      'номер назван',
+    );
+    assert.ok(err.some((line) => line.startsWith('::error::') && line.includes('коммит')));
+  });
+
+  test('коммит повторяет номер из тела — код 0', () => {
+    const { code, out } = runMain(
+      { PR_BODY: 'Closes #181' },
+      { readCommits: () => ['fix(x): Closes #181'] },
+    );
+
+    assert.equal(code, 0);
+    assert.match(out.join('\n'), /чужих номеров нет/u);
   });
 
   test('тело из stdin, когда PR_BODY не задан', () => {
