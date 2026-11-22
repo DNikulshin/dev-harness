@@ -4,6 +4,7 @@
 [![npm](https://img.shields.io/npm/v/@dnikulshin/harness)](https://www.npmjs.com/package/@dnikulshin/harness)
 [![Node](https://img.shields.io/badge/node-%3E%3D26.13%20%3C27-informational)](./.nvmrc)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](./LICENSE)
+[![Docs](https://img.shields.io/badge/docs-dnikulshin.ru%2Fdev--harness-informational)](https://dnikulshin.ru/dev-harness/)
 
 Переиспользуемое ядро цикла разработки: детерминированные скрипты
 `plan → code → gates → review → evaluate → decide`, схема артефактов, проверка раскладки harness и
@@ -282,6 +283,9 @@ pnpm board:sync:dry     # то же, но только план: в проект
 
 ## Документация
 
+- **Сайт документации:** <https://dnikulshin.ru/dev-harness/> — тот же текст, что в `docs/`, в виде
+  сайта (GitHub Pages из `docs/`, сборка — `.github/workflows/pages.yml`).
+- [docs/index.md](./docs/index.md) — карта документации: норматив, процесс, инфраструктура, ADR.
 - [docs/protocol.md](./docs/protocol.md) — точка входа в норматив протокола.
 - [docs/vision.md](./docs/vision.md) — зачем репозиторий и границы v0.1.
 - [docs/adr/](./docs/adr/README.md) — принятые архитектурные решения: профили и классы артефактов,

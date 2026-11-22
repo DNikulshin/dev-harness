@@ -1,0 +1,52 @@
+# GitHub Pages: сайт документации из этого каталога.
+#
+# Источник — `docs/` как есть: нормативные тексты остаются нормативными, сайт их только рендерит.
+# Сборка — официальный workflow `.github/workflows/pages.yml` (`actions/jekyll-build-pages`), а не
+# «Deploy from a branch»: ошибка сборки видна прогоном, а не письмом «страница не собралась».
+title: harness — ядро цикла разработки
+description: >-
+  Протокол plan → code → gates → review → evaluate → decide для кодирующих агентов:
+  детерминированные скрипты, схема артефактов, проверка раскладки и evals-слой.
+lang: ru
+# `baseurl` намеренно НЕ задан: проектный сайт живёт по адресу /<repo>/, и его подставляет workflow
+# (`actions/configure-pages` → `base_path` → `jekyll build --baseurl`). Захардкоженный baseurl
+# разъехался бы при переименовании репозитория. `url` нужен плагинам темы (canonical, feed) и равен
+# адресу сайта: у аккаунта настроен свой домен, поэтому проектные страницы живут на
+# https://dnikulshin.ru/dev-harness/ (github.io отдаёт 301 туда же).
+url: https://dnikulshin.ru
+theme: minima
+markdown: kramdown
+
+# Плагины из белого списка GitHub Pages: страницы без front matter и ссылки `./file.md` → `./file.html`.
+# Иначе каждая нормативная страница требовала бы шапки, а внутренние ссылки вели бы в 404.
+plugins:
+  - jekyll-optional-front-matter
+  - jekyll-relative-links
+  - jekyll-readme-index
+
+relative_links:
+  enabled: true
+  collections: false
+
+# Liquid выключен для всего каталога: в нормативе есть примеры вида `{{…}}` и `${…}` (маскирование,
+# шаблоны), и Liquid молча съел бы их как переменные.
+defaults:
+  - scope:
+      path: ''
+    values:
+      layout: default
+      render_with_liquid: false
+
+# Навигация в шапке темы: только точки входа, остальное — ссылками из index.md.
+header_pages:
+  - protocol.md
+  - workflow.md
+  - release.md
+
+# Локальные заметки мейнтейнера в репозиторий не попадают, но исключение страхует от случайного файла.
+# `vendor`/`Gemfile` — на случай локальной сборки через bundler.
+exclude:
+  - local
+  - vendor
+  - Gemfile
+  - Gemfile.lock

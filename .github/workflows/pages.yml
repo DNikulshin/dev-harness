@@ -1,0 +1,52 @@
+name: Pages
+
+# Сайт документации из `docs/`: официальный сборка-деплой GitHub Pages, а не «Deploy from a branch».
+#
+# Почему так: при сборке из ветки ошибка Jekyll видна только письмом «страница не собралась», а
+# workflow-путь показывает лог, падает на PR-подобном прогоне и деплоит только собранный артефакт.
+#
+# Источник правды — файлы в `docs/`; сайт их рендерит (конфиг — `docs/_config.yml`).
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/configure-pages@v5
+
+      - name: Собрать Jekyll из docs/
+        uses: actions/jekyll-build-pages@v1
+        with:
+          source: ./docs
+          destination: ./_site
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./_site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
