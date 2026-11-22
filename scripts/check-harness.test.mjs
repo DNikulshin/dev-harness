@@ -135,7 +135,8 @@ function warn(input) {
 /** Строка W2 для входа `harness()` с указанной моделью `evaluate`. */
 const W2_PLAN_FAMILY =
   'W2: .pi/agents/evaluate.md — семейство модели совпадает с plan: plan' +
-  ' (риск I3, docs/orchestrator.md §18 — ребро не проверяется)';
+  ' (принятый риск I3, ребро не проверяется, действий не требуется;' +
+  ' docs/orchestrator.md §18)';
 
 /**
  * Агенты без указанных имён: имитирует отсутствие файлов.
@@ -329,7 +330,8 @@ describe('W2: ребро evaluate↔plan не проверяется, но ви�
     );
     assert.deepEqual(warn(harness({ agents })), [
       'W2: .pi/agents/evaluate.md — семейство модели совпадает с plan: evaluate' +
-        ' (риск I3, docs/orchestrator.md §18 — ребро не проверяется)',
+        ' (принятый риск I3, ребро не проверяется, действий не требуется;' +
+        ' docs/orchestrator.md §18)',
     ]);
   });
 
@@ -669,7 +671,8 @@ describe('CLI на фикстурных деревьях', () => {
     assert.equal(
       result.stderr,
       'W2: .pi/agents/evaluate.md — семейство модели совпадает с plan: alpha' +
-        ' (риск I3, docs/orchestrator.md §18 — ребро не проверяется)\n',
+        ' (принятый риск I3, ребро не проверяется, действий не требуется;' +
+        ' docs/orchestrator.md §18)\n',
     );
   });
 
