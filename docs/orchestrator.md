@@ -3,7 +3,7 @@
 # Спецификация оркестратора цикла разработки
 
 Версия: 0.2 (принята владельцем) · Дата: 2026-11-14
-Реализация и декомпозиция: [docs/orchestrator-core.md](./docs/orchestrator-core.md) — дизайн ядра
+Реализация и декомпозиция: [docs/orchestrator-core.md](./orchestrator-core.md) — дизайн ядра
 цикла, форматы артефактов (Приложение A) и протокол супервизора (Приложение B).
 Основание: снимок репозитория (repomix от 2026-11-14): `.pi/agents/*`, `.pi/prompts/cycle.md`,
 `.pi/settings.json`, `AGENTS.md`, `docs/workflow.md`, `docs/qa-web.md`, `.github/*`, `scripts/*`.

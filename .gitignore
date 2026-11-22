@@ -5,3 +5,8 @@ coverage/
 docs/local/
 # Кэш резолва ссылок на issues (tooling/check-issue-refs.mjs)
 .cache/
+
+# Сборка сайта документации (docs/_config.yml, workflow pages.yml)
+docs/_site/
+docs/.jekyll-cache/
+docs/vendor/
