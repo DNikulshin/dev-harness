@@ -1381,6 +1381,34 @@ function assertOnCycleBranch(branch, root, where) {
 }
 
 /**
+ * Sha базовой ветки для `state.json`. База цикла — `main` по протоколу (§5.3), это не настройка
+ * проекта. Отказ git приходит сырым (`Command failed: git rev-parse …` и `fatal: Needed a single
+ * revision`) и читается как поломка программы, поэтому переводится в факт о ветке и действие (#198).
+ * @param {string} root корень репозитория
+ * @returns {string}
+ */
+function resolveBaseSha(root) {
+  // Сначала проверка существования: `rev-parse` на отсутствующей ссылке пишет `fatal:`
+  // напрямую в stderr процесса (stdio у `execFileSync` наследует stderr), и отказ git
+  // появлялся бы в выводе раньше собственной строки ядра. `show-ref --verify --quiet`
+  // молчит и завершается кодом 1 — проверка дешёвая и без вывода.
+  if (!branchExists('main', { cwd: root })) {
+    throw new UsageError(
+      'init: база цикла не найдена — в репозитории нет ветки main. Цикл стартует от main, ' +
+        '--branch — это ветка задачи. Создайте базу (git branch main <коммит>) или переименуйте ' +
+        'текущую базовую ветку (git branch -m <ветка> main).',
+    );
+  }
+  try {
+    return gitBaseSha({ branch: 'main', cwd: root });
+  } catch {
+    throw new UsageError(
+      `init: база цикла не читается: ветка main есть, её ревизия — нет (${root})`,
+    );
+  }
+}
+
+/**
  * `init`: каталог цикла и `state.json`. Повторный `init` в тот же каталог — код 3.
  * @param {ReturnType<typeof parseArgs>} args
  * @param {string} root
@@ -1424,7 +1452,7 @@ function runInit(args, root, config) {
     issue: args.issue,
     slug: args.slug,
     branch: args.branch,
-    baseSha: gitBaseSha({ branch: 'main', cwd: root }),
+    baseSha: resolveBaseSha(root),
     models: readModels(root, config.paths.agentsDir),
     now,
     maxIterations: limits.values.defaultMaxIterations,

@@ -541,6 +541,30 @@ describe('cycle-state: init', () => {
     assert.equal(result.status, 2);
     assert.equal(existsSync(join(root, '.pi', 'artifacts', CYCLE_NAME, 'state.json')), false);
   });
+
+  test('нет ветки main — причина и действие вместо вывода git (#198)', (t) => {
+    const { root } = makeRepo(t);
+    gitRun(root, ['branch', '-m', 'main', 'master']);
+
+    const result = runCli(root, [
+      'init',
+      '--issue',
+      '157',
+      '--slug',
+      'cycle-state',
+      '--branch',
+      CYCLE_BRANCH,
+      '--now',
+      NOW,
+    ]);
+
+    assert.equal(result.status, 2, result.stderr);
+    assert.match(result.stderr, /база цикла не найдена.*нет ветки main/u);
+    assert.match(result.stderr, /git branch -m/u);
+    // Сырой вывод git не печатается: `fatal:` и `Command failed` читались как сбой программы.
+    assert.doesNotMatch(result.stderr, /fatal:|Command failed/u);
+    assert.equal(existsSync(join(root, '.pi', 'artifacts', CYCLE_NAME, 'state.json')), false);
+  });
 });
 
 describe('cycle-state: get', () => {
