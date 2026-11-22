@@ -37,10 +37,20 @@ pnpm exec harness-check-layout
 ## 3. Начать цикл
 
 ```bash
-git switch -c feat/42-short-slug
-pnpm exec harness-cycle-state init --issue 42 --slug short-slug --branch feat/42-short-slug
+git switch -c feat/214-invoice-export
+pnpm exec harness-cycle-state init \
+  --issue 214 \
+  --slug invoice-export \
+  --branch feat/214-invoice-export
 pnpm exec harness-cycle-driver next        # что делать прямо сейчас (JSON)
 ```
+
+Три параметра — это три факта об одной задаче: `--slug` равен хвосту имени ветки после номера
+(`^[a-z0-9-]{1,60}$`), поэтому каталог `.pi/artifacts/2026-11-22-214-invoice-export` и ветка
+`feat/214-invoice-export` читаются вместе.
+
+Ветка должна существовать и быть текущей (`init` сверяет имя с git и отказывает, если её нет), а
+`base_sha` берётся из `main` — то есть `main` в репозитории уже должен быть.
 
 Цикл живёт в `.pi/artifacts/<дата>-<issue>-<slug>/`: `state.json`, артефакты по итерациям
 (`gates.<n>.json`, `decision.<n>.json`, `review.<n>.md`, `evaluation.<n>.md`) и пакет `evidence/`.
