@@ -228,7 +228,28 @@ describe('wrapNumbers и снимок', () => {
 
     assert.match(next, /const SNAPSHOT_DATE = '2026-12-01';/u);
     assert.match(next, /const MAX_REF_AT_SNAPSHOT = 150;/u);
-    assert.match(next, /const DEAD_REFS = Object\.freeze\(\[\n {2}153, 160,\n\]\);/u);
+    assert.match(next, /const DEAD_REFS = Object\.freeze\(\[153, 160\]\);/u);
+  });
+
+  test('короткий список — одной строкой, длинный — по элементам', () => {
+    const text = readFileSync(join(ROOT, 'scripts/dead-issue-refs.test.mjs'), 'utf8');
+    /** @param {number[]} deadRefs */
+    const render = (deadRefs) =>
+      renderSnapshot({ text, date: '2026-12-01', deadRefs, maxRef: 150 });
+
+    // Короткий список prettier держит в строке; свернуть его в столбик — значит разойтись с ним.
+    assert.match(
+      render([153, 154, 155]),
+      /const DEAD_REFS = Object\.freeze\(\[153, 154, 155\]\);/u,
+    );
+
+    const many = Array.from({ length: 30 }, (_, index) => 1000 + index);
+    const block = render(many).match(/const DEAD_REFS = Object\.freeze\(\[[\s\S]*?\]\);/u)?.[0];
+    assert.ok(block !== undefined, 'объявление DEAD_REFS найдено');
+    assert.match(block, /const DEAD_REFS = Object\.freeze\(\[\n {2}1000, /u);
+    for (const line of block.split('\n')) {
+      assert.ok(line.length <= 100, `строка объявления длиннее 100: ${line}`);
+    }
   });
 
   test('пустой снимок — пустой массив, а не пустые строки', () => {
@@ -397,7 +418,7 @@ describe('main --write-snapshot', () => {
     const written = readFileSync(join(root, 'scripts/dead-issue-refs.test.mjs'), 'utf8');
     assert.match(written, /const SNAPSHOT_DATE = '2026-12-01';/u);
     assert.match(written, /const MAX_REF_AT_SNAPSHOT = 142;/u);
-    assert.match(written, /const DEAD_REFS = Object\.freeze\(\[\n {2}153, 154,\n\]\);/u);
+    assert.match(written, /const DEAD_REFS = Object\.freeze\(\[153, 154\]\);/u);
     assert.match(out.join('\n'), /снимок scripts\/dead-issue-refs\.test\.mjs обновлён/u);
   });
 
