@@ -1,0 +1,54 @@
+# Установка и быстрый старт
+
+Требования: **Node.js 26.13.x** (`engines.node` = `>=26.13 <27`), **Linux или macOS** (Windows не
+поддерживается), `git`. Для команд доски и гигиены веток — `gh`; для команд проекта — `pnpm`.
+
+## 1. Поставить шаблоны в проект
+
+```bash
+npx @dnikulshin/harness init      # шаблоны .pi/, конфиг из примера, проверка раскладки
+pnpm add -D @dnikulshin/harness   # дальше — команды пакета из devDependencies
+```
+
+`npx` работает без установки: проект меняется только созданными файлами. Шаблоны кладут
+`.pi/agents/*`, `.pi/prompts/cycle.md`, пример `.pi/harness.config.json` и `.pi/harness.version`
+(версия + `sha256` каждого файла).
+
+Проверить раскладку в любой момент:
+
+```bash
+pnpm exec harness-check-layout
+```
+
+## 2. Настроить гейты
+
+`.pi/harness.config.json` — **исполняемый код**, а не декларация: `executable` + `args` запускаются
+от вашего имени. Минимальный рабочий конфиг — пустой список гейтов:
+
+```json
+{ "gates": [] }
+```
+
+Дальше добавляйте гейты проекта (`id`, `executable`, `args`, `required`, `dependsOn`,
+`pathPrefixes`, `dbGate`, `env`). Полная схема —
+[README](https://github.com/DNikulshin/dev-harness#конфигурация-piharnessconfigjson) и §5.5
+`docs/orchestrator-core.md`.
+
+## 3. Начать цикл
+
+```bash
+git switch -c feat/42-short-slug
+pnpm exec harness-cycle-state init --issue 42 --slug short-slug --branch feat/42-short-slug
+pnpm exec harness-cycle-driver next        # что делать прямо сейчас (JSON)
+```
+
+Цикл живёт в `.pi/artifacts/<дата>-<issue>-<slug>/`: `state.json`, артефакты по итерациям
+(`gates.<n>.json`, `decision.<n>.json`, `review.<n>.md`, `evaluation.<n>.md`) и пакет `evidence/`.
+
+## 4. Дальше
+
+- [Команды](Commands) — что вызывает драйвер и что каждый скрипт читает/пишет.
+- [Интеграция в проект](Integration) — гейты, лимиты, ADR по раскладке.
+- Если цикл ведётся из Pi, есть адаптер:
+  [`@dnikulshin/pi-harness`](https://github.com/DNikulshin/pi-harness) — команда `/cycle` вместо
+  ручных вызовов `bin`.

@@ -146,6 +146,7 @@
     "format:check": "prettier --check .",
     "check": "node --test && tsc -p tsconfig.json && prettier --check .",
     "board:sync": "node tooling/board-sync.mjs",
+    "wiki:sync": "node tooling/wiki-sync.mjs",
     "board:sync:dry": "DRY_RUN=1 node tooling/board-sync.mjs",
     "prepare": "git rev-parse --git-dir >/dev/null 2>&1 && git config core.hooksPath .githooks || true",
     "precommit": "node tooling/precommit.mjs",
