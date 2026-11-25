@@ -16,10 +16,10 @@ The core knows nothing about a specific project. Gates, limits, paths and the mo
 from the project's `.pi/harness.config.json`; roles and prohibitions live in the project's
 `AGENTS.md`.
 
-**Status:** v0.2.1, published on npm. What counts as public API and how a breaking change is
+**Status:** v0.3.0, published on npm. What counts as public API and how a breaking change is
 announced — [docs/release.md](./docs/release.md).
 
-CLI messages are in Russian in every version up to and including 0.2.1. The output below is copied
+CLI messages are in Russian in every version up to and including 0.3.0. The output below is copied
 from real runs on a new project; where a block is pretty-printed or shortened, the text says so.
 
 ## Requirements
@@ -61,7 +61,7 @@ For a pilot there is also a git reference — the same code without the registry
 ```json
 {
   "devDependencies": {
-    "@dnikulshin/harness": "github:DNikulshin/dev-harness#v0.2.1"
+    "@dnikulshin/harness": "github:DNikulshin/dev-harness#v0.3.0"
   }
 }
 ```
@@ -87,7 +87,7 @@ With `AGENTS.md` in place:
 создан: .pi/harness.config.json
 создан: .pi/prompts/cycle.md
 создан: .pi/settings.json (subagents.maxSubagentSpawnsPerRun = 7)
-записан: .pi/harness.version (версия 0.2.1)
+записан: .pi/harness.version (версия 0.3.0)
 W2: .pi/agents/evaluate.md — семейство модели совпадает с plan: z-ai (принятый риск I3, ребро не проверяется, действий не требуется; docs/orchestrator.md §18)
 проверка раскладки: нарушений нет, предупреждений 1 (информационные — действий не требуется)
 проверить отдельно: harness-check-layout --root .

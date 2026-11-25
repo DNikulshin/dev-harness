@@ -15,7 +15,7 @@ evals-слой.
 Ядро не знает конкретный проект. Гейты, лимиты, пути и провайдер моделей задаются в
 `.pi/harness.config.json` проекта; роли и запреты — в `AGENTS.md` проекта.
 
-**Статус:** v0.2.1, опубликован в npm. Что считается публичным API и как объявляется несовместимое
+**Статус:** v0.3.0, опубликован в npm. Что считается публичным API и как объявляется несовместимое
 изменение — [docs/release.md](./docs/release.md).
 
 ## Требования
@@ -56,7 +56,7 @@ pnpm add -D @dnikulshin/harness   # дальше — команды пакета
 ```json
 {
   "devDependencies": {
-    "@dnikulshin/harness": "github:DNikulshin/dev-harness#v0.2.1"
+    "@dnikulshin/harness": "github:DNikulshin/dev-harness#v0.3.0"
   }
 }
 ```
@@ -78,7 +78,7 @@ pnpm add -D @dnikulshin/harness   # дальше — команды пакета
 создан: .pi/harness.config.json
 создан: .pi/prompts/cycle.md
 создан: .pi/settings.json (subagents.maxSubagentSpawnsPerRun = 7)
-записан: .pi/harness.version (версия 0.2.1)
+записан: .pi/harness.version (версия 0.3.0)
 W2: .pi/agents/evaluate.md — семейство модели совпадает с plan: z-ai (принятый риск I3, ребро не проверяется, действий не требуется; docs/orchestrator.md §18)
 проверка раскладки: нарушений нет, предупреждений 1 (информационные — действий не требуется)
 проверить отдельно: harness-check-layout --root .
