@@ -209,4 +209,23 @@ describe('release.yml', () => {
       'проверка токена должна стоять до тестов и до публикации',
     );
   });
+
+  test('опубликовано — это версия в реестре, а не вывод npm publish', () => {
+    const publishIndex = COMMANDS.indexOf('npm publish');
+    const verifyIndex = COMMANDS.indexOf('npm view');
+
+    assert.ok(verifyIndex > 0, 'в workflow нет проверки версии в реестре (issue #205)');
+    assert.ok(publishIndex < verifyIndex, 'проверять реестр имеет смысл только после публикации');
+    assert.match(
+      COMMANDS,
+      /version="\$\{GITHUB_REF_NAME#v\}"/u,
+      'проверяется версия из тега, а не константа в workflow',
+    );
+    assert.match(COMMANDS, /seq 1 10/u, 'реестр отдаёт версию не мгновенно — нужны ретраи');
+    assert.match(
+      COMMANDS,
+      /Staged\/pending/u,
+      'отказ говорит, куда смотреть: staged publish ждёт подтверждения',
+    );
+  });
 });
