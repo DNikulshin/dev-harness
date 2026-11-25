@@ -1,7 +1,7 @@
 ---
 name: code
 description: 'Реализация по готовому плану: правки кода и тесты.'
-model: polza-ai/deepseek/deepseek-v4.1-flash
+model: acme/beta/example-model-fast
 thinking: low
 tools: read, grep, find, ls, edit, write, bash
 ---

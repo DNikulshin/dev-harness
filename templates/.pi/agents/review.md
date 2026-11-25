@@ -1,7 +1,7 @@
 ---
 name: review
 description: 'Ревью диффа: баги, пропущенные тесты, безопасность, границы архитектуры.'
-model: polza-ai/openai/gpt-6-luna-pro
+model: acme/gamma/example-model-pro
 thinking: medium
 tools: read, grep, find, ls, bash
 ---

@@ -611,7 +611,7 @@ describe('CLI на временном проекте', () => {
 
   test('отчёт проверки раскладки: H6 и W2 видны после установки', (t) => {
     const root = makeProject(t, {
-      'AGENTS.md': 'Роли: смотри `.pi/agents/`. Модель — `polza-ai/z-ai/glm-5.3-flash`.\n',
+      'AGENTS.md': 'Роли: смотри `.pi/agents/`. Модель — `acme/alpha/example-model`.\n',
     });
 
     const result = runCli(['--root', root]);
@@ -631,6 +631,47 @@ describe('CLI на временном проекте', () => {
 
     assert.equal(result.code, 0, result.stderr);
     assert.ok(result.stdout.includes('проверка раскладки: нарушений нет'));
+  });
+
+  test('шаблоны нейтральны по провайдеру (#204)', () => {
+    // Реальный провайдер в шаблонах — чужой выбор по умолчанию у каждого потребителя, а в ядре
+    // его быть не должно (правило 1 AGENTS.md). Проверка читает сами шаблоны, а не копию в проекте.
+    const files = collectTemplates(TEMPLATES, defaultLayout());
+
+    assert.ok(files.length >= 6, `шаблоны не найдены: ${files.length} файлов`);
+    for (const file of files) {
+      assert.doesNotMatch(
+        file.text,
+        /polza-ai/u,
+        `${file.source}: в шаблоне реальный префикс провайдера`,
+      );
+    }
+  });
+
+  test('установка в чистый проект: provider и модели согласованы (H4)', (t) => {
+    // Нейтральные значения должны остаться согласованными: потребитель копирует и конфиг, и агентов,
+    // поэтому H4 на свежей установке — не повод для первого же нарушения.
+    const root = makeProject(t, {
+      'AGENTS.md': 'Роли описаны в `.pi/agents/`, гейты — в `.pi/harness.config.json`.\n',
+    });
+
+    const result = runCli(['--root', root]);
+    const config = JSON.parse(read(root, '.pi/harness.config.json'));
+    const models = ['plan', 'code', 'review', 'evaluate'].map((name) => {
+      const found = /^model: (.+)$/mu.exec(read(root, `.pi/agents/${name}.md`));
+      assert.ok(found, `${name}.md: нет строки model`);
+      return found[1]?.trim() ?? '';
+    });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(config.provider, 'acme/', 'пример конфига должен быть нейтральным');
+    for (const model of models) {
+      assert.ok(
+        model.startsWith(config.provider),
+        `${model} не начинается с провайдера ${config.provider}`,
+      );
+    }
+    assert.doesNotMatch(result.stdout, /H4:/u, 'на свежей установке H4 нечего чинить');
   });
 
   test('итог установки считает предупреждения и говорит, что делать нечего (#196)', (t) => {
@@ -689,7 +730,7 @@ function profileProject(t) {
     'AGENTS.md': 'Роли описаны в `harness/agents/`, гейты — в `harness/harness.config.json`.\n',
     'harness/harness.config.json': `${JSON.stringify(
       {
-        provider: 'polza-ai/',
+        provider: 'acme/',
         paths: {
           agentsDir: 'harness/agents',
           settings: 'harness/settings.json',
