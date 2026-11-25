@@ -104,9 +104,10 @@ Three things to do right after installing, before the first cycle:
 
 - **`.pi/harness.config.json`** — replace the example values with the project's: `provider` plus the
   `model:` lines in `.pi/agents/*.md` must name your own provider, `gates` must be the commands this
-  project actually runs. The templates ship the core's example provider prefix and model names,
-  which nobody should inherit by accident. A provider in the config that does not match the `model:`
-  prefix in the agents is a layout violation (H4) and is reported as such.
+  project actually runs. The templates ship the neutral `acme/` prefix and `acme/…` model names —
+  placeholders to be replaced together, config and agents alike, not a recommendation of a provider.
+  A provider in the config that does not match the `model:` prefix in the agents is a layout
+  violation (H4) and is reported as such.
 - **`AGENTS.md`** — the project's roles and prohibitions; the core reads the file, the project
   writes it.
 
