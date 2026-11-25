@@ -40,7 +40,7 @@ jobs:
           node-version-file: .nvmrc
 
       - name: Кэш резолва номеров
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: .cache
           key: issue-refs-${{ github.run_id }}
