@@ -196,17 +196,31 @@ describe('release.yml', () => {
     assert.match(COMMANDS, /--access public/u);
   });
 
-  test('пустой NPM_TOKEN ловится до работы, а не на публикации', () => {
-    const guardIndex = COMMANDS.indexOf('NODE_AUTH_TOKEN');
+  test('публикация по trusted publishing: секрета с правом публикации нет', () => {
+    // OIDC-токен живёт внутри прогона: долгоживущий секрет с правом `publish` — это то, от чего
+    // уходим (issue #212). Проверка читает только исполняемые строки: в комментариях `NPM_TOKEN`
+    // допустим как объяснение, почему его больше нет.
+    assert.doesNotMatch(COMMANDS, /NPM_TOKEN/u, 'в workflow не должно быть секрета NPM_TOKEN');
+    assert.doesNotMatch(
+      COMMANDS,
+      /NODE_AUTH_TOKEN/u,
+      'npm получает токен из OIDC-обмена, а не из переменной',
+    );
+    assert.match(COMMANDS, /id-token: write/u, 'OIDC требует id-token: write');
+  });
+
+  test('старый npm ловится до работы, а не на публикации', () => {
+    // Без этой проверки `npm publish` без токена падает `ENEEDAUTH`, и по тексту не видно, что
+    // виновата версия npm, — тот же класс отказа, что пустой `NPM_TOKEN` (#161).
+    const guardIndex = COMMANDS.indexOf('11.5.1');
     const checkIndex = COMMANDS.indexOf('pnpm check');
     const publishIndex = COMMANDS.indexOf('npm publish');
 
-    assert.ok(guardIndex > 0, 'в workflow нет шага проверки NPM_TOKEN (issue #161)');
-    assert.match(COMMANDS, /secrets\.NPM_TOKEN/u, 'проверка читает секрет из secrets.NPM_TOKEN');
-    assert.match(COMMANDS, /Секрет NPM_TOKEN не задан/u, 'отказ называет причину словами');
+    assert.ok(guardIndex > 0, 'в workflow нет проверки версии npm (issue #212)');
+    assert.match(COMMANDS, /sort -V/u, 'сравнение версий не должно быть строковым');
     assert.ok(
       guardIndex < checkIndex && guardIndex < publishIndex,
-      'проверка токена должна стоять до тестов и до публикации',
+      'проверка npm должна стоять до тестов и до публикации',
     );
   });
 
