@@ -6,6 +6,7 @@
  * оставит issue открытым после мержа, ложное «нет» заблокирует нормальный PR.
  */
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { describe, test } from 'node:test';
 
 import {
@@ -266,5 +267,35 @@ describe('main: CLI', () => {
     const { code, err } = runMain({});
     assert.equal(code, 2);
     assert.match(err.join('\n'), /Тело PR пустое/u);
+  });
+});
+
+/**
+ * Условие запуска самой проверки живёт в YAML, а не в коде, поэтому регрессия там невидима
+ * тестам — так и вышло в #209: условие по актору пропускало только прогоны бота, а прогон,
+ * запущенный владельцем, падал на PR Dependabot и делал его неворуемым (issue #216).
+ */
+describe('workflow pr-checks.yml', () => {
+  const WORKFLOW = readFileSync(
+    new URL('../.github/workflows/pr-checks.yml', import.meta.url),
+    'utf8',
+  );
+  // Комментарии обсуждают условие и актора — сравниваем только исполняемые строки.
+  const COMMANDS = WORKFLOW.split('\n')
+    .filter((line) => !line.trim().startsWith('#'))
+    .join('\n');
+
+  test('Dependabot пропускается по автору PR, а не по актору', () => {
+    assert.match(COMMANDS, /if: github\.event\.pull_request\.user\.login != 'dependabot\[bot\]'/u);
+    assert.doesNotMatch(
+      COMMANDS,
+      /if: github\.actor/u,
+      'условие по актору падает, когда PR бота трогает человек (#216)',
+    );
+  });
+
+  test('job остаётся обязательным для обычных PR', () => {
+    assert.match(COMMANDS, /^ {2}pr-references:$/mu, 'job называется pr-references');
+    assert.match(COMMANDS, /run: node tooling\/pr-reference\.mjs/u);
   });
 });

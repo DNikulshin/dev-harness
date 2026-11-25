@@ -17,7 +17,10 @@ permissions:
 jobs:
   pr-references:
     # PR от Dependabot не ссылаются на issue: задачи в трекере у бота нет, тело он не правит.
-    if: github.actor != 'dependabot[bot]'
+    # Условие — по **автору** PR, а не по актору: правка тела, переоткрытие или retarget руками
+    # запускают прогон с `github.actor = DNikulshin`, и условие по актору делало бы такой PR
+    # неворуемым — `pr-references` обязательна на `main` (#209, issue #216).
+    if: github.event.pull_request.user.login != 'dependabot[bot]'
     runs-on: ubuntu-latest
     steps:
       # История нужна целиком: проверка читает сообщения коммитов PR (`base..head`), а не только
