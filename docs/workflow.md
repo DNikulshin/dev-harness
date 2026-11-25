@@ -236,8 +236,12 @@ gh workflow run board-sync.yml                    # сверка доски вр
 
 `Release` (`.github/workflows/release.yml`) публикует **собранный архив**, а не репозиторий:
 `pnpm check` → `pnpm pack` → проверка состава и версии (`tooling/check-package.mjs`) →
-`npm publish --provenance` с секретом `NPM_TOKEN`. Состав архива проверяется до публикации, потому
-что версию в npm нельзя перезаписать. Публичный API и правила версий — `docs/release.md`.
+`npm publish --provenance` по trusted publishing (OIDC, без долгоживущего секрета) → проверка, что
+версия видна в реестре (`npm view`, 10 × 30 с). Состав архива проверяется до публикации, потому что
+версию в npm нельзя перезаписать; а версия после публикации — потому что `npm publish` с кодом 0 и
+`+ пакет@версия` в логе не значит «опубликовано» (staged publish, issue #205). Публичный API и
+правила версий — `docs/release.md`, поведение при staged publish —
+[release.md](./release.md#stage-и-publish).
 
 Ruleset `release-tags` запрещает удалять и перезаписывать теги `refs/tags/v*`: перезапись сделала бы
 установку невоспроизводимой (под одним тегом разный код), удаление оставило бы потребителя с битой

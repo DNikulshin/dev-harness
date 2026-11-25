@@ -7,11 +7,19 @@ name: Release
 # что файлы из `bin`/`exports` на месте и что версия в `package.json` совпадает с тегом. Версию в
 # npm перезаписать нельзя: ошибка в составе достаётся потребителю первой.
 #
-# `--provenance` (публикация с аттестацией сборки) требует `id-token: write`. Токен публикации —
-# секрет `NPM_TOKEN` (scope `@dnikulshin`), его ставит владелец; в код и логи он не попадает.
+# `--provenance` (публикация с аттестацией сборки) требует `id-token: write`. Этим же правом
+# пользуется trusted publishing: npm проверяет, что публикует именно этот репозиторий и этот файл
+# workflow, и выдаёт короткоживущий токен — долгоживущего секрета с правом публикации в репозитории
+# нет (issue #212). Доверие привязано к имени файла: переименовали `release.yml` — пересоздали связку
+# в npmjs.com, иначе публикация упадёт с `ENEEDAUTH` (docs/release.md, «Процесс выпуска»).
 #
 # Тег ставится на `main` после мержа релизного PR; `ci.yml` прогоняется на том же теге, а ruleset
 # `release-tags` запрещает перезапись и удаление тегов `v*` (docs/workflow.md).
+#
+# `npm publish` с кодом 0 — не доказательство публикации: при staged publishing версия уходит в
+# staging и ждёт подтверждения владельца в npmjs.com, а лог всё равно печатает `+ пакет@версия`.
+# Так релиз 0.2.1 считался выпущенным, пока в реестре оставалась 0.2.0 (issue #205). Поэтому после
+# публикации стоит проверка факта — версия, которую видит потребитель (`npm view`).
 on:
   push:
     tags: ['v*']
@@ -43,18 +51,20 @@ jobs:
       - name: Установка зависимостей
         run: pnpm install --frozen-lockfile
 
-      # Пустой секрет неотличим от отсутствующего: GitHub подставляет пустую строку, а `secrets`
-      # в `if` не читается. Без этой проверки прогон проходит тесты, сборку и проверку состава, а
-      # падает на публикации с `ENEEDAUTH` — по тексту не видно ни чего не хватает, ни что делать
-      # (релиз 0.2.0, issue #161). Требования к токену — docs/release.md, «Процесс выпуска».
-      - name: Проверить, что NPM_TOKEN задан
+      # Trusted publishing (OIDC) требует npm ≥ 11.5.1; на старом CLI `npm publish` без токена падает
+      # `ENEEDAUTH`, и по тексту не видно ни чего не хватает, ни что делать — тот же класс отказа, что
+      # пустой `NPM_TOKEN` в #161. Версия npm приходит из образа Node, поэтому она проверяется, а не
+      # предполагается.
+      - name: Проверить, что npm умеет trusted publishing
         run: |
-          if [ -z "${NODE_AUTH_TOKEN}" ]; then
-            echo "::error::Секрет NPM_TOKEN не задан. gh secret set NPM_TOKEN — granular-токен, scope @dnikulshin, Read and write (publish and stage), Bypass 2FA (docs/release.md)"
+          supported="11.5.1"
+          current="$(npm --version)"
+          lowest="$(printf '%s\n%s\n' "$supported" "$current" | sort -V | head -1)"
+          if [ "$lowest" != "$supported" ]; then
+            echo "::error::npm ${current} не умеет trusted publishing, нужен >= ${supported}: публикация без долгоживущего токена не пройдёт (docs/release.md, «Процесс выпуска»)"
             exit 1
           fi
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          echo "npm ${current}: trusted publishing поддерживается"
 
       # `ci.yml` прогоняется на том же теге, но два workflow независимы: публикация не должна
       # ждать порядка запуска. Поэтому гейт повторяется здесь — 45 секунд против пакета с
@@ -73,7 +83,27 @@ jobs:
       # Префикс `./` обязателен: путь `dist/<архив>.tgz` без него npm разбирает как GitHub-шорткат
       # `owner/repo` и уходит в `git ls-remote ssh://git@github.com/...` вместо публикации файла.
       # На релизе просмотрщика это стоило одного тега (issue #157).
+      # Токен сюда не передаётся: npm берёт его из OIDC-обмена (id-token: write), а `--provenance`
+      # остаётся явным указанием намерения, даже когда `publishConfig.provenance` уже включён.
       - name: Публикация в npm
         run: npm publish ./dist/*.tgz --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # Доказательство публикации — не вывод `npm publish`, а версия в реестре. При staged publish
+      # (granular-токен «publish and stage») она лежит в staging и потребителю не видна, а прогон
+      # при этом зелёный — худший вид отказа: релиз считают выпущенным (issue #205). Ожидание до
+      # 5 минут: реестр отдаёт свежую версию не мгновенно, и падать на первом же промахе значило бы
+      # менять один ложный сигнал на другой.
+      - name: Проверить, что версия видна в реестре
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          echo "проверяю @dnikulshin/harness@${version} в реестре"
+          for attempt in $(seq 1 10); do
+            if found="$(npm view "@dnikulshin/harness@${version}" version 2>/dev/null)" && [ -n "$found" ]; then
+              echo "версия ${found} доступна в реестре (попытка ${attempt})"
+              exit 0
+            fi
+            echo "попытка ${attempt}/10: версии ${version} в реестре нет, жду 30 с"
+            sleep 30
+          done
+          echo "::error::Опубликовано не было: версии ${version} нет в реестре через 5 минут после публикации. Проверьте Staged/pending в npmjs.com (https://www.npmjs.com/package/@dnikulshin/harness?activeTab=versions) — при staged publish прогон зелёный, а версия ждёт подтверждения владельца (docs/release.md, «stage и publish»)."
+          exit 1
