@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/DNikulshin/dev-harness/actions/workflows/ci.yml/badge.svg)](https://github.com/DNikulshin/dev-harness/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/@dnikulshin/harness)](https://www.npmjs.com/package/@dnikulshin/harness)
-[![Node](https://img.shields.io/badge/node-%3E%3D26.13%20%3C27-informational)](./.nvmrc)
+[![Node](https://img.shields.io/badge/node-%3E%3D26.13-informational)](./.nvmrc)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](./LICENSE)
 [![Docs](https://img.shields.io/badge/docs-dnikulshin.ru%2Fdev--harness-informational)](https://dnikulshin.ru/dev-harness/)
 
@@ -20,8 +20,8 @@ evals-слой.
 
 ## Требования
 
-- **Node.js 26.13.x** — `engines.node` = `>=26.13 <27`, `.nvmrc` = `26.13.1`; CI идёт на этой
-  версии.
+- **Node.js 26.13 или новее** — `engines.node` = `>=26.13`, `.nvmrc` = `26.13.1`; CI идёт на этой
+  версии, верхняя граница не заявлена: версия, которую CI не гоняет, ничего не обещает.
 - **Linux или macOS** — `os: ["linux", "darwin"]` в `package.json`, CI гоняет один и тот же набор
   шагов на `ubuntu-latest` и `macos-latest`. **Windows не поддерживается:** тайм-аут гейта завершает
   не только сам процесс, но и его потомков через группу процессов (`detached: true`

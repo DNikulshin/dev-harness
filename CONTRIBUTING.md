@@ -47,7 +47,7 @@ git switch -c feat/214-invoice-export  # или fix/, chore/, docs/
 ```bash
 corepack enable            # pnpm из packageManager
 pnpm install
-node --version             # 26.13.x: engines.node = >=26.13 <27, версия из .nvmrc
+node --version             # 26.13 или новее: engines.node = >=26.13, версия из .nvmrc
 pnpm check                 # node --test + tsc --noEmit + prettier --check
 ```
 
