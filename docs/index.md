@@ -163,7 +163,7 @@ cycle-gates: гейты не заданы: добавьте секцию gates �
 - цикл стартует от `main`: `base_sha` берётся от ветки `main`, и если её нет — `cycle-state init`
   говорит об этом словами, а не выводом git.
 
-Требования: Node.js 26.13.x, Linux или macOS. Подробно —
+Требования: Node.js 26.13 или новее, Linux или macOS. Подробно —
 [README репозитория](https://github.com/DNikulshin/dev-harness#readme) (есть
 [английская версия](https://github.com/DNikulshin/dev-harness/blob/main/README.md)).
 

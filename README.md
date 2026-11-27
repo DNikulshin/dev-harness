@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/DNikulshin/dev-harness/actions/workflows/ci.yml/badge.svg)](https://github.com/DNikulshin/dev-harness/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/@dnikulshin/harness)](https://www.npmjs.com/package/@dnikulshin/harness)
-[![Node](https://img.shields.io/badge/node-%3E%3D26.13%20%3C27-informational)](./.nvmrc)
+[![Node](https://img.shields.io/badge/node-%3E%3D26.13-informational)](./.nvmrc)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](./LICENSE)
 [![Docs](https://img.shields.io/badge/docs-dnikulshin.ru%2Fdev--harness-informational)](https://dnikulshin.ru/dev-harness/)
 
@@ -24,8 +24,8 @@ from real runs on a new project; where a block is pretty-printed or shortened, t
 
 ## Requirements
 
-- **Node.js 26.13.x** — `engines.node` = `>=26.13 <27`, `.nvmrc` = `26.13.1`; CI runs on that
-  version.
+- **Node.js 26.13 or newer** — `engines.node` = `>=26.13`, `.nvmrc` = `26.13.1`; CI runs on that
+  version, and no upper bound is declared: a version CI does not run promises nothing.
 - **Linux or macOS** — `os: ["linux", "darwin"]` in `package.json`; CI runs the same steps on
   `ubuntu-latest` and `macos-latest`. **Windows is not supported:** a gate timeout kills not only
   the process but its children through the process group (`detached: true` + `process.kill(-pid)`,
